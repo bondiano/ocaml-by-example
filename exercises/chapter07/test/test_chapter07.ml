@@ -5,13 +5,13 @@ open Chapter07.Hashable
 let hash_tests =
   let open Alcotest in
   [
-    test_case "хэш целого числа" `Quick (fun () ->
-      check int "int hash" 42 (IntHash.hash 42));
-    test_case "хэш строки непустой" `Quick (fun () ->
-      check bool "string hash nonzero" true
+    test_case "при x=42 возвращает 42" `Quick (fun () ->
+      check int "hash" 42 (IntHash.hash 42));
+    test_case "при непустой строке возвращает ненулевой хэш" `Quick (fun () ->
+      check bool "result" true
         (StringHash.hash "hello" <> 0));
-    test_case "хэш одинаковых строк совпадает" `Quick (fun () ->
-      check int "same string same hash"
+    test_case "при одинаковых строках возвращает одинаковый хэш" `Quick (fun () ->
+      check int "result"
         (StringHash.hash "test") (StringHash.hash "test"));
   ]
 
@@ -19,25 +19,25 @@ let hashset_tests =
   let module HS = MakeHashSet(IntHash) in
   let open Alcotest in
   [
-    test_case "пустой HashSet" `Quick (fun () ->
-      check bool "empty" false (HS.mem 1 HS.empty));
-    test_case "добавление и поиск" `Quick (fun () ->
+    test_case "при пустом HashSet возвращает false для mem" `Quick (fun () ->
+      check bool "result" false (HS.mem 1 HS.empty));
+    test_case "при добавлении 42 возвращает true для mem 42" `Quick (fun () ->
       let s = HS.add 42 HS.empty in
-      check bool "mem" true (HS.mem 42 s));
-    test_case "отсутствующий элемент" `Quick (fun () ->
+      check bool "result" true (HS.mem 42 s));
+    test_case "при отсутствующем элементе возвращает false" `Quick (fun () ->
       let s = HS.add 42 HS.empty in
-      check bool "not mem" false (HS.mem 99 s));
+      check bool "result" false (HS.mem 99 s));
   ]
 
 let pair_hash_tests =
   let module PH = PairHash(IntHash)(StringHash) in
   let open Alcotest in
   [
-    test_case "хэш пары" `Quick (fun () ->
-      check bool "pair hash nonzero" true
+    test_case "при паре (1, \"hello\") возвращает ненулевой хэш" `Quick (fun () ->
+      check bool "result" true
         (PH.hash (1, "hello") <> 0));
-    test_case "разные пары --- разные хэши" `Quick (fun () ->
-      check bool "different pairs"
+    test_case "при разных парах возвращает разные хэши" `Quick (fun () ->
+      check bool "result"
         true
         (PH.hash (1, "a") <> PH.hash (2, "b")));
   ]
@@ -47,10 +47,10 @@ let pair_hash_tests =
 let int_set_tests =
   let open Alcotest in
   [
-    test_case "пустое множество" `Quick (fun () ->
-      check (list int) "empty" []
+    test_case "при пустом множестве возвращает []" `Quick (fun () ->
+      check (list int) "result" []
         (My_solutions.IntSet.elements My_solutions.IntSet.empty));
-    test_case "добавление элементов" `Quick (fun () ->
+    test_case "при добавлении [3;1;4;1] возвращает [1;3;4]" `Quick (fun () ->
       let s =
         My_solutions.IntSet.empty
         |> My_solutions.IntSet.add 3
@@ -58,33 +58,33 @@ let int_set_tests =
         |> My_solutions.IntSet.add 4
         |> My_solutions.IntSet.add 1
       in
-      check (list int) "sorted unique" [1; 3; 4]
+      check (list int) "result" [1; 3; 4]
         (My_solutions.IntSet.elements s));
-    test_case "mem --- элемент есть" `Quick (fun () ->
+    test_case "при наличии элемента 5 возвращает true" `Quick (fun () ->
       let s =
         My_solutions.IntSet.empty
         |> My_solutions.IntSet.add 5
         |> My_solutions.IntSet.add 3
       in
-      check bool "mem 5" true (My_solutions.IntSet.mem 5 s));
-    test_case "mem --- элемента нет" `Quick (fun () ->
+      check bool "result" true (My_solutions.IntSet.mem 5 s));
+    test_case "при отсутствии элемента 3 возвращает false" `Quick (fun () ->
       let s = My_solutions.IntSet.add 5 My_solutions.IntSet.empty in
-      check bool "mem 3" false (My_solutions.IntSet.mem 3 s));
-    test_case "size" `Quick (fun () ->
+      check bool "result" false (My_solutions.IntSet.mem 3 s));
+    test_case "при трёх уникальных элементах возвращает 3" `Quick (fun () ->
       let s =
         My_solutions.IntSet.empty
         |> My_solutions.IntSet.add 1
         |> My_solutions.IntSet.add 2
         |> My_solutions.IntSet.add 3
       in
-      check int "size" 3 (My_solutions.IntSet.size s));
+      check int "result" 3 (My_solutions.IntSet.size s));
   ]
 
 let make_set_tests =
   let module SSet = My_solutions.MakeSet(String) in
   let open Alcotest in
   [
-    test_case "MakeSet с String --- добавление" `Quick (fun () ->
+    test_case "при добавлении [\"banana\";\"apple\";\"cherry\";\"apple\"] возвращает отсортированный список" `Quick (fun () ->
       let s =
         SSet.empty
         |> SSet.add "banana"
@@ -92,29 +92,29 @@ let make_set_tests =
         |> SSet.add "cherry"
         |> SSet.add "apple"
       in
-      check (list string) "sorted unique"
+      check (list string) "result"
         ["apple"; "banana"; "cherry"]
         (SSet.elements s));
-    test_case "MakeSet с String --- mem" `Quick (fun () ->
+    test_case "при поиске существующей строки возвращает true, несуществующей — false" `Quick (fun () ->
       let s = SSet.add "hello" SSet.empty in
-      check bool "mem hello" true (SSet.mem "hello" s);
-      check bool "not mem world" false (SSet.mem "world" s));
+      check bool "result" true (SSet.mem "hello" s);
+      check bool "result" false (SSet.mem "world" s));
   ]
 
 let max_element_tests =
   let open Alcotest in
   [
-    test_case "max_element Int" `Quick (fun () ->
-      check (option int) "max int"
+    test_case "при [3;1;4;1;5] возвращает Some 5" `Quick (fun () ->
+      check (option int) "result"
         (Some 5)
         (My_solutions.max_element (module Int) [3; 1; 4; 1; 5]));
-    test_case "max_element String" `Quick (fun () ->
-      check (option string) "max string"
+    test_case "при [\"banana\";\"apple\";\"cherry\"] возвращает Some \"cherry\"" `Quick (fun () ->
+      check (option string) "result"
         (Some "cherry")
         (My_solutions.max_element (module String)
            ["banana"; "apple"; "cherry"]));
-    test_case "max_element пустой список" `Quick (fun () ->
-      check (option int) "max empty"
+    test_case "при пустом списке возвращает None" `Quick (fun () ->
+      check (option int) "result"
         None
         (My_solutions.max_element (module Int) []));
   ]
@@ -123,37 +123,37 @@ let extended_set_tests =
   let open Alcotest in
   let module E = My_solutions.ExtendedIntSet in
   [
-    test_case "union" `Quick (fun () ->
+    test_case "при union {1;3} и {2;3;4} возвращает [1;2;3;4]" `Quick (fun () ->
       let s1 = E.empty |> E.add 1 |> E.add 3 in
       let s2 = E.empty |> E.add 2 |> E.add 3 |> E.add 4 in
-      check (list int) "union"
+      check (list int) "result"
         [1; 2; 3; 4]
         (E.elements (E.union s1 s2)));
-    test_case "inter" `Quick (fun () ->
+    test_case "при inter {1;2;3} и {2;3;4} возвращает [2;3]" `Quick (fun () ->
       let s1 = E.empty |> E.add 1 |> E.add 2 |> E.add 3 in
       let s2 = E.empty |> E.add 2 |> E.add 3 |> E.add 4 in
-      check (list int) "inter"
+      check (list int) "result"
         [2; 3]
         (E.elements (E.inter s1 s2)));
-    test_case "size после union" `Quick (fun () ->
+    test_case "при union {1;2} и {2;3} возвращает size=3" `Quick (fun () ->
       let s1 = E.empty |> E.add 1 |> E.add 2 in
       let s2 = E.empty |> E.add 2 |> E.add 3 in
-      check int "size" 3 (E.size (E.union s1 s2)));
+      check int "result" 3 (E.size (E.union s1 s2)));
   ]
 
 let user_tests =
   let open Alcotest in
   let open Chapter07.Hashable.User in
   [
-    test_case "create user" `Quick (fun () ->
+    test_case "при name=\"Иван\" age=25 возвращает корректные поля" `Quick (fun () ->
       let u = make ~name:"Иван" ~age:25 in
       check string "name" "Иван" (name u);
       check int "age" 25 (age u));
-    test_case "to_string" `Quick (fun () ->
+    test_case "при name=\"Иван\" age=25 возвращает \"Иван (age 25)\"" `Quick (fun () ->
       let u = make ~name:"Иван" ~age:25 in
-      check string "str" "Иван (age 25)" (to_string u));
-    test_case "negative age" `Quick (fun () ->
-      check_raises "invalid" (Invalid_argument "User.make: age must be non-negative")
+      check string "result" "Иван (age 25)" (to_string u));
+    test_case "при age=-1 бросает Invalid_argument" `Quick (fun () ->
+      check_raises "result" (Invalid_argument "User.make: age must be non-negative")
         (fun () -> ignore (make ~name:"X" ~age:(-1))));
   ]
 
@@ -161,11 +161,11 @@ let io_agnostic_tests =
   let open Alcotest in
   let open Chapter07.Hashable in
   [
-    test_case "sync process" `Quick (fun () ->
-      check string "process" "processed: HELLO"
+    test_case "при \"hello\" возвращает \"processed: HELLO\"" `Quick (fun () ->
+      check string "result" "processed: HELLO"
         (Sync_service.process "hello"));
-    test_case "sync process_all" `Quick (fun () ->
-      check (list string) "process_all"
+    test_case "при [\"a\";\"b\"] возвращает [\"processed: A\";\"processed: B\"]" `Quick (fun () ->
+      check (list string) "result"
         ["processed: A"; "processed: B"]
         (Sync_service.process_all ["a"; "b"]));
   ]
@@ -175,50 +175,50 @@ module TestCustomSet = My_solutions.MakeCustomSet(Int)
 let custom_set_tests =
   let open Alcotest in
   [
-    test_case "empty set" `Quick (fun () ->
-      check bool "is_empty" true (TestCustomSet.is_empty TestCustomSet.empty));
-    test_case "add и mem" `Quick (fun () ->
+    test_case "при пустом множестве возвращает true для is_empty" `Quick (fun () ->
+      check bool "result" true (TestCustomSet.is_empty TestCustomSet.empty));
+    test_case "при добавлении 1 и 2 возвращает true для mem, false для 3" `Quick (fun () ->
       let s = TestCustomSet.add 1 (TestCustomSet.add 2 TestCustomSet.empty) in
       check bool "mem 1" true (TestCustomSet.mem 1 s);
       check bool "mem 2" true (TestCustomSet.mem 2 s);
       check bool "mem 3" false (TestCustomSet.mem 3 s));
-    test_case "elements отсортированы" `Quick (fun () ->
+    test_case "при добавлении [3;1;2] возвращает [1;2;3]" `Quick (fun () ->
       let s = TestCustomSet.add 3 (TestCustomSet.add 1 (TestCustomSet.add 2 TestCustomSet.empty)) in
-      check (list int) "sorted" [1; 2; 3] (TestCustomSet.elements s));
-    test_case "size" `Quick (fun () ->
+      check (list int) "result" [1; 2; 3] (TestCustomSet.elements s));
+    test_case "при добавлении дубликатов возвращает size=2" `Quick (fun () ->
       let s = TestCustomSet.add 1 (TestCustomSet.add 2 (TestCustomSet.add 1 TestCustomSet.empty)) in
-      check int "no duplicates" 2 (TestCustomSet.size s));
-    test_case "union" `Quick (fun () ->
+      check int "result" 2 (TestCustomSet.size s));
+    test_case "при union {1;2} и {2;3} возвращает [1;2;3]" `Quick (fun () ->
       let s1 = TestCustomSet.add 1 (TestCustomSet.add 2 TestCustomSet.empty) in
       let s2 = TestCustomSet.add 2 (TestCustomSet.add 3 TestCustomSet.empty) in
-      check (list int) "union" [1; 2; 3] (TestCustomSet.elements (TestCustomSet.union s1 s2)));
-    test_case "inter" `Quick (fun () ->
+      check (list int) "result" [1; 2; 3] (TestCustomSet.elements (TestCustomSet.union s1 s2)));
+    test_case "при inter {1;2} и {2;3} возвращает [2]" `Quick (fun () ->
       let s1 = TestCustomSet.add 1 (TestCustomSet.add 2 TestCustomSet.empty) in
       let s2 = TestCustomSet.add 2 (TestCustomSet.add 3 TestCustomSet.empty) in
-      check (list int) "inter" [2] (TestCustomSet.elements (TestCustomSet.inter s1 s2)));
-    test_case "remove" `Quick (fun () ->
+      check (list int) "result" [2] (TestCustomSet.elements (TestCustomSet.inter s1 s2)));
+    test_case "при remove 1 из {1;2} возвращает [2]" `Quick (fun () ->
       let s = TestCustomSet.add 1 (TestCustomSet.add 2 TestCustomSet.empty) in
       let s = TestCustomSet.remove 1 s in
-      check (list int) "removed" [2] (TestCustomSet.elements s));
+      check (list int) "result" [2] (TestCustomSet.elements s));
   ]
 
 let monoid_lib_tests =
   let open Alcotest in
   let open Chapter07.Monoid in
   [
-    test_case "IntSumMonoid concat_all" `Quick (fun () ->
-      check int "sum" 10
+    test_case "при [1;2;3;4] через IntSumMonoid возвращает 10" `Quick (fun () ->
+      check int "result" 10
         (concat_all (module IntSumMonoid) [1; 2; 3; 4]));
-    test_case "IntProductMonoid concat_all" `Quick (fun () ->
-      check int "product" 24
+    test_case "при [1;2;3;4] через IntProductMonoid возвращает 24" `Quick (fun () ->
+      check int "result" 24
         (concat_all (module IntProductMonoid) [1; 2; 3; 4]));
-    test_case "StringMonoid concat_all" `Quick (fun () ->
-      check string "concat" "hello world"
+    test_case "при [\"hello\";\" \";\"world\"] через StringMonoid возвращает \"hello world\"" `Quick (fun () ->
+      check string "result" "hello world"
         (concat_all (module StringMonoid) ["hello"; " "; "world"]));
-    test_case "concat_all пустой список" `Quick (fun () ->
-      check int "empty" 0
+    test_case "при пустом списке возвращает 0" `Quick (fun () ->
+      check int "result" 0
         (concat_all (module IntSumMonoid) []));
-    test_case "OptionMonoid combine" `Quick (fun () ->
+    test_case "при Some 2 и Some 3 возвращает Some 5" `Quick (fun () ->
       let module OM = OptionMonoid(struct
         type t = int
         let combine = ( + )
@@ -236,18 +236,18 @@ let monoid_lib_tests =
 let first_semigroup_tests =
   let open Alcotest in
   [
-    test_case "First combine" `Quick (fun () ->
-      check string "first" "a"
+    test_case "при combine \"a\" \"b\" возвращает \"a\"" `Quick (fun () ->
+      check string "result" "a"
         (My_solutions.First.combine "a" "b"));
-    test_case "OptionMonoid(First) concat_all" `Quick (fun () ->
+    test_case "при [None;Some \"a\";Some \"b\";None] возвращает Some \"a\"" `Quick (fun () ->
       let module OM = Chapter07.Monoid.OptionMonoid(My_solutions.First) in
-      check (option string) "first some"
+      check (option string) "result"
         (Some "a")
         (Chapter07.Monoid.concat_all (module OM)
            [None; Some "a"; Some "b"; None]));
-    test_case "OptionMonoid(First) все None" `Quick (fun () ->
+    test_case "при [None;None;None] возвращает None" `Quick (fun () ->
       let module OM = Chapter07.Monoid.OptionMonoid(My_solutions.First) in
-      check (option string) "all none"
+      check (option string) "result"
         None
         (Chapter07.Monoid.concat_all (module OM) [None; None; None]));
   ]
@@ -255,16 +255,16 @@ let first_semigroup_tests =
 let concat_all_tests =
   let open Alcotest in
   [
-    test_case "concat_all сложение" `Quick (fun () ->
-      check int "sum" 15
+    test_case "при [1;2;3;4;5] через IntSumMonoid возвращает 15" `Quick (fun () ->
+      check int "result" 15
         (My_solutions.concat_all
            (module Chapter07.Monoid.IntSumMonoid) [1; 2; 3; 4; 5]));
-    test_case "concat_all строки" `Quick (fun () ->
-      check string "strings" "abc"
+    test_case "при [\"a\";\"b\";\"c\"] через StringMonoid возвращает \"abc\"" `Quick (fun () ->
+      check string "result" "abc"
         (My_solutions.concat_all
            (module Chapter07.Monoid.StringMonoid) ["a"; "b"; "c"]));
-    test_case "concat_all пустой" `Quick (fun () ->
-      check int "empty" 0
+    test_case "при пустом списке возвращает 0" `Quick (fun () ->
+      check int "result" 0
         (My_solutions.concat_all (module Chapter07.Monoid.IntSumMonoid) []));
   ]
 

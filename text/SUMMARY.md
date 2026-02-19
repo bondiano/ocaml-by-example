@@ -57,3 +57,6 @@
 - [Графика с Raylib ★](appendix_a.md)
 - [Lwt и совместимость с экосистемой ★](appendix_b.md)
 - [Рекурсивные схемы ★](appendix_c.md)
+- [Конвенции OCaml](appendix_d.md)
+- [Инструменты: Dune, opam, ocamlformat](appendix_e.md)
+- [Стандартная библиотека OCaml](appendix_f.md)

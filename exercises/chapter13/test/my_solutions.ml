@@ -25,3 +25,16 @@ type _ Effect.t += Fail : string -> 'a Effect.t
 let run_fail (f : unit -> 'a) : ('a, string) result =
   ignore f;
   failwith "todo"
+
+(** Упражнение 5: Генератор квадратов. *)
+type _ Effect.t += Yield : int -> unit Effect.t
+
+let squares (_n : int) : int list =
+  failwith "todo"
+
+(** Упражнение 6: Async/await через эффекты. *)
+type _ Effect.t += Async : (unit -> 'a) -> 'a Effect.t
+
+let run_async (f : unit -> 'a) : 'a =
+  ignore f;
+  failwith "todo"

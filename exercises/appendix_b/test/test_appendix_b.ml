@@ -7,61 +7,61 @@ let lwt_tc name f =
 
 let basic_tests =
   [
-    lwt_tc "delay returns unit" (fun () ->
+    lwt_tc "при delay 0.01 возвращает unit" (fun () ->
       let open Lwt.Syntax in
       let* () = delay 0.01 in
-      Lwt.return (Alcotest.(check unit) "unit" () ()));
+      Lwt.return (Alcotest.(check unit) "result" () ()));
 
-    lwt_tc "sequence" (fun () ->
+    lwt_tc "при [1;2;3] sequence возвращает [1;2;3]" (fun () ->
       let open Lwt.Syntax in
       let* results = sequence [Lwt.return 1; Lwt.return 2; Lwt.return 3] in
-      Lwt.return (Alcotest.(check (list int)) "seq" [1; 2; 3] results));
+      Lwt.return (Alcotest.(check (list int)) "result" [1; 2; 3] results));
 
-    lwt_tc "parallel2" (fun () ->
+    lwt_tc "при двух промисах parallel2 возвращает пару" (fun () ->
       let open Lwt.Syntax in
       let* (a, b) = parallel2 (Lwt.return 1) (Lwt.return "hello") in
       Alcotest.(check int) "a" 1 a;
       Lwt.return (Alcotest.(check string) "b" "hello" b));
 
-    lwt_tc "race" (fun () ->
+    lwt_tc "при быстром и медленном race возвращает fast" (fun () ->
       let open Lwt.Syntax in
       let slow = let* () = delay 1.0 in Lwt.return "slow" in
       let fast = let* () = delay 0.01 in Lwt.return "fast" in
       let* winner = race fast slow in
-      Lwt.return (Alcotest.(check string) "winner" "fast" winner));
+      Lwt.return (Alcotest.(check string) "result" "fast" winner));
 
-    lwt_tc "parallel_delays" (fun () ->
+    lwt_tc "при двух задержках parallel_delays возвращает [first;second]" (fun () ->
       let open Lwt.Syntax in
       let* results = parallel_delays () in
-      Lwt.return (Alcotest.(check (list string)) "results" ["first"; "second"] results));
+      Lwt.return (Alcotest.(check (list string)) "result" ["first"; "second"] results));
 
-    lwt_tc "race_example" (fun () ->
+    lwt_tc "при race_example возвращает fast" (fun () ->
       let open Lwt.Syntax in
       let* result = race_example () in
-      Lwt.return (Alcotest.(check string) "fast" "fast" result));
+      Lwt.return (Alcotest.(check string) "result" "fast" result));
   ]
 
 (* --- Тесты упражнений --- *)
 
 let sequential_map_tests =
   [
-    lwt_tc "sequential_map identity" (fun () ->
+    lwt_tc "при identity fn и [1;2;3] возвращает [1;2;3]" (fun () ->
       let open Lwt.Syntax in
       let* results = My_solutions.sequential_map Lwt.return [1; 2; 3] in
-      Lwt.return (Alcotest.(check (list int)) "identity" [1; 2; 3] results));
+      Lwt.return (Alcotest.(check (list int)) "result" [1; 2; 3] results));
 
-    lwt_tc "sequential_map double" (fun () ->
+    lwt_tc "при fn*2 и [1;2;3] возвращает [2;4;6]" (fun () ->
       let open Lwt.Syntax in
       let* results = My_solutions.sequential_map
         (fun x -> Lwt.return (x * 2)) [1; 2; 3] in
-      Lwt.return (Alcotest.(check (list int)) "doubled" [2; 4; 6] results));
+      Lwt.return (Alcotest.(check (list int)) "result" [2; 4; 6] results));
 
-    lwt_tc "sequential_map empty" (fun () ->
+    lwt_tc "при пустом списке возвращает []" (fun () ->
       let open Lwt.Syntax in
       let* results = My_solutions.sequential_map Lwt.return [] in
-      Lwt.return (Alcotest.(check (list int)) "empty" [] results));
+      Lwt.return (Alcotest.(check (list int)) "result" [] results));
 
-    lwt_tc "sequential_map preserves order" (fun () ->
+    lwt_tc "при разных задержках сохраняет порядок обработки" (fun () ->
       let open Lwt.Syntax in
       let order = ref [] in
       let f x =
@@ -76,49 +76,49 @@ let sequential_map_tests =
 
 let concurrent_map_tests =
   [
-    lwt_tc "concurrent_map identity" (fun () ->
+    lwt_tc "при identity fn и [1;2;3] возвращает [1;2;3]" (fun () ->
       let open Lwt.Syntax in
       let* results = My_solutions.concurrent_map Lwt.return [1; 2; 3] in
-      Lwt.return (Alcotest.(check (list int)) "identity" [1; 2; 3] results));
+      Lwt.return (Alcotest.(check (list int)) "result" [1; 2; 3] results));
 
-    lwt_tc "concurrent_map double" (fun () ->
+    lwt_tc "при fn*2 и [1;2;3] возвращает [2;4;6]" (fun () ->
       let open Lwt.Syntax in
       let* results = My_solutions.concurrent_map
         (fun x -> Lwt.return (x * 2)) [1; 2; 3] in
-      Lwt.return (Alcotest.(check (list int)) "doubled" [2; 4; 6] results));
+      Lwt.return (Alcotest.(check (list int)) "result" [2; 4; 6] results));
 
-    lwt_tc "concurrent_map empty" (fun () ->
+    lwt_tc "при пустом списке возвращает []" (fun () ->
       let open Lwt.Syntax in
       let* results = My_solutions.concurrent_map Lwt.return [] in
-      Lwt.return (Alcotest.(check (list int)) "empty" [] results));
+      Lwt.return (Alcotest.(check (list int)) "result" [] results));
   ]
 
 let timeout_tests =
   [
-    lwt_tc "timeout succeeds" (fun () ->
+    lwt_tc "при быстром промисе возвращает Some 42" (fun () ->
       let open Lwt.Syntax in
       let* result = My_solutions.timeout 1.0 (Lwt.return 42) in
-      Lwt.return (Alcotest.(check (option int)) "some" (Some 42) result));
+      Lwt.return (Alcotest.(check (option int)) "result" (Some 42) result));
 
-    lwt_tc "timeout expires" (fun () ->
+    lwt_tc "при медленном промисе возвращает None" (fun () ->
       let open Lwt.Syntax in
       let slow =
         let* () = Lwt_unix.sleep 1.0 in
         Lwt.return 42
       in
       let* result = My_solutions.timeout 0.01 slow in
-      Lwt.return (Alcotest.(check (option int)) "none" None result));
+      Lwt.return (Alcotest.(check (option int)) "result" None result));
   ]
 
 let rate_limit_tests =
   [
-    lwt_tc "rate_limit all" (fun () ->
+    lwt_tc "при 5 задачах возвращает все результаты" (fun () ->
       let open Lwt.Syntax in
       let tasks = List.init 5 (fun i -> fun () -> Lwt.return i) in
       let* results = My_solutions.rate_limit 2 tasks in
-      Lwt.return (Alcotest.(check (list int)) "all" [0; 1; 2; 3; 4] results));
+      Lwt.return (Alcotest.(check (list int)) "result" [0; 1; 2; 3; 4] results));
 
-    lwt_tc "rate_limit respects limit" (fun () ->
+    lwt_tc "при limit=3 одновременно выполняет не более 3 задач" (fun () ->
       let open Lwt.Syntax in
       let running = ref 0 in
       let max_running = ref 0 in
@@ -130,17 +130,17 @@ let rate_limit_tests =
         Lwt.return i
       ) in
       let* results = My_solutions.rate_limit 3 tasks in
-      Alcotest.(check (list int)) "all results" [0; 1; 2; 3; 4; 5] results;
-      Lwt.return (Alcotest.(check bool) "max 3" true (!max_running <= 3)));
+      Alcotest.(check (list int)) "results" [0; 1; 2; 3; 4; 5] results;
+      Lwt.return (Alcotest.(check bool) "result" true (!max_running <= 3)));
 
-    lwt_tc "rate_limit empty" (fun () ->
+    lwt_tc "при пустом списке возвращает []" (fun () ->
       let open Lwt.Syntax in
       let* results = My_solutions.rate_limit 5 [] in
-      Lwt.return (Alcotest.(check (list int)) "empty" [] results));
+      Lwt.return (Alcotest.(check (list int)) "result" [] results));
   ]
 
 let () =
-  Alcotest.run "Chapter 17"
+  Alcotest.run "Appendix B"
     [
       ("basic --- базовые операции Lwt", basic_tests);
       ("sequential_map --- последовательный map", sequential_map_tests);

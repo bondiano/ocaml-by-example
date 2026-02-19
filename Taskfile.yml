@@ -1,0 +1,131 @@
+version: "3"
+
+vars:
+  EXERCISE_DIRS:
+    sh: find exercises/chapter* exercises/appendix_* -maxdepth 0 -type d 2>/dev/null | sort
+
+tasks:
+  default:
+    desc: Показать список задач
+    cmds:
+      - task --list
+
+  # ── Сборка ──────────────────────────────────────────────────────────────────
+
+  build:
+    desc: Собрать все упражнения и книгу
+    cmds:
+      - task: build:exercises
+      - task: build:book
+
+  build:exercises:
+    desc: Собрать все упражнения
+    cmds:
+      - |
+        for dir in exercises/chapter*/ exercises/appendix_*/; do
+          if [ -f "$dir/dune-project" ]; then
+            echo "==> Building $dir..."
+            (cd "$dir" && dune build)
+          fi
+        done
+
+  build:book:
+    desc: Собрать mdBook
+    cmds:
+      - mdbook build
+
+  # ── Тесты ───────────────────────────────────────────────────────────────────
+
+  test:
+    desc: Запустить все тесты (продолжать при ошибках)
+    cmds:
+      - |
+        failed=0
+        for dir in exercises/chapter*/ exercises/appendix_*/; do
+          if [ -f "$dir/dune-project" ]; then
+            echo "==> Testing $dir..."
+            (cd "$dir" && dune runtest) || { echo "FAILED: $dir"; failed=$((failed+1)); }
+          fi
+        done
+        if [ $failed -gt 0 ]; then
+          echo "==> $failed package(s) failed"
+          exit 1
+        fi
+        echo "==> All tests passed"
+
+  test:chapter:
+    desc: Запустить тесты конкретной главы (task test:chapter -- chapter04)
+    cmds:
+      - cd exercises/{{.CLI_ARGS}} && dune runtest
+
+  # ── Линтеры ─────────────────────────────────────────────────────────────────
+
+  lint:
+    desc: Запустить все линтеры
+    cmds:
+      - task: lint:ocaml
+      - task: lint:markdown
+
+  lint:ocaml:
+    desc: Проверить форматирование OCaml-кода (dune build @fmt)
+    cmds:
+      - |
+        for dir in exercises/chapter*/ exercises/appendix_*/; do
+          if [ -f "$dir/dune-project" ]; then
+            (cd "$dir" && dune build @fmt)
+          fi
+        done
+        echo "==> OCaml форматирование: OK"
+
+  lint:markdown:
+    desc: Проверить Markdown-файлы (markdownlint-cli2)
+    cmds:
+      - markdownlint-cli2 "text/**/*.md" "*.md"
+
+  # ── Форматирование ───────────────────────────────────────────────────────────
+
+  fmt:
+    desc: Отформатировать весь OCaml-код (dune build @fmt --auto-promote)
+    cmds:
+      - |
+        for dir in exercises/chapter*/ exercises/appendix_*/; do
+          if [ -f "$dir/dune-project" ]; then
+            (cd "$dir" && dune build @fmt --auto-promote)
+          fi
+        done
+        echo "==> OCaml-файлы отформатированы"
+
+  fmt:check:
+    desc: Проверить форматирование без изменений (alias для lint:ocaml)
+    cmds:
+      - task: lint:ocaml
+
+  # ── Очистка ──────────────────────────────────────────────────────────────────
+
+  clean:
+    desc: Удалить артефакты сборки (dune clean + output/)
+    cmds:
+      - |
+        for dir in exercises/chapter*/ exercises/appendix_*/; do
+          if [ -f "$dir/dune-project" ]; then
+            (cd "$dir" && dune clean)
+          fi
+        done
+      - rm -rf output
+      - echo "==> Очищено"
+
+  # ── Упражнения ──────────────────────────────────────────────────────────────
+
+  prepare:
+    desc: Сбросить my_solutions.ml во всех главах к заготовкам
+    cmds:
+      - ./scripts/prepare-exercises.sh
+
+  # ── CI ──────────────────────────────────────────────────────────────────────
+
+  ci:
+    desc: Полная проверка (lint + тесты + сборка книги)
+    cmds:
+      - task: lint
+      - task: test
+      - task: build:book

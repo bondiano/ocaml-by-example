@@ -1,0 +1,29 @@
+// Markdownlint configuration for OCaml by Example
+{
+  "config": {
+    // Disable line length check (book has long Russian sentences)
+    "MD013": false,
+    // Disable dollar sign check in code blocks (examples may use shell commands)
+    "MD014": false,
+    // Disable duplicate heading check (chapters may reuse heading names)
+    "MD024": false,
+    // Disable multiple H1 check for all files (mdBook uses multiple H1s in SUMMARY)
+    "MD025": false,
+    // Disable trailing punctuation in headings (Russian style allows it)
+    "MD026": false,
+    // Disable ordered list prefix requirements (allow any numbering style)
+    "MD029": false,
+    // Disable blank lines around fences check (too strict for this book)
+    "MD031": false,
+    // Disable blank lines around lists check (too strict for this book)
+    "MD032": false,
+    // Disable spaces in code spans (needed for Russian text examples)
+    "MD038": false,
+    // Disable language requirement for code blocks (some examples don't need it)
+    "MD040": false,
+    // Disable emphasis style check (allow both styles)
+    "MD049": false,
+    // Keep table column count check enabled
+    "MD056": true
+  }
+}

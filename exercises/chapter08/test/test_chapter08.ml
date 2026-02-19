@@ -27,26 +27,26 @@ let result_string_errors (type a) (ok_t : a Alcotest.testable) =
 let non_empty_tests =
   let open Alcotest in
   [
-    test_case "непустая строка --- Ok" `Quick (fun () ->
-      check (result unit string) "ok"
+    test_case "при непустой строке возвращает Ok" `Quick (fun () ->
+      check (result unit string) "result"
         (Ok ()) (non_empty "Поле" "hello"));
-    test_case "пустая строка --- Error" `Quick (fun () ->
-      check (result unit string) "error"
+    test_case "при пустой строке возвращает Error" `Quick (fun () ->
+      check (result unit string) "result"
         (Error "Поле не может быть пустым") (non_empty "Поле" ""));
-    test_case "пробелы --- Error" `Quick (fun () ->
-      check (result unit string) "spaces"
+    test_case "при строке из пробелов возвращает Error" `Quick (fun () ->
+      check (result unit string) "result"
         (Error "Поле не может быть пустым") (non_empty "Поле" "   "));
   ]
 
 let validate_all_tests =
   let open Alcotest in
   [
-    test_case "все проверки проходят" `Quick (fun () ->
-      check (result string string_list) "ok"
+    test_case "при прохождении всех проверок возвращает Ok" `Quick (fun () ->
+      check (result string string_list) "result"
         (Ok "hello")
         (validate_all [non_empty "F"] "hello"));
-    test_case "накопление ошибок" `Quick (fun () ->
-      check (result string string_list) "errors"
+    test_case "при нескольких нарушениях накапливает ошибки" `Quick (fun () ->
+      check (result string string_list) "result"
         (Error ["Поле не может быть пустым";
                 "Поле должен быть не короче 3 символов"])
         (validate_all [non_empty "Поле"; min_length "Поле" 3] ""));
@@ -55,30 +55,30 @@ let validate_all_tests =
 let validate_address_tests =
   let open Alcotest in
   [
-    test_case "валидный адрес" `Quick (fun () ->
-      check (result address_testable string_list) "ok"
+    test_case "при валидных полях возвращает Ok с адресом" `Quick (fun () ->
+      check (result address_testable string_list) "result"
         (Ok { street = "ул. Пушкина"; city = "Москва"; state = "Москва" })
         (validate_address "ул. Пушкина" "Москва" "Москва"));
-    test_case "все поля пустые" `Quick (fun () ->
+    test_case "при трёх пустых полях возвращает 3 ошибки" `Quick (fun () ->
       match validate_address "" "" "" with
-      | Error es -> check int "3 ошибки" 3 (List.length es)
+      | Error es -> check int "result" 3 (List.length es)
       | Ok _ -> fail "ожидалась ошибка");
   ]
 
 let conversion_tests =
   let open Alcotest in
   [
-    test_case "option_to_result Some" `Quick (fun () ->
-      check (result int string) "some"
+    test_case "при Some 42 возвращает Ok 42" `Quick (fun () ->
+      check (result int string) "result"
         (Ok 42) (option_to_result ~error:"err" (Some 42)));
-    test_case "option_to_result None" `Quick (fun () ->
-      check (result int string) "none"
+    test_case "при None возвращает Error" `Quick (fun () ->
+      check (result int string) "result"
         (Error "err") (option_to_result ~error:"err" None));
-    test_case "result_to_option Ok" `Quick (fun () ->
-      check (option int) "ok"
+    test_case "при Ok 42 возвращает Some 42" `Quick (fun () ->
+      check (option int) "result"
         (Some 42) (result_to_option (Ok 42)));
-    test_case "result_to_option Error" `Quick (fun () ->
-      check (option int) "error"
+    test_case "при Error возвращает None" `Quick (fun () ->
+      check (option int) "result"
         None (result_to_option (Error "err")));
   ]
 
@@ -87,52 +87,52 @@ let conversion_tests =
 let validate_phone_tests =
   let open Alcotest in
   [
-    test_case "валидный телефон" `Quick (fun () ->
-      check (result_string_errors string) "ok"
+    test_case "при \"1234567\" возвращает Ok" `Quick (fun () ->
+      check (result_string_errors string) "result"
         (Ok "1234567")
         (My_solutions.validate_phone "1234567"));
-    test_case "пустой телефон" `Quick (fun () ->
+    test_case "при пустой строке возвращает Error" `Quick (fun () ->
       match My_solutions.validate_phone "" with
       | Error es ->
-        check bool "есть ошибки" true (List.length es > 0)
+        check bool "result" true (List.length es > 0)
       | Ok _ -> Alcotest.fail "ожидалась ошибка");
-    test_case "буквы в телефоне" `Quick (fun () ->
+    test_case "при \"123abc\" возвращает Error о нецифровых символах" `Quick (fun () ->
       match My_solutions.validate_phone "123abc" with
       | Error es ->
-        check bool "есть ошибка о цифрах" true
+        check bool "result" true
           (List.exists (fun e -> String.length e > 0) es)
       | Ok _ -> Alcotest.fail "ожидалась ошибка");
-    test_case "слишком короткий телефон" `Quick (fun () ->
+    test_case "при \"123\" возвращает Error о недостаточной длине" `Quick (fun () ->
       match My_solutions.validate_phone "123" with
       | Error es ->
-        check bool "есть ошибка о длине" true (List.length es > 0)
+        check bool "result" true (List.length es > 0)
       | Ok _ -> Alcotest.fail "ожидалась ошибка");
-    test_case "все ошибки сразу" `Quick (fun () ->
+    test_case "при пустой строке возвращает несколько ошибок" `Quick (fun () ->
       match My_solutions.validate_phone "" with
       | Error es ->
-        check bool "множественные ошибки" true (List.length es >= 2)
+        check bool "result" true (List.length es >= 2)
       | Ok _ -> Alcotest.fail "ожидалась ошибка");
   ]
 
 let validate_person_tests =
   let open Alcotest in
   [
-    test_case "валидная персона" `Quick (fun () ->
-      check (result_string_errors person_testable) "ok"
+    test_case "при валидных полях возвращает Ok с персоной" `Quick (fun () ->
+      check (result_string_errors person_testable) "result"
         (Ok { first_name = "Иван"; last_name = "Петров";
               address = { street = "ул. Пушкина"; city = "Москва";
                           state = "Москва" } })
         (My_solutions.validate_person
            "Иван" "Петров" "ул. Пушкина" "Москва" "Москва"));
-    test_case "все поля пустые" `Quick (fun () ->
+    test_case "при пяти пустых полях возвращает не менее 5 ошибок" `Quick (fun () ->
       match My_solutions.validate_person "" "" "" "" "" with
       | Error es ->
-        check bool "5 ошибок" true (List.length es >= 5)
+        check bool "result" true (List.length es >= 5)
       | Ok _ -> Alcotest.fail "ожидалась ошибка");
-    test_case "пустое имя" `Quick (fun () ->
+    test_case "при пустом имени возвращает не менее 1 ошибки" `Quick (fun () ->
       match My_solutions.validate_person "" "Петров" "ул. Пушкина" "Москва" "Москва" with
       | Error es ->
-        check bool "1 ошибка" true (List.length es >= 1)
+        check bool "result" true (List.length es >= 1)
       | Ok _ -> Alcotest.fail "ожидалась ошибка");
   ]
 
@@ -144,16 +144,16 @@ let traverse_result_tests =
     | None -> Error ("не число: " ^ x)
   in
   [
-    test_case "все Ok" `Quick (fun () ->
-      check (result (list int) (list string)) "all ok"
+    test_case "при [\"1\";\"2\";\"3\"] возвращает Ok [1;2;3]" `Quick (fun () ->
+      check (result (list int) (list string)) "result"
         (Ok [1; 2; 3])
         (My_solutions.traverse_result parse ["1"; "2"; "3"]));
-    test_case "есть ошибки" `Quick (fun () ->
-      check (result (list int) (list string)) "errors"
+    test_case "при [\"a\";\"2\";\"c\"] возвращает ошибки для нечисел" `Quick (fun () ->
+      check (result (list int) (list string)) "result"
         (Error ["не число: a"; "не число: c"])
         (My_solutions.traverse_result parse ["a"; "2"; "c"]));
-    test_case "пустой список" `Quick (fun () ->
-      check (result (list int) (list string)) "empty"
+    test_case "при пустом списке возвращает Ok []" `Quick (fun () ->
+      check (result (list int) (list string)) "result"
         (Ok [])
         (My_solutions.traverse_result parse []));
   ]
@@ -161,20 +161,20 @@ let traverse_result_tests =
 let option_result_tests =
   let open Alcotest in
   [
-    test_case "option_to_result Some" `Quick (fun () ->
-      check (result int string) "some"
+    test_case "при Some 42 возвращает Ok 42" `Quick (fun () ->
+      check (result int string) "result"
         (Ok 42)
         (My_solutions.option_to_result ~error:"err" (Some 42)));
-    test_case "option_to_result None" `Quick (fun () ->
-      check (result int string) "none"
+    test_case "при None возвращает Error" `Quick (fun () ->
+      check (result int string) "result"
         (Error "err")
         (My_solutions.option_to_result ~error:"err" None));
-    test_case "result_to_option Ok" `Quick (fun () ->
-      check (option int) "ok"
+    test_case "при Ok 42 возвращает Some 42" `Quick (fun () ->
+      check (option int) "result"
         (Some 42)
         (My_solutions.result_to_option (Ok 42)));
-    test_case "result_to_option Error" `Quick (fun () ->
-      check (option int) "error"
+    test_case "при Error возвращает None" `Quick (fun () ->
+      check (option int) "result"
         None
         (My_solutions.result_to_option (Error "err")));
   ]
@@ -182,43 +182,43 @@ let option_result_tests =
 let isbn_tests =
   let open Alcotest in
   [
-    test_case "валидный ISBN" `Quick (fun () ->
-      check bool "valid" true
+    test_case "при \"3-598-21508-8\" возвращает true" `Quick (fun () ->
+      check bool "result" true
         (My_solutions.isbn_verifier "3-598-21508-8"));
-    test_case "невалидный ISBN" `Quick (fun () ->
-      check bool "invalid" false
+    test_case "при \"3-598-21508-9\" возвращает false" `Quick (fun () ->
+      check bool "result" false
         (My_solutions.isbn_verifier "3-598-21508-9"));
-    test_case "ISBN с X" `Quick (fun () ->
-      check bool "with X" true
+    test_case "при ISBN с X на последней позиции возвращает true" `Quick (fun () ->
+      check bool "result" true
         (My_solutions.isbn_verifier "3-598-21507-X"));
   ]
 
 let luhn_tests =
   let open Alcotest in
   [
-    test_case "валидный номер" `Quick (fun () ->
-      check bool "valid" true (My_solutions.luhn "4539 3195 0343 6467"));
-    test_case "невалидный номер" `Quick (fun () ->
-      check bool "invalid" false (My_solutions.luhn "8273 1232 7352 0569"));
-    test_case "одна цифра" `Quick (fun () ->
-      check bool "single" false (My_solutions.luhn "0"));
-    test_case "с пробелами" `Quick (fun () ->
-      check bool "spaces" true (My_solutions.luhn "0 0 0"));
+    test_case "при \"4539 3195 0343 6467\" возвращает true" `Quick (fun () ->
+      check bool "result" true (My_solutions.luhn "4539 3195 0343 6467"));
+    test_case "при \"8273 1232 7352 0569\" возвращает false" `Quick (fun () ->
+      check bool "result" false (My_solutions.luhn "8273 1232 7352 0569"));
+    test_case "при одной цифре \"0\" возвращает false" `Quick (fun () ->
+      check bool "result" false (My_solutions.luhn "0"));
+    test_case "при \"0 0 0\" возвращает true" `Quick (fun () ->
+      check bool "result" true (My_solutions.luhn "0 0 0"));
   ]
 
 let composable_error_tests =
   let open Alcotest in
   let open Chapter08.Validation in
   [
-    test_case "parse и validate — Ok" `Quick (fun () ->
+    test_case "при \"hello\" возвращает Ok" `Quick (fun () ->
       match process_input "hello" with
       | Ok _ -> ()
       | Error _ -> fail "ожидался Ok");
-    test_case "parse error — syntax" `Quick (fun () ->
+    test_case "при пустой строке возвращает SyntaxError" `Quick (fun () ->
       match process_input "" with
       | Error (`SyntaxError _) -> ()
       | _ -> fail "ожидалась SyntaxError");
-    test_case "validate error — too short" `Quick (fun () ->
+    test_case "при \"x\" возвращает TooShort" `Quick (fun () ->
       match process_input "x" with
       | Error (`TooShort _) -> ()
       | _ -> fail "ожидалась TooShort");

@@ -109,3 +109,16 @@ let math_sqrt = Float.sqrt
 let math_ceil = ceil
 let math_floor = floor
 let math_pow base exp = base ** exp
+
+(** === Привязки к lib/stubs.c ===
+    Эти три функции реализованы на C в lib/stubs.c и демонстрируют OCaml C API.
+    В упражнениях 5–7 вы напишете их привязки самостоятельно. *)
+
+(** Количество вхождений символа в строку. *)
+external count_char : string -> char -> int = "caml_count_char"
+
+(** Повторить строку [n] раз. При [n <= 0] возвращает [""]. *)
+external raw_str_repeat : string -> int -> string = "caml_str_repeat"
+
+(** Сумма элементов массива. *)
+external sum_int_array : int array -> int = "caml_sum_int_array"

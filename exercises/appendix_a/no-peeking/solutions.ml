@@ -1,30 +1,71 @@
-(** Референсные решения --- не подсматривайте, пока не попробуете сами! *)
+(** Референсные решения — не подсматривайте, пока не попробуете сами! *)
+
 open Appendix_a.Game
 
-(** Отражение вектора от горизонтальной поверхности (инвертируем y). *)
-let reflect_horizontal (v : vec2) : vec2 =
-  { x = v.x; y = -. v.y }
+(** Упражнение 1: двигаем паддл с ограничением по экрану. *)
+let move_paddle (st : state) (dx : float) : state =
+  let new_x = clamp (st.paddle.x +. dx) 0.0 (st.screen_w -. st.paddle.w) in
+  { st with paddle = { st.paddle with x = new_x } }
 
-(** Отражение вектора от вертикальной поверхности (инвертируем x). *)
-let reflect_vertical (v : vec2) : vec2 =
-  { x = -. v.x; y = v.y }
+(** Упражнение 2: шаг мяча — движение и отражение от стен. *)
+let step_ball (st : state) : ball * bool =
+  let b = st.ball in
+  let np = vec2_add b.pos b.vel in
+  let vx =
+    if np.x -. b.radius < 0.0 || np.x +. b.radius > st.screen_w
+    then -. b.vel.x
+    else b.vel.x
+  in
+  let vy =
+    if np.y -. b.radius < 0.0
+    then -. b.vel.y
+    else b.vel.y
+  in
+  let fell = np.y +. b.radius > st.screen_h in
+  let new_ball = { b with pos = vec2_add b.pos { x = vx; y = vy }; vel = { x = vx; y = vy } } in
+  (new_ball, fell)
 
-(** Столкновение круга с прямоугольником. *)
-let circle_rect_collide (c : circle) (r : rect) : bool =
-  let closest_x = Float.max r.rx (Float.min c.center.x (r.rx +. r.rw)) in
-  let closest_y = Float.max r.ry (Float.min c.center.y (r.ry +. r.rh)) in
-  let dx = c.center.x -. closest_x in
-  let dy = c.center.y -. closest_y in
-  (dx *. dx +. dy *. dy) <= c.radius *. c.radius
+(** Упражнение 3: простое отражение от паддла (инвертируем vy). *)
+let paddle_deflects_ball (st : state) : ball option =
+  let p = st.paddle in
+  let b = st.ball in
+  if rect_hits_ball ~bx:p.x ~by:p.y ~bw:p.w ~bh:p.h b && b.vel.y > 0.0 then
+    Some { b with vel = { b.vel with y = -. Float.abs b.vel.y } }
+  else
+    None
 
-(** Обновление entity с гравитацией. *)
-type entity = {
-  pos : vec2;
-  vel : vec2;
-  gravity : float;
-}
+(** Упражнение 4: убираем кирпичи, задетые мячом. *)
+let remove_hit_bricks (st : state) : brick list * int =
+  List.fold_left
+    (fun (acc, pts) br ->
+      if rect_hits_ball ~bx:br.x ~by:br.y ~bw:br.w ~bh:br.h st.ball
+      then (acc, pts + br.points)
+      else (br :: acc, pts))
+    ([], 0)
+    st.bricks
 
-let update_entity (dt : float) (e : entity) : entity =
-  let new_vel = { x = e.vel.x; y = e.vel.y +. e.gravity *. dt } in
-  let new_pos = vec2_add e.pos (vec2_scale dt new_vel) in
-  { e with pos = new_pos; vel = new_vel }
+(** Упражнение 5: полный игровой шаг. *)
+let step_game (st : state) (dx : float) : state =
+  if st.phase <> Playing then st
+  else
+    let st = move_paddle st dx in
+    let (new_ball, fell) = step_ball st in
+    let st = { st with ball = new_ball } in
+    let st =
+      match paddle_deflects_ball st with
+      | Some b -> { st with ball = b }
+      | None -> st
+    in
+    let (new_bricks, pts) = remove_hit_bricks st in
+    let st = { st with bricks = new_bricks; score = st.score + pts } in
+    if fell then
+      let lives = st.lives - 1 in
+      if lives <= 0 then
+        { st with lives = 0; phase = Lost }
+      else
+        let reset = initial_state ~screen_w:st.screen_w ~screen_h:st.screen_h in
+        { st with lives; ball = reset.ball }
+    else if st.bricks = [] then
+      { st with phase = Won }
+    else
+      st

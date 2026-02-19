@@ -12,41 +12,41 @@ let record_testable : record Alcotest.testable =
 let store_tests =
   let open Alcotest in
   [
-    test_case "создание пустого хранилища" `Quick (fun () ->
+    test_case "при создании хранилища возвращает count=0" `Quick (fun () ->
       let s = create_store () in
-      check int "count" 0 (count s));
-    test_case "добавление записей" `Quick (fun () ->
+      check int "result" 0 (count s));
+    test_case "при добавлении двух записей возвращает корректные id и count" `Quick (fun () ->
       let s = create_store () in
       let r1 = add_record s ~name:"host" ~value:"localhost" in
       let r2 = add_record s ~name:"port" ~value:"8080" in
       check int "r1.id" 1 r1.id;
       check int "r2.id" 2 r2.id;
       check int "count" 2 (count s));
-    test_case "поиск записи" `Quick (fun () ->
+    test_case "при поиске по id=1 возвращает запись, по id=99 — None" `Quick (fun () ->
       let s = create_store () in
       let _ = add_record s ~name:"key" ~value:"val" in
-      check (option record_testable) "found"
+      check (option record_testable) "result"
         (Some { id = 1; name = "key"; value = "val" })
         (find_record s 1);
-      check (option record_testable) "not found"
+      check (option record_testable) "result"
         None (find_record s 99));
-    test_case "удаление записи" `Quick (fun () ->
+    test_case "при удалении записи возвращает count=1 и None для удалённой" `Quick (fun () ->
       let s = create_store () in
       let _ = add_record s ~name:"a" ~value:"1" in
       let _ = add_record s ~name:"b" ~value:"2" in
       remove_record s 1;
-      check int "count after remove" 1 (count s);
-      check (option record_testable) "removed"
+      check int "result" 1 (count s);
+      check (option record_testable) "result"
         None (find_record s 1));
-    test_case "all_records в порядке добавления" `Quick (fun () ->
+    test_case "при двух записях возвращает their в порядке добавления" `Quick (fun () ->
       let s = create_store () in
       let _ = add_record s ~name:"first" ~value:"1" in
       let _ = add_record s ~name:"second" ~value:"2" in
       let names = all_records s |> List.map (fun r -> r.name) in
-      check (list string) "order" ["first"; "second"] names);
-    test_case "show_record" `Quick (fun () ->
+      check (list string) "result" ["first"; "second"] names);
+    test_case "при id=1 name=\"host\" value=\"localhost\" возвращает \"[1] host = localhost\"" `Quick (fun () ->
       let r = { id = 1; name = "host"; value = "localhost" } in
-      check string "show" "[1] host = localhost" (show_record r));
+      check string "result" "[1] host = localhost" (show_record r));
   ]
 
 (* --- Тесты упражнений --- *)
@@ -54,77 +54,77 @@ let store_tests =
 let counter_tests =
   let open Alcotest in
   [
-    test_case "создание счётчика" `Quick (fun () ->
+    test_case "при counter_create 0 возвращает 0" `Quick (fun () ->
       let c = My_solutions.counter_create 0 in
-      check int "init" 0 (My_solutions.counter_value c));
-    test_case "создание с начальным значением" `Quick (fun () ->
+      check int "result" 0 (My_solutions.counter_value c));
+    test_case "при counter_create 10 возвращает 10" `Quick (fun () ->
       let c = My_solutions.counter_create 10 in
-      check int "init 10" 10 (My_solutions.counter_value c));
-    test_case "increment" `Quick (fun () ->
+      check int "result" 10 (My_solutions.counter_value c));
+    test_case "при трёх increment возвращает 3" `Quick (fun () ->
       let c = My_solutions.counter_create 0 in
       My_solutions.counter_increment c;
       My_solutions.counter_increment c;
       My_solutions.counter_increment c;
-      check int "after 3 increments" 3 (My_solutions.counter_value c));
-    test_case "decrement" `Quick (fun () ->
+      check int "result" 3 (My_solutions.counter_value c));
+    test_case "при двух decrement из 5 возвращает 3" `Quick (fun () ->
       let c = My_solutions.counter_create 5 in
       My_solutions.counter_decrement c;
       My_solutions.counter_decrement c;
-      check int "after 2 decrements" 3 (My_solutions.counter_value c));
-    test_case "reset" `Quick (fun () ->
+      check int "result" 3 (My_solutions.counter_value c));
+    test_case "при reset после двух increment возвращает 0" `Quick (fun () ->
       let c = My_solutions.counter_create 0 in
       My_solutions.counter_increment c;
       My_solutions.counter_increment c;
       My_solutions.counter_reset c;
-      check int "after reset" 0 (My_solutions.counter_value c));
+      check int "result" 0 (My_solutions.counter_value c));
   ]
 
 let logger_tests =
   let open Alcotest in
   [
-    test_case "создание логгера" `Quick (fun () ->
+    test_case "при создании логгера возвращает count=0" `Quick (fun () ->
       let l = My_solutions.logger_create () in
-      check int "empty" 0 (My_solutions.logger_count l));
-    test_case "добавление сообщений" `Quick (fun () ->
+      check int "result" 0 (My_solutions.logger_count l));
+    test_case "при двух сообщениях возвращает их в порядке добавления" `Quick (fun () ->
       let l = My_solutions.logger_create () in
       My_solutions.logger_log l "first";
       My_solutions.logger_log l "second";
-      check (list string) "messages"
+      check (list string) "result"
         ["first"; "second"]
         (My_solutions.logger_messages l));
-    test_case "count" `Quick (fun () ->
+    test_case "при трёх сообщениях возвращает count=3" `Quick (fun () ->
       let l = My_solutions.logger_create () in
       My_solutions.logger_log l "a";
       My_solutions.logger_log l "b";
       My_solutions.logger_log l "c";
-      check int "count" 3 (My_solutions.logger_count l));
-    test_case "clear" `Quick (fun () ->
+      check int "result" 3 (My_solutions.logger_count l));
+    test_case "при clear возвращает count=0 и пустой список" `Quick (fun () ->
       let l = My_solutions.logger_create () in
       My_solutions.logger_log l "msg";
       My_solutions.logger_clear l;
-      check int "after clear" 0 (My_solutions.logger_count l);
-      check (list string) "empty messages" []
+      check int "result" 0 (My_solutions.logger_count l);
+      check (list string) "result" []
         (My_solutions.logger_messages l));
   ]
 
 let format_table_tests =
   let open Alcotest in
   [
-    test_case "таблица из двух строк" `Quick (fun () ->
+    test_case "при двух строках возвращает две строки с разделителем" `Quick (fun () ->
       let result = My_solutions.format_table
         [("Имя", "Иван"); ("Город", "Москва")] in
       let lines = String.split_on_char '\n' result in
-      check int "две строки" 2 (List.length lines);
-      check bool "содержит Иван" true
+      check int "result" 2 (List.length lines);
+      check bool "result" true
         (List.exists (fun l -> String.contains l '|') lines));
-    test_case "содержит разделитель |" `Quick (fun () ->
+    test_case "при одной записи возвращает строку с '|'" `Quick (fun () ->
       let result = My_solutions.format_table
         [("key", "value")] in
-      check bool "has |" true
+      check bool "result" true
         (String.contains result '|'));
-    test_case "пустой список" `Quick (fun () ->
-      check string "empty" "" (My_solutions.format_table []));
-    test_case "выравнивание" `Quick (fun () ->
+    test_case "при пустом списке возвращает \"\"" `Quick (fun () ->
+      check string "result" "" (My_solutions.format_table []));
+    test_case "при разных длинах ключей возвращает выровненные столбцы" `Quick (fun () ->
       let result = My_solutions.format_table
         [("a", "1"); ("longer_key", "2")] in
       let lines = String.split_on_char '\n' result in
@@ -136,33 +136,33 @@ let format_table_tests =
       match pipe_positions with
       | [] -> Alcotest.fail "нет разделителей"
       | p :: rest ->
-        check bool "все | на одной позиции" true
+        check bool "result" true
           (List.for_all (fun x -> x = p) rest));
   ]
 
 let array_sum_tests =
   let open Alcotest in
   [
-    test_case "сумма массива" `Quick (fun () ->
-      check int "sum" 15
+    test_case "при [|1;2;3;4;5|] возвращает 15" `Quick (fun () ->
+      check int "result" 15
         (My_solutions.array_sum_imperative [| 1; 2; 3; 4; 5 |]));
-    test_case "пустой массив" `Quick (fun () ->
-      check int "empty" 0
+    test_case "при пустом массиве возвращает 0" `Quick (fun () ->
+      check int "result" 0
         (My_solutions.array_sum_imperative [| |]));
-    test_case "один элемент" `Quick (fun () ->
-      check int "single" 42
+    test_case "при [|42|] возвращает 42" `Quick (fun () ->
+      check int "result" 42
         (My_solutions.array_sum_imperative [| 42 |]));
-    test_case "отрицательные числа" `Quick (fun () ->
-      check int "negative" (-3)
+    test_case "при [|1;-2;3;-4;-1|] возвращает -3" `Quick (fun () ->
+      check int "result" (-3)
         (My_solutions.array_sum_imperative [| 1; -2; 3; -4; -1 |]));
   ]
 
 let gc_stats_tests =
   let open Alcotest in
   [
-    test_case "gc_stats возвращает строку" `Quick (fun () ->
+    test_case "при вызове gc_stats возвращает непустую строку" `Quick (fun () ->
       let stats = Chapter09.Records.gc_stats () in
-      check bool "содержит Minor" true
+      check bool "result" true
         (String.length stats > 0));
   ]
 
@@ -170,108 +170,108 @@ let weak_cache_tests =
   let open Alcotest in
   let open Chapter09.Records.WeakCache in
   [
-    test_case "set и get" `Quick (fun () ->
+    test_case "при set 0 42 и get 0 возвращает Some 42" `Quick (fun () ->
       let cache = create 10 in
       set cache 0 42;
-      check (option int) "get 0" (Some 42) (get cache 0));
-    test_case "пустой слот" `Quick (fun () ->
+      check (option int) "result" (Some 42) (get cache 0));
+    test_case "при get из пустого слота возвращает None" `Quick (fun () ->
       let cache = create 10 in
-      check (option int) "get empty" None (get cache 0));
-    test_case "clear" `Quick (fun () ->
+      check (option int) "result" None (get cache 0));
+    test_case "при clear возвращает None для очищенного слота" `Quick (fun () ->
       let cache = create 10 in
       set cache 0 42;
       clear cache;
-      check (option int) "cleared" None (get cache 0));
+      check (option int) "result" None (get cache 0));
   ]
 
 let robot_tests =
   let open Alcotest in
   [
-    test_case "робот имеет имя" `Quick (fun () ->
+    test_case "при create возвращает имя длиной 5" `Quick (fun () ->
       let robot = My_solutions.Robot.create () in
       let name = My_solutions.Robot.name robot in
-      check bool "длина имени 5" true (String.length name = 5));
-    test_case "имя начинается с 2 букв" `Quick (fun () ->
+      check bool "result" true (String.length name = 5));
+    test_case "при create первые два символа имени — заглавные буквы" `Quick (fun () ->
       let robot = My_solutions.Robot.create () in
       let name = My_solutions.Robot.name robot in
-      check bool "буква 0" true (name.[0] >= 'A' && name.[0] <= 'Z');
-      check bool "буква 1" true (name.[1] >= 'A' && name.[1] <= 'Z'));
-    test_case "имя заканчивается 3 цифрами" `Quick (fun () ->
+      check bool "result" true (name.[0] >= 'A' && name.[0] <= 'Z');
+      check bool "result" true (name.[1] >= 'A' && name.[1] <= 'Z'));
+    test_case "при create последние три символа имени — цифры" `Quick (fun () ->
       let robot = My_solutions.Robot.create () in
       let name = My_solutions.Robot.name robot in
-      check bool "цифра 2" true (name.[2] >= '0' && name.[2] <= '9');
-      check bool "цифра 3" true (name.[3] >= '0' && name.[3] <= '9');
-      check bool "цифра 4" true (name.[4] >= '0' && name.[4] <= '9'));
-    test_case "два робота — разные имена" `Quick (fun () ->
+      check bool "result" true (name.[2] >= '0' && name.[2] <= '9');
+      check bool "result" true (name.[3] >= '0' && name.[3] <= '9');
+      check bool "result" true (name.[4] >= '0' && name.[4] <= '9'));
+    test_case "при двух create возвращает разные имена" `Quick (fun () ->
       let r1 = My_solutions.Robot.create () in
       let r2 = My_solutions.Robot.create () in
-      check bool "different" true
+      check bool "result" true
         (My_solutions.Robot.name r1 <> My_solutions.Robot.name r2));
   ]
 
 let lru_tests =
   let open Alcotest in
   [
-    test_case "put и get" `Quick (fun () ->
+    test_case "при put \"a\" 1 и get \"a\" возвращает Some 1" `Quick (fun () ->
       let cache = My_solutions.LRU.create 3 in
       My_solutions.LRU.put cache "a" 1;
-      check (option int) "get a" (Some 1) (My_solutions.LRU.get cache "a"));
-    test_case "вытеснение" `Quick (fun () ->
+      check (option int) "result" (Some 1) (My_solutions.LRU.get cache "a"));
+    test_case "при переполнении вытесняет наименее используемый элемент" `Quick (fun () ->
       let cache = My_solutions.LRU.create 2 in
       My_solutions.LRU.put cache "a" 1;
       My_solutions.LRU.put cache "b" 2;
       My_solutions.LRU.put cache "c" 3;
-      check (option int) "a вытеснена" None (My_solutions.LRU.get cache "a");
-      check (option int) "c есть" (Some 3) (My_solutions.LRU.get cache "c"));
-    test_case "size" `Quick (fun () ->
+      check (option int) "result" None (My_solutions.LRU.get cache "a");
+      check (option int) "result" (Some 3) (My_solutions.LRU.get cache "c"));
+    test_case "при двух элементах возвращает size=2" `Quick (fun () ->
       let cache = My_solutions.LRU.create 3 in
       My_solutions.LRU.put cache "a" 1;
       My_solutions.LRU.put cache "b" 2;
-      check int "size" 2 (My_solutions.LRU.size cache));
+      check int "result" 2 (My_solutions.LRU.size cache));
   ]
 
 let logger_fcis_tests =
   let open Alcotest in
   [
-    test_case "LoggerPure.add" `Quick (fun () ->
+    test_case "при LoggerPure.add [] \"hello\" возвращает [\"hello\"]" `Quick (fun () ->
       let msgs = My_solutions.LoggerPure.add [] "hello" in
-      check (list string) "one msg" ["hello"]
+      check (list string) "result" ["hello"]
         (My_solutions.LoggerPure.messages msgs));
-    test_case "LoggerPure.count" `Quick (fun () ->
+    test_case "при двух добавлениях LoggerPure.count возвращает 2" `Quick (fun () ->
       let msgs = My_solutions.LoggerPure.add
           (My_solutions.LoggerPure.add [] "a") "b" in
-      check int "count" 2 (My_solutions.LoggerPure.count msgs));
-    test_case "LoggerShell create и log" `Quick (fun () ->
+      check int "result" 2 (My_solutions.LoggerPure.count msgs));
+    test_case "при LoggerShell.log двух сообщений возвращает их в порядке добавления" `Quick (fun () ->
       let l = My_solutions.LoggerShell.create () in
       My_solutions.LoggerShell.log l "first";
       My_solutions.LoggerShell.log l "second";
-      check (list string) "messages" ["first"; "second"]
+      check (list string) "result" ["first"; "second"]
         (My_solutions.LoggerShell.messages l));
-    test_case "LoggerShell count и clear" `Quick (fun () ->
+    test_case "при LoggerShell.clear возвращает count=0" `Quick (fun () ->
       let l = My_solutions.LoggerShell.create () in
       My_solutions.LoggerShell.log l "a";
       My_solutions.LoggerShell.log l "b";
-      check int "count" 2 (My_solutions.LoggerShell.count l);
+      check int "result" 2 (My_solutions.LoggerShell.count l);
       My_solutions.LoggerShell.clear l;
-      check int "after clear" 0 (My_solutions.LoggerShell.count l));
+      check int "result" 0 (My_solutions.LoggerShell.count l));
   ]
 
 let bowling_tests =
   let open Alcotest in
   [
-    test_case "все нули" `Quick (fun () ->
+    test_case "при 20 бросках по 0 возвращает score=0" `Quick (fun () ->
       let game = My_solutions.Bowling.create () in
       for _ = 1 to 20 do
         ignore (My_solutions.Bowling.roll game 0)
       done;
-      check int "score" 0 (My_solutions.Bowling.score game));
-    test_case "все единицы" `Quick (fun () ->
+      check int "result" 0 (My_solutions.Bowling.score game));
+    test_case "при 20 бросках по 1 возвращает score=20" `Quick (fun () ->
       let game = My_solutions.Bowling.create () in
       for _ = 1 to 20 do
         ignore (My_solutions.Bowling.roll game 1)
       done;
-      check int "score" 20 (My_solutions.Bowling.score game));
-    test_case "один spare" `Quick (fun () ->
+      check int "result" 20 (My_solutions.Bowling.score game));
+    test_case "при spare 5+5 и следующем броске 3 возвращает score=16" `Quick (fun () ->
       let game = My_solutions.Bowling.create () in
       ignore (My_solutions.Bowling.roll game 5);
       ignore (My_solutions.Bowling.roll game 5);
@@ -279,8 +279,8 @@ let bowling_tests =
       for _ = 1 to 17 do
         ignore (My_solutions.Bowling.roll game 0)
       done;
-      check int "score" 16 (My_solutions.Bowling.score game));
-    test_case "один strike" `Quick (fun () ->
+      check int "result" 16 (My_solutions.Bowling.score game));
+    test_case "при strike и следующих бросках 3+4 возвращает score=24" `Quick (fun () ->
       let game = My_solutions.Bowling.create () in
       ignore (My_solutions.Bowling.roll game 10);
       ignore (My_solutions.Bowling.roll game 3);
@@ -288,13 +288,13 @@ let bowling_tests =
       for _ = 1 to 16 do
         ignore (My_solutions.Bowling.roll game 0)
       done;
-      check int "score" 24 (My_solutions.Bowling.score game));
-    test_case "perfect game" `Quick (fun () ->
+      check int "result" 24 (My_solutions.Bowling.score game));
+    test_case "при 12 страйках возвращает score=300" `Quick (fun () ->
       let game = My_solutions.Bowling.create () in
       for _ = 1 to 12 do
         ignore (My_solutions.Bowling.roll game 10)
       done;
-      check int "score" 300 (My_solutions.Bowling.score game));
+      check int "result" 300 (My_solutions.Bowling.score game));
   ]
 
 let () =

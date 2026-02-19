@@ -19,21 +19,21 @@ let string_contains haystack needle =
 let helper_tests =
   let open Alcotest in
   [
-    test_case "gcd 12 8" `Quick (fun () ->
+    test_case "при gcd 12 8 возвращает 4" `Quick (fun () ->
       check int "gcd" 4 (gcd 12 8));
-    test_case "gcd 7 3" `Quick (fun () ->
+    test_case "при gcd 7 3 возвращает 1" `Quick (fun () ->
       check int "gcd" 1 (gcd 7 3));
-    test_case "gcd 100 25" `Quick (fun () ->
+    test_case "при gcd 100 25 возвращает 25" `Quick (fun () ->
       check int "gcd" 25 (gcd 100 25));
-    test_case "is_prime 2" `Quick (fun () ->
+    test_case "при простом числе 2 возвращает true" `Quick (fun () ->
       check bool "prime" true (is_prime 2));
-    test_case "is_prime 7" `Quick (fun () ->
+    test_case "при простом числе 7 возвращает true" `Quick (fun () ->
       check bool "prime" true (is_prime 7));
-    test_case "is_prime 4" `Quick (fun () ->
+    test_case "при составном числе 4 возвращает false" `Quick (fun () ->
       check bool "not prime" false (is_prime 4));
-    test_case "is_prime 1" `Quick (fun () ->
+    test_case "при числе 1 возвращает false" `Quick (fun () ->
       check bool "not prime" false (is_prime 1));
-    test_case "random_int range" `Quick (fun () ->
+    test_case "при диапазоне [5, 10] возвращает число в диапазоне" `Quick (fun () ->
       Random.self_init ();
       let n = random_int 5 10 in
       check bool "in range" true (n >= 5 && n <= 10));
@@ -42,27 +42,27 @@ let helper_tests =
 let game_structure_tests =
   let open Alcotest in
   [
-    test_case "even_game generates round" `Quick (fun () ->
+    test_case "при генерации раунда even_game возвращает yes или no" `Quick (fun () ->
       Random.self_init ();
       let r = even_game.generate_round () in
       check bool "answer is yes or no" true
         (r.correct_answer = "yes" || r.correct_answer = "no"));
-    test_case "calc_game generates round" `Quick (fun () ->
+    test_case "при генерации раунда calc_game возвращает число" `Quick (fun () ->
       Random.self_init ();
       let r = calc_game.generate_round () in
       check bool "answer is a number" true
         (match int_of_string_opt r.correct_answer with Some _ -> true | None -> false));
-    test_case "gcd_game generates round" `Quick (fun () ->
+    test_case "при генерации раунда gcd_game возвращает число" `Quick (fun () ->
       Random.self_init ();
       let r = gcd_game.generate_round () in
       check bool "answer is a number" true
         (match int_of_string_opt r.correct_answer with Some _ -> true | None -> false));
-    test_case "progression_game generates round" `Quick (fun () ->
+    test_case "при генерации раунда progression_game содержит .." `Quick (fun () ->
       Random.self_init ();
       let r = progression_game.generate_round () in
       check bool "question has .." true
         (string_contains r.question ".."));
-    test_case "prime_game generates round" `Quick (fun () ->
+    test_case "при генерации раунда prime_game возвращает yes или no" `Quick (fun () ->
       Random.self_init ();
       let r = prime_game.generate_round () in
       check bool "answer is yes or no" true
@@ -74,12 +74,12 @@ let game_structure_tests =
 let balance_game_tests =
   let open Alcotest in
   [
-    test_case "balance_game generates round" `Quick (fun () ->
+    test_case "при генерации раунда возвращает +, - или *" `Quick (fun () ->
       Random.self_init ();
       let r = My_solutions.balance_game.generate_round () in
       check bool "answer is +, - or *" true
         (r.correct_answer = "+" || r.correct_answer = "-" || r.correct_answer = "*"));
-    test_case "balance_game answer is correct" `Quick (fun () ->
+    test_case "при проверке ответа возвращает верный оператор" `Quick (fun () ->
       Random.self_init ();
       for _ = 1 to 20 do
         let r = My_solutions.balance_game.generate_round () in
@@ -102,13 +102,13 @@ let run_game_result_tests =
     generate_round = (fun () -> { question = "2 + 2"; correct_answer = "4" })
   } in
   [
-    test_case "all correct" `Quick (fun () ->
+    test_case "при всех верных ответах возвращает true" `Quick (fun () ->
       check bool "win" true
         (My_solutions.run_game_result simple_game ~rounds:3 ["4"; "4"; "4"]));
-    test_case "wrong answer" `Quick (fun () ->
+    test_case "при неверном ответе возвращает false" `Quick (fun () ->
       check bool "lose" false
         (My_solutions.run_game_result simple_game ~rounds:3 ["4"; "5"; "4"]));
-    test_case "not enough answers" `Quick (fun () ->
+    test_case "при нехватке ответов возвращает false" `Quick (fun () ->
       check bool "lose" false
         (My_solutions.run_game_result simple_game ~rounds:3 ["4"]));
   ]
@@ -116,7 +116,7 @@ let run_game_result_tests =
 let make_game_tests =
   let open Alcotest in
   [
-    test_case "make_game creates game" `Quick (fun () ->
+    test_case "при создании игры возвращает корректную запись" `Quick (fun () ->
       let g = My_solutions.make_game
         ~description:"test game"
         ~generate:(fun () -> ("what is 1+1?", "2"))
@@ -130,7 +130,7 @@ let make_game_tests =
 let factor_game_tests =
   let open Alcotest in
   [
-    test_case "factor_game generates round" `Quick (fun () ->
+    test_case "при генерации раунда произведение множителей равно числу" `Quick (fun () ->
       Random.self_init ();
       let r = My_solutions.factor_game.generate_round () in
       let n = int_of_string r.question in
@@ -140,7 +140,7 @@ let factor_game_tests =
       check int "product equals n" n product;
       check bool "all prime" true
         (List.for_all is_prime factors));
-    test_case "factor_game various" `Quick (fun () ->
+    test_case "при повторных генерациях произведение всегда верно" `Quick (fun () ->
       Random.self_init ();
       for _ = 1 to 20 do
         let r = My_solutions.factor_game.generate_round () in

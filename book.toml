@@ -1,7 +1,7 @@
 [book]
 title = "OCaml by Example"
 language = "ru"
-authors = ["OCaml by Example contributors"]
+authors = ["Vassiliy Kuzenkov"]
 src = "text"
 description = "Практическое руководство по OCaml 5.4 на русском языке"
 

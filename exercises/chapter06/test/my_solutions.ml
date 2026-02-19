@@ -58,3 +58,11 @@ module List_ops = struct
   let append (_xs : 'a list) (_ys : 'a list) : 'a list = failwith "todo"
   let concat (_lists : 'a list list) : 'a list = failwith "todo"
 end
+
+(** Упражнение 15: Windowed Pairs — пары соседних элементов. *)
+let windowed_pairs (_seq : 'a Seq.t) : ('a * 'a) Seq.t =
+  fun () -> failwith "todo"
+
+(** Упражнение 16: Cartesian Product — декартово произведение последовательностей. *)
+let cartesian (_s1 : 'a Seq.t) (_s2 : 'b Seq.t) : ('a * 'b) Seq.t =
+  fun () -> failwith "todo"

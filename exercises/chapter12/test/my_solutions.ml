@@ -15,3 +15,8 @@ let produce_consume (_n : int) : int =
 (** Упражнение 4: Гонка --- результат первой завершившейся функции. *)
 let race (_tasks : (unit -> 'a) list) : 'a =
   failwith "todo"
+
+(** Упражнение 5: Uppercase echo server. *)
+let uppercase_echo_server ~net ~port : unit =
+  ignore (net, port);
+  failwith "todo"

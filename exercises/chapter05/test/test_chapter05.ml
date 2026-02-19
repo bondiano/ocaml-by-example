@@ -34,25 +34,25 @@ let bounds_testable : bounds Alcotest.testable =
 let show_point_tests =
   let open Alcotest in
   [
-    test_case "начало координат" `Quick (fun () ->
-      check string "origin" "(0., 0.)" (show_point origin));
-    test_case "произвольная точка" `Quick (fun () ->
-      check string "p1" "(1., 2.)" (show_point p1));
+    test_case "при начале координат возвращает \"(0., 0.)\"" `Quick (fun () ->
+      check string "show_point" "(0., 0.)" (show_point origin));
+    test_case "при точке (1, 2) возвращает \"(1., 2.)\"" `Quick (fun () ->
+      check string "show_point" "(1., 2.)" (show_point p1));
   ]
 
 let shape_bounds_tests =
   let open Alcotest in
   [
-    test_case "bounds круга" `Quick (fun () ->
-      check bounds_testable "circle bounds"
+    test_case "при круге радиуса 5 возвращает bounds [-5;5]x[-5;5]" `Quick (fun () ->
+      check bounds_testable "shape_bounds"
         { min_x = -5.0; min_y = -5.0; max_x = 5.0; max_y = 5.0 }
         (shape_bounds circle));
-    test_case "bounds прямоугольника" `Quick (fun () ->
-      check bounds_testable "rect bounds"
+    test_case "при прямоугольнике 3x4 возвращает bounds [0;3]x[0;4]" `Quick (fun () ->
+      check bounds_testable "shape_bounds"
         { min_x = 0.0; min_y = 0.0; max_x = 3.0; max_y = 4.0 }
         (shape_bounds rect));
-    test_case "bounds линии" `Quick (fun () ->
-      check bounds_testable "line bounds"
+    test_case "при линии из (1,2) в (4,6) возвращает корректные bounds" `Quick (fun () ->
+      check bounds_testable "shape_bounds"
         { min_x = 1.0; min_y = 2.0; max_x = 4.0; max_y = 6.0 }
         (shape_bounds line));
   ]
@@ -60,12 +60,12 @@ let shape_bounds_tests =
 let bounds_tests =
   let open Alcotest in
   [
-    test_case "bounds пустой картинки" `Quick (fun () ->
-      check bounds_testable "empty"
+    test_case "при пустой картинке возвращает нулевые bounds" `Quick (fun () ->
+      check bounds_testable "bounds"
         { min_x = 0.0; min_y = 0.0; max_x = 0.0; max_y = 0.0 }
         (bounds []));
-    test_case "bounds картинки из нескольких фигур" `Quick (fun () ->
-      check bounds_testable "picture"
+    test_case "при нескольких фигурах возвращает объединённые bounds" `Quick (fun () ->
+      check bounds_testable "bounds"
         { min_x = -5.0; min_y = -5.0; max_x = 5.0; max_y = 6.0 }
         (bounds [circle; rect; line]));
   ]
@@ -75,37 +75,37 @@ let bounds_tests =
 let area_tests =
   let open Alcotest in
   [
-    test_case "площадь круга" `Quick (fun () ->
-      check (float 1e-9) "circle"
+    test_case "при круге радиуса 5 возвращает 25*pi" `Quick (fun () ->
+      check (float 1e-9) "area"
         (Float.pi *. 25.0) (My_solutions.area circle));
-    test_case "площадь единичного круга" `Quick (fun () ->
-      check (float 1e-9) "unit circle"
+    test_case "при единичном круге возвращает pi" `Quick (fun () ->
+      check (float 1e-9) "area"
         Float.pi (My_solutions.area unit_circle));
-    test_case "площадь прямоугольника" `Quick (fun () ->
-      check (float 1e-9) "rect" 12.0 (My_solutions.area rect));
-    test_case "площадь линии" `Quick (fun () ->
-      check (float 1e-9) "line" 0.0 (My_solutions.area line));
-    test_case "площадь текста" `Quick (fun () ->
-      check (float 1e-9) "text" 0.0 (My_solutions.area text));
+    test_case "при прямоугольнике 3x4 возвращает 12" `Quick (fun () ->
+      check (float 1e-9) "area" 12.0 (My_solutions.area rect));
+    test_case "при линии возвращает 0" `Quick (fun () ->
+      check (float 1e-9) "area" 0.0 (My_solutions.area line));
+    test_case "при тексте возвращает 0" `Quick (fun () ->
+      check (float 1e-9) "area" 0.0 (My_solutions.area text));
   ]
 
 let scale_tests =
   let open Alcotest in
   [
-    test_case "масштабирование круга" `Quick (fun () ->
-      check shape_testable "scale circle"
+    test_case "при круге и множителе 2 возвращает круг с радиусом 10" `Quick (fun () ->
+      check shape_testable "scale"
         (Circle (origin, 10.0))
         (My_solutions.scale 2.0 circle));
-    test_case "масштабирование прямоугольника" `Quick (fun () ->
-      check shape_testable "scale rect"
+    test_case "при прямоугольнике и множителе 3 возвращает прямоугольник 9x12" `Quick (fun () ->
+      check shape_testable "scale"
         (Rectangle (origin, 9.0, 12.0))
         (My_solutions.scale 3.0 rect));
-    test_case "масштабирование линии" `Quick (fun () ->
-      check shape_testable "scale line"
+    test_case "при линии и множителе 2 возвращает масштабированную линию" `Quick (fun () ->
+      check shape_testable "scale"
         (Line ({ x = 2.0; y = 4.0 }, { x = 8.0; y = 12.0 }))
         (My_solutions.scale 2.0 line));
-    test_case "масштабирование текста" `Quick (fun () ->
-      check shape_testable "scale text"
+    test_case "при тексте и множителе 0.5 возвращает смещённый текст" `Quick (fun () ->
+      check shape_testable "scale"
         (Text ({ x = 0.5; y = 1.0 }, "hello"))
         (My_solutions.scale 0.5 text));
   ]
@@ -113,51 +113,51 @@ let scale_tests =
 let shape_text_tests =
   let open Alcotest in
   [
-    test_case "текст из Text" `Quick (fun () ->
-      check (option string) "text"
+    test_case "при Text возвращает Some с содержимым" `Quick (fun () ->
+      check (option string) "shape_text"
         (Some "hello") (My_solutions.shape_text text));
-    test_case "текст из Circle" `Quick (fun () ->
-      check (option string) "circle"
+    test_case "при Circle возвращает None" `Quick (fun () ->
+      check (option string) "shape_text"
         None (My_solutions.shape_text circle));
-    test_case "текст из Rectangle" `Quick (fun () ->
-      check (option string) "rect"
+    test_case "при Rectangle возвращает None" `Quick (fun () ->
+      check (option string) "shape_text"
         None (My_solutions.shape_text rect));
-    test_case "текст из Line" `Quick (fun () ->
-      check (option string) "line"
+    test_case "при Line возвращает None" `Quick (fun () ->
+      check (option string) "shape_text"
         None (My_solutions.shape_text line));
   ]
 
 let safe_head_tests =
   let open Alcotest in
   [
-    test_case "head непустого списка" `Quick (fun () ->
-      check (option int) "non-empty"
+    test_case "при непустом списке возвращает Some первого элемента" `Quick (fun () ->
+      check (option int) "safe_head"
         (Some 1) (My_solutions.safe_head [1; 2; 3]));
-    test_case "head пустого списка" `Quick (fun () ->
-      check (option int) "empty"
+    test_case "при пустом списке возвращает None" `Quick (fun () ->
+      check (option int) "safe_head"
         None (My_solutions.safe_head []));
-    test_case "head списка строк" `Quick (fun () ->
-      check (option string) "strings"
+    test_case "при списке строк возвращает Some первой строки" `Quick (fun () ->
+      check (option string) "safe_head"
         (Some "hello") (My_solutions.safe_head ["hello"; "world"]));
   ]
 
 let bob_tests =
   let open Alcotest in
   [
-    test_case "вопрос" `Quick (fun () ->
-      check string "question" "Sure."
+    test_case "при вопросе возвращает Sure." `Quick (fun () ->
+      check string "bob" "Sure."
         (My_solutions.bob "How are you?"));
-    test_case "крик" `Quick (fun () ->
-      check string "yell" "Whoa, chill out!"
+    test_case "при крике возвращает Whoa, chill out!" `Quick (fun () ->
+      check string "bob" "Whoa, chill out!"
         (My_solutions.bob "WHAT ARE YOU DOING"));
-    test_case "крик-вопрос" `Quick (fun () ->
-      check string "yell question" "Calm down, I know what I'm doing!"
+    test_case "при кричащем вопросе возвращает Calm down..." `Quick (fun () ->
+      check string "bob" "Calm down, I know what I'm doing!"
         (My_solutions.bob "WHAT?"));
-    test_case "тишина" `Quick (fun () ->
-      check string "silence" "Fine. Be that way!"
+    test_case "при тишине возвращает Fine. Be that way!" `Quick (fun () ->
+      check string "bob" "Fine. Be that way!"
         (My_solutions.bob "   "));
-    test_case "обычное" `Quick (fun () ->
-      check string "normal" "Whatever."
+    test_case "при обычной фразе возвращает Whatever." `Quick (fun () ->
+      check string "bob" "Whatever."
         (My_solutions.bob "Hello there"));
   ]
 
@@ -170,19 +170,19 @@ let triangle_tests =
       | My_solutions.Scalene -> "Scalene"))
     ( = ) in
   [
-    test_case "равносторонний" `Quick (fun () ->
-      check (result triangle_testable string) "equilateral"
+    test_case "при сторонах 2,2,2 возвращает Equilateral" `Quick (fun () ->
+      check (result triangle_testable string) "classify_triangle"
         (Ok My_solutions.Equilateral)
         (My_solutions.classify_triangle 2.0 2.0 2.0));
-    test_case "равнобедренный" `Quick (fun () ->
-      check (result triangle_testable string) "isosceles"
+    test_case "при сторонах 3,3,4 возвращает Isosceles" `Quick (fun () ->
+      check (result triangle_testable string) "classify_triangle"
         (Ok My_solutions.Isosceles)
         (My_solutions.classify_triangle 3.0 3.0 4.0));
-    test_case "разносторонний" `Quick (fun () ->
-      check (result triangle_testable string) "scalene"
+    test_case "при сторонах 3,4,5 возвращает Scalene" `Quick (fun () ->
+      check (result triangle_testable string) "classify_triangle"
         (Ok My_solutions.Scalene)
         (My_solutions.classify_triangle 3.0 4.0 5.0));
-    test_case "невалидный" `Quick (fun () ->
+    test_case "при невалидных сторонах 1,1,3 возвращает Error" `Quick (fun () ->
       match My_solutions.classify_triangle 1.0 1.0 3.0 with
       | Error _ -> ()
       | Ok _ -> Alcotest.fail "ожидалась ошибка");
@@ -191,16 +191,16 @@ let triangle_tests =
 let raindrops_tests =
   let open Alcotest in
   [
-    test_case "3 → Pling" `Quick (fun () ->
-      check string "3" "Pling" (My_solutions.raindrops 3));
-    test_case "5 → Plang" `Quick (fun () ->
-      check string "5" "Plang" (My_solutions.raindrops 5));
-    test_case "7 → Plong" `Quick (fun () ->
-      check string "7" "Plong" (My_solutions.raindrops 7));
-    test_case "15 → PlingPlang" `Quick (fun () ->
-      check string "15" "PlingPlang" (My_solutions.raindrops 15));
-    test_case "34 → 34" `Quick (fun () ->
-      check string "34" "34" (My_solutions.raindrops 34));
+    test_case "при n=3 возвращает Pling" `Quick (fun () ->
+      check string "raindrops" "Pling" (My_solutions.raindrops 3));
+    test_case "при n=5 возвращает Plang" `Quick (fun () ->
+      check string "raindrops" "Plang" (My_solutions.raindrops 5));
+    test_case "при n=7 возвращает Plong" `Quick (fun () ->
+      check string "raindrops" "Plong" (My_solutions.raindrops 7));
+    test_case "при n=15 возвращает PlingPlang" `Quick (fun () ->
+      check string "raindrops" "PlingPlang" (My_solutions.raindrops 15));
+    test_case "при n=34 возвращает \"34\"" `Quick (fun () ->
+      check string "raindrops" "34" (My_solutions.raindrops 34));
   ]
 
 let perfect_numbers_tests =
@@ -212,16 +212,16 @@ let perfect_numbers_tests =
       | My_solutions.Deficient -> "Deficient"))
     ( = ) in
   [
-    test_case "6 — совершенное" `Quick (fun () ->
-      check (result class_testable string) "6"
+    test_case "при n=6 возвращает Perfect" `Quick (fun () ->
+      check (result class_testable string) "classify"
         (Ok My_solutions.Perfect) (My_solutions.classify 6));
-    test_case "12 — избыточное" `Quick (fun () ->
-      check (result class_testable string) "12"
+    test_case "при n=12 возвращает Abundant" `Quick (fun () ->
+      check (result class_testable string) "classify"
         (Ok My_solutions.Abundant) (My_solutions.classify 12));
-    test_case "7 — недостаточное" `Quick (fun () ->
-      check (result class_testable string) "7"
+    test_case "при n=7 возвращает Deficient" `Quick (fun () ->
+      check (result class_testable string) "classify"
         (Ok My_solutions.Deficient) (My_solutions.classify 7));
-    test_case "0 — ошибка" `Quick (fun () ->
+    test_case "при n=0 возвращает Error" `Quick (fun () ->
       match My_solutions.classify 0 with
       | Error _ -> ()
       | Ok _ -> Alcotest.fail "ожидалась ошибка");
@@ -230,19 +230,19 @@ let perfect_numbers_tests =
 let allergies_tests =
   let open Alcotest in
   [
-    test_case "нет аллергий" `Quick (fun () ->
-      check (list int) "empty" [] (List.map Obj.magic (My_solutions.allergies 0)));
-    test_case "аллергия на яйца" `Quick (fun () ->
-      check bool "eggs" true
+    test_case "при score=0 возвращает пустой список" `Quick (fun () ->
+      check (list int) "allergies" [] (List.map Obj.magic (My_solutions.allergies 0)));
+    test_case "при score=1 содержит аллергию на яйца" `Quick (fun () ->
+      check bool "is_allergic_to" true
         (My_solutions.is_allergic_to My_solutions.Eggs 1));
-    test_case "аллергия на несколько" `Quick (fun () ->
+    test_case "при score=5 возвращает два аллергена" `Quick (fun () ->
       let a = My_solutions.allergies 5 in
-      check bool "eggs+shellfish" true
+      check bool "allergies" true
         (List.length a = 2));
   ]
 
 let () =
-  Alcotest.run "Chapter 04"
+  Alcotest.run "Chapter 05"
     [
       ("show_point --- форматирование точки", show_point_tests);
       ("shape_bounds --- bounds фигуры", shape_bounds_tests);

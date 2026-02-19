@@ -5,19 +5,19 @@ open Chapter16.Properties
 let bst_unit_tests =
   let open Alcotest in
   [
-    test_case "bst_of_list sorted" `Quick (fun () ->
+    test_case "при bst_of_list возвращает отсортированный список" `Quick (fun () ->
       let tree = bst_of_list [3; 1; 4; 1; 5; 9] in
       let sorted = bst_to_sorted_list tree in
       check (list int) "sorted" [1; 3; 4; 5; 9] sorted);
-    test_case "bst_mem" `Quick (fun () ->
+    test_case "при bst_mem возвращает корректные результаты" `Quick (fun () ->
       let tree = bst_of_list [3; 1; 4] in
       check bool "mem 3" true (bst_mem 3 tree);
       check bool "mem 1" true (bst_mem 1 tree);
       check bool "mem 2" false (bst_mem 2 tree));
-    test_case "is_sorted" `Quick (fun () ->
+    test_case "при отсортированном списке возвращает true" `Quick (fun () ->
       check bool "sorted" true (is_sorted [1; 2; 3; 4]);
       check bool "not sorted" false (is_sorted [1; 3; 2]));
-    test_case "encode_pair / decode_pair" `Quick (fun () ->
+    test_case "при encode_pair / decode_pair выполняется roundtrip" `Quick (fun () ->
       let p = (42, "hello") in
       check (option (pair int string)) "roundtrip" (Some p)
         (decode_pair (encode_pair p)));
@@ -54,19 +54,19 @@ let exercise_property_tests =
 let binary_search_tests =
   let open Alcotest in
   [
-    test_case "найден" `Quick (fun () ->
+    test_case "при поиске существующего элемента возвращает индекс" `Quick (fun () ->
       check (option int) "found" (Some 2)
         (My_solutions.binary_search [|1; 3; 5; 7; 9|] 5));
-    test_case "не найден" `Quick (fun () ->
+    test_case "при поиске отсутствующего элемента возвращает None" `Quick (fun () ->
       check (option int) "not found" None
         (My_solutions.binary_search [|1; 3; 5; 7; 9|] 4));
-    test_case "первый элемент" `Quick (fun () ->
+    test_case "при поиске первого элемента возвращает 0" `Quick (fun () ->
       check (option int) "first" (Some 0)
         (My_solutions.binary_search [|1; 3; 5; 7; 9|] 1));
-    test_case "последний элемент" `Quick (fun () ->
+    test_case "при поиске последнего элемента возвращает последний индекс" `Quick (fun () ->
       check (option int) "last" (Some 4)
         (My_solutions.binary_search [|1; 3; 5; 7; 9|] 9));
-    test_case "пустой массив" `Quick (fun () ->
+    test_case "при пустом массиве возвращает None" `Quick (fun () ->
       check (option int) "empty" None
         (My_solutions.binary_search [||] 1));
   ]
@@ -74,7 +74,7 @@ let binary_search_tests =
 let bst_tests =
   let open Alcotest in
   [
-    test_case "insert и mem" `Quick (fun () ->
+    test_case "при insert и mem возвращает корректные результаты" `Quick (fun () ->
       let tree = My_solutions.BST.empty
         |> My_solutions.BST.insert 5
         |> My_solutions.BST.insert 3
@@ -82,7 +82,7 @@ let bst_tests =
       check bool "mem 5" true (My_solutions.BST.mem 5 tree);
       check bool "mem 3" true (My_solutions.BST.mem 3 tree);
       check bool "mem 4" false (My_solutions.BST.mem 4 tree));
-    test_case "to_sorted_list" `Quick (fun () ->
+    test_case "при to_sorted_list возвращает отсортированный список" `Quick (fun () ->
       let tree = My_solutions.BST.empty
         |> My_solutions.BST.insert 5
         |> My_solutions.BST.insert 3

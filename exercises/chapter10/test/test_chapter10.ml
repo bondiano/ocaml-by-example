@@ -10,19 +10,19 @@ let result_string (type a) (ok_t : a Alcotest.testable) =
 let money_tests =
   let open Alcotest in
   [
-    test_case "Money.make положительная сумма" `Quick (fun () ->
+    test_case "при amount=100.0 возвращает Ok \"100.00\"" `Quick (fun () ->
       match Money.make 100.0 with
       | Ok m -> check string "amount" "100.00" (Money.to_string m)
       | Error _ -> fail "ожидался Ok");
-    test_case "Money.make нулевая сумма" `Quick (fun () ->
+    test_case "при amount=0.0 возвращает Error" `Quick (fun () ->
       check (result_string string) "zero"
         (Error "сумма должна быть положительной")
         (Money.make 0.0 |> Result.map Money.to_string));
-    test_case "Money.make отрицательная сумма" `Quick (fun () ->
+    test_case "при отрицательном amount возвращает Error" `Quick (fun () ->
       check (result_string string) "negative"
         (Error "сумма должна быть положительной")
         (Money.make (-5.0) |> Result.map Money.to_string));
-    test_case "Money.add" `Quick (fun () ->
+    test_case "при сложении 100.0 и 50.0 возвращает \"150.00\"" `Quick (fun () ->
       match Money.make 100.0, Money.make 50.0 with
       | Ok a, Ok b ->
         check string "sum" "150.00" (Money.to_string (Money.add a b))
@@ -34,27 +34,27 @@ let money_tests =
 let card_number_tests =
   let open Alcotest in
   [
-    test_case "CardNumber.make валидный номер" `Quick (fun () ->
+    test_case "при валидном номере возвращает Ok" `Quick (fun () ->
       match CardNumber.make "4111111111111111" with
       | Ok _ -> ()
       | Error e -> fail e);
-    test_case "CardNumber.make с пробелами" `Quick (fun () ->
+    test_case "при номере с пробелами возвращает Ok" `Quick (fun () ->
       match CardNumber.make "4111 1111 1111 1111" with
       | Ok _ -> ()
       | Error e -> fail e);
-    test_case "CardNumber.make с дефисами" `Quick (fun () ->
+    test_case "при номере с дефисами возвращает Ok" `Quick (fun () ->
       match CardNumber.make "4111-1111-1111-1111" with
       | Ok _ -> ()
       | Error e -> fail e);
-    test_case "CardNumber.make слишком короткий" `Quick (fun () ->
+    test_case "при слишком коротком номере возвращает Error" `Quick (fun () ->
       match CardNumber.make "1234" with
       | Error _ -> ()
       | Ok _ -> fail "ожидалась ошибка");
-    test_case "CardNumber.make с буквами" `Quick (fun () ->
+    test_case "при номере с буквами возвращает Error" `Quick (fun () ->
       match CardNumber.make "4111ABCD11111111" with
       | Error _ -> ()
       | Ok _ -> fail "ожидалась ошибка");
-    test_case "CardNumber.to_masked" `Quick (fun () ->
+    test_case "при маскировании возвращает \"************1111\"" `Quick (fun () ->
       match CardNumber.make "4111111111111111" with
       | Ok card ->
         check string "masked" "************1111" (CardNumber.to_masked card)
@@ -66,7 +66,7 @@ let card_number_tests =
 let payment_state_tests =
   let open Alcotest in
   [
-    test_case "полный цикл платежа" `Quick (fun () ->
+    test_case "при полном цикле возвращает shipped" `Quick (fun () ->
       match Money.make 99.99, CardNumber.make "4111111111111111" with
       | Ok amount, Ok card ->
         let p = PaymentState.create ~amount "Книга" in
@@ -90,27 +90,27 @@ let payment_state_tests =
 let positive_int_tests =
   let open Alcotest in
   [
-    test_case "PositiveInt.make положительное" `Quick (fun () ->
+    test_case "при n=42 возвращает Ok 42" `Quick (fun () ->
       match My_solutions.PositiveInt.make 42 with
       | Ok n -> check int "value" 42 (My_solutions.PositiveInt.value n)
       | Error _ -> fail "ожидался Ok");
-    test_case "PositiveInt.make ноль" `Quick (fun () ->
+    test_case "при n=0 возвращает Error" `Quick (fun () ->
       check (result_string int) "zero"
         (Error "число должно быть положительным")
         (My_solutions.PositiveInt.make 0
          |> Result.map My_solutions.PositiveInt.value));
-    test_case "PositiveInt.make отрицательное" `Quick (fun () ->
+    test_case "при n=-5 возвращает Error" `Quick (fun () ->
       check (result_string int) "negative"
         (Error "число должно быть положительным")
         (My_solutions.PositiveInt.make (-5)
          |> Result.map My_solutions.PositiveInt.value));
-    test_case "PositiveInt.add" `Quick (fun () ->
+    test_case "при сложении 10 и 20 возвращает 30" `Quick (fun () ->
       match My_solutions.PositiveInt.make 10, My_solutions.PositiveInt.make 20 with
       | Ok a, Ok b ->
         check int "sum" 30
           (My_solutions.PositiveInt.value (My_solutions.PositiveInt.add a b))
       | _ -> fail "ожидались Ok");
-    test_case "PositiveInt.to_string" `Quick (fun () ->
+    test_case "при n=42 to_string возвращает \"42\"" `Quick (fun () ->
       match My_solutions.PositiveInt.make 42 with
       | Ok n -> check string "str" "42" (My_solutions.PositiveInt.to_string n)
       | Error _ -> fail "ожидался Ok");
@@ -121,22 +121,22 @@ let positive_int_tests =
 let email_tests =
   let open Alcotest in
   [
-    test_case "Email.make валидный" `Quick (fun () ->
+    test_case "при валидном email возвращает Ok" `Quick (fun () ->
       match My_solutions.Email.make "user@example.com" with
       | Ok e ->
         check string "email" "user@example.com" (My_solutions.Email.to_string e)
       | Error e -> fail e);
-    test_case "Email.make пустой" `Quick (fun () ->
+    test_case "при пустой строке возвращает Error" `Quick (fun () ->
       check (result_string string) "empty"
         (Error "email не может быть пустым")
         (My_solutions.Email.make ""
          |> Result.map My_solutions.Email.to_string));
-    test_case "Email.make без @" `Quick (fun () ->
+    test_case "при строке без @ возвращает Error" `Quick (fun () ->
       check (result_string string) "no at"
         (Error "email должен содержать @")
         (My_solutions.Email.make "user"
          |> Result.map My_solutions.Email.to_string));
-    test_case "Email.make без точки в домене" `Quick (fun () ->
+    test_case "при отсутствии точки в домене возвращает Error" `Quick (fun () ->
       check (result_string string) "no dot"
         (Error "некорректный домен")
         (My_solutions.Email.make "user@host"
@@ -148,7 +148,7 @@ let email_tests =
 let non_empty_list_tests =
   let open Alcotest in
   [
-    test_case "NonEmptyList.make непустой" `Quick (fun () ->
+    test_case "при [1;2;3] возвращает Ok с head=1" `Quick (fun () ->
       match My_solutions.NonEmptyList.make [1; 2; 3] with
       | Ok nel ->
         check int "head" 1 (My_solutions.NonEmptyList.head nel);
@@ -157,16 +157,16 @@ let non_empty_list_tests =
           (My_solutions.NonEmptyList.to_list nel);
         check int "length" 3 (My_solutions.NonEmptyList.length nel)
       | Error _ -> fail "ожидался Ok");
-    test_case "NonEmptyList.make пустой" `Quick (fun () ->
+    test_case "при пустом списке возвращает Error" `Quick (fun () ->
       match My_solutions.NonEmptyList.make ([] : int list) with
       | Error _ -> ()
       | Ok _ -> fail "ожидалась ошибка");
-    test_case "NonEmptyList.singleton" `Quick (fun () ->
+    test_case "при singleton 42 возвращает head=42 tail=[]" `Quick (fun () ->
       let nel = My_solutions.NonEmptyList.singleton 42 in
       check int "head" 42 (My_solutions.NonEmptyList.head nel);
       check (list int) "tail" [] (My_solutions.NonEmptyList.tail nel);
       check int "length" 1 (My_solutions.NonEmptyList.length nel));
-    test_case "NonEmptyList.map" `Quick (fun () ->
+    test_case "при map (*2) [1;2;3] возвращает [2;4;6]" `Quick (fun () ->
       match My_solutions.NonEmptyList.make [1; 2; 3] with
       | Ok nel ->
         let doubled = My_solutions.NonEmptyList.map (fun x -> x * 2) nel in
@@ -180,10 +180,10 @@ let non_empty_list_tests =
 let traffic_light_tests =
   let open Alcotest in
   [
-    test_case "начальное состояние --- красный" `Quick (fun () ->
+    test_case "при старте возвращает \"red\"" `Quick (fun () ->
       check string "red"
         "red" (My_solutions.TrafficLight.show My_solutions.TrafficLight.start));
-    test_case "полный цикл" `Quick (fun () ->
+    test_case "при полном цикле red->green->yellow->red возвращает корректные состояния" `Quick (fun () ->
       let open My_solutions.TrafficLight in
       let l = start in
       check string "red" "red" (show l);
@@ -209,7 +209,7 @@ let form_tests =
     | _ -> Error "должен быть положительным числом"
   in
   [
-    test_case "Form --- все поля валидны" `Quick (fun () ->
+    test_case "при всех валидных полях возвращает Ok" `Quick (fun () ->
       let open My_solutions.Form in
       match run (map2
         (fun name age -> (name, age))
@@ -220,7 +220,7 @@ let form_tests =
         check string "name" "Иван" name;
         check int "age" 25 age
       | Error _ -> fail "ожидался Ok");
-    test_case "Form --- одно поле невалидно" `Quick (fun () ->
+    test_case "при одном невалидном поле возвращает одну ошибку" `Quick (fun () ->
       let open My_solutions.Form in
       match run (map2
         (fun name age -> (name, age))
@@ -231,7 +231,7 @@ let form_tests =
         check int "одна ошибка" 1 (List.length errors);
         check string "имя поля" "имя" (fst (List.hd errors))
       | Ok _ -> fail "ожидалась ошибка");
-    test_case "Form --- оба поля невалидны" `Quick (fun () ->
+    test_case "при двух невалидных полях возвращает две ошибки" `Quick (fun () ->
       let open My_solutions.Form in
       match run (map2
         (fun name age -> (name, age))
@@ -241,7 +241,7 @@ let form_tests =
       | Error errors ->
         check int "две ошибки" 2 (List.length errors)
       | Ok _ -> fail "ожидалась ошибка");
-    test_case "Form.map3 --- все валидны" `Quick (fun () ->
+    test_case "при map3 с тремя валидными полями возвращает Ok" `Quick (fun () ->
       let open My_solutions.Form in
       match run (map3
         (fun a b c -> (a, b, c))
@@ -252,7 +252,7 @@ let form_tests =
       | Ok ("hello", "world", 10) -> ()
       | Ok _ -> fail "неожиданные значения"
       | Error _ -> fail "ожидался Ok");
-    test_case "Form.map3 --- все невалидны" `Quick (fun () ->
+    test_case "при map3 с тремя невалидными полями возвращает три ошибки" `Quick (fun () ->
       let open My_solutions.Form in
       match run (map3
         (fun a b c -> (a, b, c))
@@ -270,16 +270,16 @@ let form_tests =
 let file_handle_tests =
   let open Alcotest in
   [
-    test_case "FileHandle --- открытие и чтение" `Quick (fun () ->
+    test_case "при открытии файла возвращает пустое содержимое" `Quick (fun () ->
       let h = My_solutions.FileHandle.open_file "test.txt" in
       check string "name" "test.txt" (My_solutions.FileHandle.name h);
       check string "empty content" "" (My_solutions.FileHandle.read h));
-    test_case "FileHandle --- запись и чтение" `Quick (fun () ->
+    test_case "при записи двух строк возвращает их конкатенацию" `Quick (fun () ->
       let h = My_solutions.FileHandle.open_file "test.txt" in
       let h = My_solutions.FileHandle.write h "hello " in
       let h = My_solutions.FileHandle.write h "world" in
       check string "content" "hello world" (My_solutions.FileHandle.read h));
-    test_case "FileHandle --- close сохраняет имя" `Quick (fun () ->
+    test_case "при закрытии сохраняет имя файла" `Quick (fun () ->
       let h = My_solutions.FileHandle.open_file "test.txt" in
       let h = My_solutions.FileHandle.write h "data" in
       let closed = My_solutions.FileHandle.close h in
@@ -287,7 +287,7 @@ let file_handle_tests =
   ]
 
 let () =
-  Alcotest.run "Chapter 09"
+  Alcotest.run "Chapter 10"
     [
       ("Money --- умный конструктор", money_tests);
       ("CardNumber --- умный конструктор", card_number_tests);
