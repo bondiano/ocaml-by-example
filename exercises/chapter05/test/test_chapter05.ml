@@ -1,288 +1,259 @@
-open Chapter05.Path
+open Chapter05.Shapes
+
+(* --- Тестовые данные --- *)
+
+let origin = { x = 0.0; y = 0.0 }
+let p1 = { x = 1.0; y = 2.0 }
+let p2 = { x = 4.0; y = 6.0 }
+
+let circle = Circle (origin, 5.0)
+let rect = Rectangle (origin, 3.0, 4.0)
+let line = Line (p1, p2)
+let text = Text (p1, "hello")
+
+let unit_circle = Circle (origin, 1.0)
 
 (* --- Пользовательские testable для Alcotest --- *)
 
-let path_testable : path Alcotest.testable =
+let shape_testable : shape Alcotest.testable =
   Alcotest.testable
-    (fun fmt p -> Format.pp_print_string fmt (filename p))
-    (fun a b -> a = b)
+    (fun fmt s -> Format.pp_print_string fmt (show_shape s))
+    ( = )
+
+let bounds_testable : bounds Alcotest.testable =
+  Alcotest.testable
+    (fun fmt b ->
+      Format.fprintf fmt "{min_x=%g; min_y=%g; max_x=%g; max_y=%g}"
+        b.min_x b.min_y b.max_x b.max_y)
+    (fun a b ->
+      a.min_x = b.min_x && a.min_y = b.min_y
+      && a.max_x = b.max_x && a.max_y = b.max_y)
 
 (* --- Тесты библиотеки --- *)
 
-let filename_tests =
+let show_point_tests =
   let open Alcotest in
   [
-    test_case "имя файла" `Quick (fun () ->
-      check string "file" "readme.txt" (filename (File ("readme.txt", 100))));
-    test_case "имя директории" `Quick (fun () ->
-      check string "dir" "src" (filename (Directory ("src", []))));
+    test_case "начало координат" `Quick (fun () ->
+      check string "origin" "(0., 0.)" (show_point origin));
+    test_case "произвольная точка" `Quick (fun () ->
+      check string "p1" "(1., 2.)" (show_point p1));
   ]
 
-let all_paths_tests =
+let shape_bounds_tests =
   let open Alcotest in
   [
-    test_case "все элементы root" `Quick (fun () ->
-      check int "count" 11 (List.length (all_paths root)));
-    test_case "все элементы одного файла" `Quick (fun () ->
-      check int "single file" 1
-        (List.length (all_paths (File ("a.ml", 10)))));
+    test_case "bounds круга" `Quick (fun () ->
+      check bounds_testable "circle bounds"
+        { min_x = -5.0; min_y = -5.0; max_x = 5.0; max_y = 5.0 }
+        (shape_bounds circle));
+    test_case "bounds прямоугольника" `Quick (fun () ->
+      check bounds_testable "rect bounds"
+        { min_x = 0.0; min_y = 0.0; max_x = 3.0; max_y = 4.0 }
+        (shape_bounds rect));
+    test_case "bounds линии" `Quick (fun () ->
+      check bounds_testable "line bounds"
+        { min_x = 1.0; min_y = 2.0; max_x = 4.0; max_y = 6.0 }
+        (shape_bounds line));
+  ]
+
+let bounds_tests =
+  let open Alcotest in
+  [
+    test_case "bounds пустой картинки" `Quick (fun () ->
+      check bounds_testable "empty"
+        { min_x = 0.0; min_y = 0.0; max_x = 0.0; max_y = 0.0 }
+        (bounds []));
+    test_case "bounds картинки из нескольких фигур" `Quick (fun () ->
+      check bounds_testable "picture"
+        { min_x = -5.0; min_y = -5.0; max_x = 5.0; max_y = 6.0 }
+        (bounds [circle; rect; line]));
   ]
 
 (* --- Тесты упражнений --- *)
 
-let all_files_tests =
+let area_tests =
   let open Alcotest in
   [
-    test_case "количество файлов в root" `Quick (fun () ->
-      check int "files count" 7
-        (List.length (My_solutions.all_files root)));
-    test_case "файлы не содержат директорий" `Quick (fun () ->
-      check bool "no dirs" true
-        (My_solutions.all_files root
-         |> List.for_all (fun p -> not (is_directory p))));
-    test_case "один файл" `Quick (fun () ->
-      let f = File ("a.ml", 10) in
-      check (list path_testable) "single" [f]
-        (My_solutions.all_files f));
+    test_case "площадь круга" `Quick (fun () ->
+      check (float 1e-9) "circle"
+        (Float.pi *. 25.0) (My_solutions.area circle));
+    test_case "площадь единичного круга" `Quick (fun () ->
+      check (float 1e-9) "unit circle"
+        Float.pi (My_solutions.area unit_circle));
+    test_case "площадь прямоугольника" `Quick (fun () ->
+      check (float 1e-9) "rect" 12.0 (My_solutions.area rect));
+    test_case "площадь линии" `Quick (fun () ->
+      check (float 1e-9) "line" 0.0 (My_solutions.area line));
+    test_case "площадь текста" `Quick (fun () ->
+      check (float 1e-9) "text" 0.0 (My_solutions.area text));
   ]
 
-let largest_file_tests =
+let scale_tests =
   let open Alcotest in
-  let pair = pair path_testable int in
   [
-    test_case "наибольший файл в root" `Quick (fun () ->
-      check (option pair) "largest"
-        (Some (File ("parser.ml", 800), 800))
-        (My_solutions.largest_file root));
-    test_case "пустая директория" `Quick (fun () ->
-      check (option pair) "empty dir"
-        None
-        (My_solutions.largest_file (Directory ("empty", []))));
-    test_case "один файл" `Quick (fun () ->
-      let f = File ("a.ml", 42) in
-      check (option pair) "single"
-        (Some (f, 42))
-        (My_solutions.largest_file f));
+    test_case "масштабирование круга" `Quick (fun () ->
+      check shape_testable "scale circle"
+        (Circle (origin, 10.0))
+        (My_solutions.scale 2.0 circle));
+    test_case "масштабирование прямоугольника" `Quick (fun () ->
+      check shape_testable "scale rect"
+        (Rectangle (origin, 9.0, 12.0))
+        (My_solutions.scale 3.0 rect));
+    test_case "масштабирование линии" `Quick (fun () ->
+      check shape_testable "scale line"
+        (Line ({ x = 2.0; y = 4.0 }, { x = 8.0; y = 12.0 }))
+        (My_solutions.scale 2.0 line));
+    test_case "масштабирование текста" `Quick (fun () ->
+      check shape_testable "scale text"
+        (Text ({ x = 0.5; y = 1.0 }, "hello"))
+        (My_solutions.scale 0.5 text));
   ]
 
-let where_is_tests =
+let shape_text_tests =
   let open Alcotest in
   [
-    test_case "найти parser.ml" `Quick (fun () ->
-      check (option string) "parser.ml"
-        (Some "lib")
-        (My_solutions.where_is root "parser.ml"
-         |> Option.map filename));
-    test_case "найти test_main.ml" `Quick (fun () ->
-      check (option string) "test_main.ml"
-        (Some "test")
-        (My_solutions.where_is root "test_main.ml"
-         |> Option.map filename));
-    test_case "найти readme.txt" `Quick (fun () ->
-      check (option string) "readme.txt"
-        (Some "root")
-        (My_solutions.where_is root "readme.txt"
-         |> Option.map filename));
-    test_case "файл не существует" `Quick (fun () ->
-      check (option string) "not found"
-        None
-        (My_solutions.where_is root "nonexistent.ml"
-         |> Option.map filename));
+    test_case "текст из Text" `Quick (fun () ->
+      check (option string) "text"
+        (Some "hello") (My_solutions.shape_text text));
+    test_case "текст из Circle" `Quick (fun () ->
+      check (option string) "circle"
+        None (My_solutions.shape_text circle));
+    test_case "текст из Rectangle" `Quick (fun () ->
+      check (option string) "rect"
+        None (My_solutions.shape_text rect));
+    test_case "текст из Line" `Quick (fun () ->
+      check (option string) "line"
+        None (My_solutions.shape_text line));
   ]
 
-let total_size_tests =
+let safe_head_tests =
   let open Alcotest in
   [
-    test_case "суммарный размер root" `Quick (fun () ->
-      check int "total" 2750 (My_solutions.total_size root));
-    test_case "один файл" `Quick (fun () ->
-      check int "single" 42 (My_solutions.total_size (File ("a.ml", 42))));
-    test_case "пустая директория" `Quick (fun () ->
-      check int "empty" 0
-        (My_solutions.total_size (Directory ("empty", []))));
+    test_case "head непустого списка" `Quick (fun () ->
+      check (option int) "non-empty"
+        (Some 1) (My_solutions.safe_head [1; 2; 3]));
+    test_case "head пустого списка" `Quick (fun () ->
+      check (option int) "empty"
+        None (My_solutions.safe_head []));
+    test_case "head списка строк" `Quick (fun () ->
+      check (option string) "strings"
+        (Some "hello") (My_solutions.safe_head ["hello"; "world"]));
   ]
 
-let fibs_tests =
+let bob_tests =
   let open Alcotest in
   [
-    test_case "первые 7 чисел Фибоначчи" `Quick (fun () ->
-      check (list int) "fibs 7"
-        [0; 1; 1; 2; 3; 5; 8]
-        (Seq.take 7 My_solutions.fibs |> List.of_seq));
-    test_case "первые 10 чисел Фибоначчи" `Quick (fun () ->
-      check (list int) "fibs 10"
-        [0; 1; 1; 2; 3; 5; 8; 13; 21; 34]
-        (Seq.take 10 My_solutions.fibs |> List.of_seq));
+    test_case "вопрос" `Quick (fun () ->
+      check string "question" "Sure."
+        (My_solutions.bob "How are you?"));
+    test_case "крик" `Quick (fun () ->
+      check string "yell" "Whoa, chill out!"
+        (My_solutions.bob "WHAT ARE YOU DOING"));
+    test_case "крик-вопрос" `Quick (fun () ->
+      check string "yell question" "Calm down, I know what I'm doing!"
+        (My_solutions.bob "WHAT?"));
+    test_case "тишина" `Quick (fun () ->
+      check string "silence" "Fine. Be that way!"
+        (My_solutions.bob "   "));
+    test_case "обычное" `Quick (fun () ->
+      check string "normal" "Whatever."
+        (My_solutions.bob "Hello there"));
   ]
 
-let pangram_tests =
+let triangle_tests =
   let open Alcotest in
+  let triangle_testable = Alcotest.testable
+    (fun fmt t -> Format.pp_print_string fmt (match t with
+      | My_solutions.Equilateral -> "Equilateral"
+      | My_solutions.Isosceles -> "Isosceles"
+      | My_solutions.Scalene -> "Scalene"))
+    ( = ) in
   [
-    test_case "pangram" `Quick (fun () ->
-      check bool "yes" true
-        (My_solutions.is_pangram "The quick brown fox jumps over the lazy dog"));
-    test_case "not pangram" `Quick (fun () ->
-      check bool "no" false (My_solutions.is_pangram "hello world"));
-  ]
-
-let isogram_tests =
-  let open Alcotest in
-  [
-    test_case "isogram" `Quick (fun () ->
-      check bool "yes" true (My_solutions.is_isogram "subdermatoglyphic"));
-    test_case "not isogram" `Quick (fun () ->
-      check bool "no" false (My_solutions.is_isogram "hello"));
-    test_case "with spaces" `Quick (fun () ->
-      check bool "spaces ok" true (My_solutions.is_isogram "lumberjack"));
-  ]
-
-let anagram_tests =
-  let open Alcotest in
-  [
-    test_case "найти анаграммы" `Quick (fun () ->
-      check (list string) "anagrams"
-        ["tan"; "nat"]
-        (My_solutions.anagrams "ant" ["tan"; "stand"; "at"; "nat"]));
-    test_case "без совпадений" `Quick (fun () ->
-      check (list string) "none" []
-        (My_solutions.anagrams "hello" ["world"; "hi"]));
-    test_case "само слово не анаграмма" `Quick (fun () ->
-      check (list string) "self" ["tan"]
-        (My_solutions.anagrams "ant" ["ant"; "tan"]));
-  ]
-
-let reverse_string_tests =
-  let open Alcotest in
-  [
-    test_case "reverse" `Quick (fun () ->
-      check string "rev" "olleh" (My_solutions.reverse_string "hello"));
-    test_case "empty" `Quick (fun () ->
-      check string "empty" "" (My_solutions.reverse_string ""));
-  ]
-
-let nucleotide_tests =
-  let open Alcotest in
-  let pair = Alcotest.(pair char int) in
-  [
-    test_case "count nucleotides" `Quick (fun () ->
-      check (list pair) "counts"
-        [('A', 2); ('C', 1); ('G', 1); ('T', 1)]
-        (My_solutions.nucleotide_count "AACGT"
-         |> List.sort (fun (a, _) (b, _) -> Char.compare a b)));
-  ]
-
-let hamming_tests =
-  let open Alcotest in
-  [
-    test_case "нет отличий" `Quick (fun () ->
-      check (result int string) "same" (Ok 0)
-        (My_solutions.hamming_distance "GAGCCTACTAACGGGAT" "GAGCCTACTAACGGGAT"));
-    test_case "есть отличия" `Quick (fun () ->
-      check (result int string) "diff" (Ok 7)
-        (My_solutions.hamming_distance "GAGCCTACTAACGGGAT" "CATCGTAATGACGGCCT"));
-    test_case "разная длина" `Quick (fun () ->
-      match My_solutions.hamming_distance "ABC" "AB" with
+    test_case "равносторонний" `Quick (fun () ->
+      check (result triangle_testable string) "equilateral"
+        (Ok My_solutions.Equilateral)
+        (My_solutions.classify_triangle 2.0 2.0 2.0));
+    test_case "равнобедренный" `Quick (fun () ->
+      check (result triangle_testable string) "isosceles"
+        (Ok My_solutions.Isosceles)
+        (My_solutions.classify_triangle 3.0 3.0 4.0));
+    test_case "разносторонний" `Quick (fun () ->
+      check (result triangle_testable string) "scalene"
+        (Ok My_solutions.Scalene)
+        (My_solutions.classify_triangle 3.0 4.0 5.0));
+    test_case "невалидный" `Quick (fun () ->
+      match My_solutions.classify_triangle 1.0 1.0 3.0 with
       | Error _ -> ()
       | Ok _ -> Alcotest.fail "ожидалась ошибка");
   ]
 
-let rle_tests =
+let raindrops_tests =
   let open Alcotest in
   [
-    test_case "encode" `Quick (fun () ->
-      check string "encoded" "2A3B1C"
-        (My_solutions.rle_encode "AABBBC"));
-    test_case "decode" `Quick (fun () ->
-      check string "decoded" "AABBBC"
-        (My_solutions.rle_decode "2A3B1C"));
-    test_case "roundtrip" `Quick (fun () ->
-      let s = "AAABBBCCCD" in
-      check string "roundtrip" s
-        (My_solutions.rle_decode (My_solutions.rle_encode s)));
+    test_case "3 → Pling" `Quick (fun () ->
+      check string "3" "Pling" (My_solutions.raindrops 3));
+    test_case "5 → Plang" `Quick (fun () ->
+      check string "5" "Plang" (My_solutions.raindrops 5));
+    test_case "7 → Plong" `Quick (fun () ->
+      check string "7" "Plong" (My_solutions.raindrops 7));
+    test_case "15 → PlingPlang" `Quick (fun () ->
+      check string "15" "PlingPlang" (My_solutions.raindrops 15));
+    test_case "34 → 34" `Quick (fun () ->
+      check string "34" "34" (My_solutions.raindrops 34));
   ]
 
-let list_ops_tests =
+let perfect_numbers_tests =
   let open Alcotest in
+  let class_testable = Alcotest.testable
+    (fun fmt c -> Format.pp_print_string fmt (match c with
+      | My_solutions.Perfect -> "Perfect"
+      | My_solutions.Abundant -> "Abundant"
+      | My_solutions.Deficient -> "Deficient"))
+    ( = ) in
   [
-    test_case "length пустого списка" `Quick (fun () ->
-      check int "empty" 0 (My_solutions.List_ops.length []));
-    test_case "length непустого" `Quick (fun () ->
-      check int "len 4" 4 (My_solutions.List_ops.length [1; 2; 3; 4]));
-    test_case "reverse" `Quick (fun () ->
-      check (list int) "rev" [3; 2; 1]
-        (My_solutions.List_ops.reverse [1; 2; 3]));
-    test_case "map" `Quick (fun () ->
-      check (list int) "map" [2; 4; 6]
-        (My_solutions.List_ops.map (fun x -> x * 2) [1; 2; 3]));
-    test_case "filter" `Quick (fun () ->
-      check (list int) "filter" [2; 4]
-        (My_solutions.List_ops.filter (fun x -> x mod 2 = 0) [1; 2; 3; 4]));
-    test_case "fold_left" `Quick (fun () ->
-      check int "sum" 10
-        (My_solutions.List_ops.fold_left ( + ) 0 [1; 2; 3; 4]));
-    test_case "fold_right" `Quick (fun () ->
-      check (list int) "cons" [1; 2; 3]
-        (My_solutions.List_ops.fold_right (fun x acc -> x :: acc) [1; 2; 3] []));
-    test_case "append" `Quick (fun () ->
-      check (list int) "append" [1; 2; 3; 4]
-        (My_solutions.List_ops.append [1; 2] [3; 4]));
-    test_case "concat" `Quick (fun () ->
-      check (list int) "concat" [1; 2; 3; 4; 5; 6]
-        (My_solutions.List_ops.concat [[1; 2]; [3; 4]; [5; 6]]));
+    test_case "6 — совершенное" `Quick (fun () ->
+      check (result class_testable string) "6"
+        (Ok My_solutions.Perfect) (My_solutions.classify 6));
+    test_case "12 — избыточное" `Quick (fun () ->
+      check (result class_testable string) "12"
+        (Ok My_solutions.Abundant) (My_solutions.classify 12));
+    test_case "7 — недостаточное" `Quick (fun () ->
+      check (result class_testable string) "7"
+        (Ok My_solutions.Deficient) (My_solutions.classify 7));
+    test_case "0 — ошибка" `Quick (fun () ->
+      match My_solutions.classify 0 with
+      | Error _ -> ()
+      | Ok _ -> Alcotest.fail "ожидалась ошибка");
   ]
 
-let traverse_tests =
+let allergies_tests =
   let open Alcotest in
   [
-    test_case "traverse_option все Some" `Quick (fun () ->
-      check (option (list int)) "all some"
-        (Some [1; 2; 3])
-        (My_solutions.traverse_option int_of_string_opt ["1"; "2"; "3"]));
-    test_case "traverse_option с None" `Quick (fun () ->
-      check (option (list int)) "has none"
-        None
-        (My_solutions.traverse_option int_of_string_opt ["1"; "abc"; "3"]));
-    test_case "traverse_option пустой список" `Quick (fun () ->
-      check (option (list int)) "empty"
-        (Some [])
-        (My_solutions.traverse_option int_of_string_opt []));
-    test_case "traverse_result все Ok" `Quick (fun () ->
-      let parse s =
-        match int_of_string_opt s with
-        | Some n -> Ok n
-        | None -> Error (Printf.sprintf "не число: %s" s)
-      in
-      check (result (list int) string) "all ok"
-        (Ok [1; 2; 3])
-        (My_solutions.traverse_result parse ["1"; "2"; "3"]));
-    test_case "traverse_result с Error" `Quick (fun () ->
-      let parse s =
-        match int_of_string_opt s with
-        | Some n -> Ok n
-        | None -> Error (Printf.sprintf "не число: %s" s)
-      in
-      check (result (list int) string) "has error"
-        (Error "не число: abc")
-        (My_solutions.traverse_result parse ["1"; "abc"; "3"]));
+    test_case "нет аллергий" `Quick (fun () ->
+      check (list int) "empty" [] (List.map Obj.magic (My_solutions.allergies 0)));
+    test_case "аллергия на яйца" `Quick (fun () ->
+      check bool "eggs" true
+        (My_solutions.is_allergic_to My_solutions.Eggs 1));
+    test_case "аллергия на несколько" `Quick (fun () ->
+      let a = My_solutions.allergies 5 in
+      check bool "eggs+shellfish" true
+        (List.length a = 2));
   ]
 
 let () =
-  Alcotest.run "Chapter 05"
+  Alcotest.run "Chapter 04"
     [
-      ("filename --- имя элемента", filename_tests);
-      ("all_paths --- обход дерева", all_paths_tests);
-      ("all_files --- только файлы", all_files_tests);
-      ("largest_file --- наибольший файл", largest_file_tests);
-      ("where_is --- поиск файла", where_is_tests);
-      ("total_size --- суммарный размер", total_size_tests);
-      ("fibs --- числа Фибоначчи", fibs_tests);
-      ("Pangram", pangram_tests);
-      ("Isogram", isogram_tests);
-      ("Anagram", anagram_tests);
-      ("Reverse String", reverse_string_tests);
-      ("Nucleotide Count", nucleotide_tests);
-      ("Hamming Distance", hamming_tests);
-      ("Run-Length Encoding", rle_tests);
-      ("Traverse", traverse_tests);
-      ("List Ops", list_ops_tests);
+      ("show_point --- форматирование точки", show_point_tests);
+      ("shape_bounds --- bounds фигуры", shape_bounds_tests);
+      ("bounds --- bounds картинки", bounds_tests);
+      ("area --- площадь фигуры", area_tests);
+      ("scale --- масштабирование", scale_tests);
+      ("shape_text --- извлечение текста", shape_text_tests);
+      ("safe_head --- безопасный head", safe_head_tests);
+      ("Bob — ответы", bob_tests);
+      ("Triangle — классификация", triangle_tests);
+      ("Raindrops", raindrops_tests);
+      ("Perfect Numbers", perfect_numbers_tests);
+      ("Allergies — аллергии", allergies_tests);
     ]

@@ -1,3 +1,4 @@
 (test
  (name test_chapter19)
- (libraries chapter19 lwt lwt.unix alcotest))
+ (libraries chapter19 alcotest)
+ (preprocess (pps ppx_deriving.show ppx_deriving.eq)))

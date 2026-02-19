@@ -1,16 +1,17 @@
-# Проектирование через типы
+# Мутабельное состояние и прямые эффекты
 
 ## Цели главы
 
-В этой главе мы изучим ключевые паттерны **проектирования через типы** (type-driven design) --- подход, при котором система типов используется не только для проверки корректности, но и для **предотвращения** некорректных состояний на уровне компиляции:
+В этой главе мы изучим работу с **побочными эффектами** в OCaml --- язык, который принципиально отличается от Haskell тем, что не требует монады `IO` для взаимодействия с внешним миром:
 
-- **Smart Constructors** (умные конструкторы) --- ограничение конструирования значений через валидацию.
-- **Make Illegal States Unrepresentable** --- кодирование допустимых состояний в типах.
-- **Parse, Don't Validate** --- парсинг как способ получить типизированную информацию.
-- **Phantom types** --- типы-метки для статической проверки протоколов.
-- Проект: типобезопасная платёжная система.
-
-Если вы знакомы с Haskell, многие из этих идей покажутся знакомыми --- `newtype` + smart constructors, Data.Refined, phantom types. В OCaml инструментарий другой (модули, `.mli`, `private`), но принципы те же.
+- Ссылки (`ref`) --- мутабельные ячейки.
+- Мутабельные записи --- поля с `mutable`.
+- Массивы --- мутабельные коллекции.
+- Ввод-вывод --- `Printf`, `print_endline`, `input_line`.
+- Работа с файлами --- `In_channel`, `Out_channel`.
+- Форматирование строк --- `Printf.sprintf`, `Format`.
+- Тип `unit` --- индикатор побочных эффектов.
+- Сравнение подхода OCaml с монадой `IO` Haskell.
 
 ## Подготовка проекта
 
@@ -21,922 +22,751 @@ $ cd exercises/chapter09
 $ dune build
 ```
 
-## Smart Constructors (Умные конструкторы)
+## Побочные эффекты в OCaml
 
-### Проблема: неограниченное конструирование
-
-Предположим, мы моделируем денежную сумму:
-
-```ocaml
-type money = float
-```
-
-Ничто не мешает создать отрицательную сумму:
-
-```ocaml
-let price : money = -42.0   (* компилируется без ошибок! *)
-```
-
-Или email:
-
-```ocaml
-type email = string
-
-let bad_email : email = "не-email"   (* тоже компилируется *)
-```
-
-Тип `string` не несёт информации о том, что значение прошло валидацию. Вызывающий код не знает, можно ли доверять этому значению.
-
-В Haskell аналогичная проблема решается через `newtype` + модуль с ограниченным экспортом:
+В Haskell побочные эффекты изолированы типом `IO`:
 
 ```haskell
--- Haskell
-module Email (Email, mkEmail, unEmail) where
-
-newtype Email = Email String
-
-mkEmail :: String -> Maybe Email
-mkEmail s
-  | '@' `elem` s = Just (Email s)
-  | otherwise     = Nothing
-
-unEmail :: Email -> String
-unEmail (Email s) = s
+-- Haskell: эффекты видны в типе
+main :: IO ()
+main = putStrLn "Hello"
 ```
 
-В OCaml мы используем **модули** и **абстрактные типы**.
-
-### Решение: абстрактный тип + конструктор-валидатор
-
-Идея: спрятать внутреннее представление типа и предоставить единственный способ создания значения --- через функцию-валидатор.
+В OCaml любая функция может выполнять побочные эффекты --- печатать, читать файлы, изменять состояние. Это часть философии языка: OCaml --- **практичный** функциональный язык, который не запрещает побочные эффекты, а поощряет их осознанное использование.
 
 ```ocaml
-module Email : sig
-  type t
-  val make : string -> (t, string) result
-  val to_string : t -> string
-end = struct
-  type t = string
-
-  let make s =
-    if String.contains s '@' then Ok s
-    else Error "email должен содержать @"
-
-  let to_string t = t
-end
+(* OCaml: эффекты не видны в типе *)
+let main () = print_endline "Hello"
+(* val main : unit -> unit *)
 ```
 
-Теперь единственный способ получить значение типа `Email.t` --- вызвать `Email.make`, который проверяет формат:
+Тип `unit -> unit` подсказывает, что функция вызывается ради побочных эффектов (возвращает `()`), но компилятор это не проверяет.
+
+### Плюсы и минусы прямого стиля
+
+| Аспект | OCaml (прямые эффекты) | Haskell (IO-монада) |
+|--------|----------------------|---------------------|
+| Простота | Нет обёрток, привычный стиль | Требует монадических комбинаторов |
+| Типобезопасность | Эффекты не видны в типах | Эффекты отражены в типах |
+| Отладка | Можно вставить `print` где угодно | Нужно поднять в IO |
+| Рефакторинг | Сложнее отследить эффекты | Компилятор покажет все эффекты |
+| Тестирование | Нужна дисциплина | Чистые функции легко тестировать |
+
+Хорошая практика OCaml: **разделяйте чистые вычисления и побочные эффекты** самостоятельно, даже без помощи компилятора. Пишите чистые функции, а эффекты выполняйте на верхнем уровне.
+
+## Ссылки (`ref`)
+
+Ссылка (reference) --- мутабельная ячейка, содержащая одно значение:
 
 ```text
-# Email.make "user@example.com";;
-- : (Email.t, string) result = Ok <abstr>
+# let counter = ref 0;;
+val counter : int ref = {contents = 0}
 
-# Email.make "invalid";;
-- : (Email.t, string) result = Error "email должен содержать @"
+# !counter;;
+- : int = 0
 
-# Email.to_string (Result.get_ok (Email.make "user@example.com"));;
-- : string = "user@example.com"
+# counter := !counter + 1;;
+- : unit = ()
+
+# !counter;;
+- : int = 1
 ```
 
-Ключевой момент: тип `Email.t` **абстрактный** --- снаружи модуля невозможно создать его напрямую, обойдя валидацию. Компилятор гарантирует, что если у вас есть значение типа `Email.t`, оно прошло проверку.
+Три операции:
 
-### Примеры: Email, Money, NonEmptyList, PositiveInt
+- `ref v` --- создать ссылку с начальным значением `v`.
+- `!r` --- разыменование (чтение значения).
+- `r := v` --- присвоение (запись значения).
 
-**Money --- положительная денежная сумма:**
+### Тип `ref`
+
+`ref` --- это просто запись с мутабельным полем:
 
 ```ocaml
-module Money : sig
-  type t
-  val make : float -> (t, string) result
-  val amount : t -> float
-  val add : t -> t -> t
-  val to_string : t -> string
-end = struct
-  type t = float
+type 'a ref = { mutable contents : 'a }
+```
 
-  let make f =
-    if f > 0.0 then Ok f
-    else Error "сумма должна быть положительной"
+`ref 0` эквивалентно `{ contents = 0 }`. Оператор `!` --- это `fun r -> r.contents`. Оператор `:=` --- это `fun r v -> r.contents <- v`.
 
-  let amount t = t
-  let add a b = a +. b
+### Ссылки в функциях
 
-  let to_string t =
-    Printf.sprintf "%.2f" t
-end
+```ocaml
+let make_counter () =
+  let n = ref 0 in
+  let increment () = n := !n + 1; !n in
+  let get () = !n in
+  (increment, get)
 ```
 
 ```text
-# Money.make 100.0;;
-- : (Money.t, string) result = Ok <abstr>
-
-# Money.make (-5.0);;
-- : (Money.t, string) result = Error "сумма должна быть положительной"
-
-# let m1 = Result.get_ok (Money.make 100.0);;
-# let m2 = Result.get_ok (Money.make 50.0);;
-# Money.to_string (Money.add m1 m2);;
-- : string = "150.00"
+# let (incr, get) = make_counter ();;
+# incr ();;
+- : int = 1
+# incr ();;
+- : int = 2
+# get ();;
+- : int = 2
 ```
 
-**NonEmptyList --- список, который гарантированно не пуст:**
+Замыкание (closure) `increment` захватывает ссылку `n`. Каждый вызов `make_counter ()` создаёт новый независимый счётчик.
+
+```admonish tip title="Для Python/TypeScript-разработчиков"
+В Python **все** переменные мутабельны по умолчанию --- вы просто пишете `x = 0` и затем `x = x + 1`. В TypeScript есть явное разделение: `let` (мутабельная) vs `const` (иммутабельная).
+
+В OCaml подход противоположный: все привязки (`let`) иммутабельны по умолчанию. Чтобы получить мутабельную переменную, нужно **явно** создать ссылку через `ref`:
+
+| | Python | TypeScript | OCaml |
+|---|---|---|---|
+| Объявление | `x = 0` | `let x = 0` | `let x = ref 0` |
+| Чтение | `x` | `x` | `!x` |
+| Запись | `x = 1` | `x = 1` | `x := 1` |
+
+Операторы `!` (разыменование) и `:=` (присвоение) --- синтаксический «налог» за мутабельность. Это сделано намеренно: мутабельный код должен быть **заметен** при чтении.
+```
+
+### Ссылки vs иммутабельные значения
+
+Используйте ссылки **только когда мутабельность действительно нужна**:
+
+- Счётчики, кэши, аккумуляторы.
+- Циклы (хотя рекурсия обычно предпочтительнее).
+- Взаимодействие с мутабельными API.
+
+Для большинства задач иммутабельные значения и рекурсия лучше --- они проще для понимания и тестирования.
+
+## Мутабельные записи
+
+В главе 4 мы видели записи с `mutable`-полями. Теперь рассмотрим их подробнее:
 
 ```ocaml
-module NonEmptyList : sig
-  type 'a t
-  val make : 'a list -> ('a t, string) result
-  val of_pair : 'a -> 'a list -> 'a t
-  val head : 'a t -> 'a          (* никогда не падает *)
-  val tail : 'a t -> 'a list
-  val to_list : 'a t -> 'a list
-end = struct
-  type 'a t = 'a * 'a list
-
-  let make = function
-    | [] -> Error "список не может быть пустым"
-    | x :: xs -> Ok (x, xs)
-
-  let of_pair x xs = (x, xs)
-  let head (x, _) = x
-  let tail (_, xs) = xs
-  let to_list (x, xs) = x :: xs
-end
+type account = {
+  owner : string;
+  mutable balance : float;
+}
 ```
-
-Обратите внимание: `head` и `tail` **не могут** завершиться ошибкой. Тип `'a t` гарантирует, что в списке есть хотя бы один элемент. Это пример того, как тип кодирует инварианты данных.
-
-**PositiveInt --- строго положительное целое число:**
-
-```ocaml
-module PositiveInt : sig
-  type t
-  val make : int -> (t, string) result
-  val value : t -> int
-  val add : t -> t -> t
-end = struct
-  type t = int
-
-  let make n =
-    if n > 0 then Ok n
-    else Error "число должно быть положительным"
-
-  let value t = t
-  let add a b = a + b
-end
-```
-
-### `.mli` и `private` --- альтернативный подход
-
-В OCaml есть ещё один способ ограничить конструирование --- ключевое слово `private` в `.mli`-файлах.
-
-`money.mli`:
-
-```ocaml
-type t = private float
-
-val make : float -> (t, string) result
-val add : t -> t -> t
-val to_string : t -> string
-```
-
-`money.ml`:
-
-```ocaml
-type t = float
-
-let make f =
-  if f > 0.0 then Ok f
-  else Error "сумма должна быть положительной"
-
-let add a b = a +. b
-let to_string t = Printf.sprintf "%.2f" t
-```
-
-Ключевое слово `private` означает: тип виден снаружи (его можно использовать в pattern matching), но конструировать напрямую нельзя:
 
 ```text
-# let m = Result.get_ok (Money.make 100.0);;
-
-(* Pattern matching работает: *)
-# let (f : float) = (m :> float);;
-val f : float = 100.
-
-(* Но прямое создание запрещено: *)
-# let bad : Money.t = 42.0;;
-Error: This expression has type float but an expression of type
-       Money.t was expected
+# let acc = { owner = "Иван"; balance = 1000.0 };;
+# acc.balance;;
+- : float = 1000.
+# acc.balance <- acc.balance -. 100.0;;
+- : unit = ()
+# acc.balance;;
+- : float = 900.
 ```
 
-Сравнение подходов:
+Оператор `<-` изменяет мутабельное поле «на месте». Неизменяемые поля (`owner`) нельзя менять.
 
-| Аспект | Абстрактный тип (`type t`) | `private` |
-|--------|---------------------------|-----------|
-| Видимость представления | Полностью скрыто | Видно, но read-only |
-| Pattern matching | Невозможен | Возможен |
-| Coercion (`t :> base`) | Невозможен | Возможен |
-| Подходит для | Полная инкапсуляция | Типы, где matching полезен |
-
-Для большинства smart constructors лучше использовать полностью абстрактный тип --- он даёт максимальную защиту. `private` удобен, когда нужно деструктурировать значение без вызова функции-аксессора.
-
-## Make Illegal States Unrepresentable
-
-### Проблема: булевы флаги и невозможные состояния
-
-Рассмотрим модель заказа в интернет-магазине:
+### Пример: простой стек
 
 ```ocaml
-type order = {
-  id : int;
-  items : string list;
-  is_submitted : bool;
-  is_paid : bool;
-  is_shipped : bool;
-  payment_id : string option;
-  tracking_number : string option;
+type 'a stack = {
+  mutable items : 'a list;
+  mutable size : int;
 }
+
+let create_stack () = { items = []; size = 0 }
+
+let push x s =
+  s.items <- x :: s.items;
+  s.size <- s.size + 1
+
+let pop s =
+  match s.items with
+  | [] -> None
+  | x :: rest ->
+    s.items <- rest;
+    s.size <- s.size - 1;
+    Some x
 ```
 
-Эта модель допускает **невозможные состояния**:
+## Массивы
 
-```ocaml
-(* Отправлен, но не оплачен? *)
-let bad1 = {
-  id = 1; items = ["книга"];
-  is_submitted = true; is_paid = false; is_shipped = true;
-  payment_id = None; tracking_number = Some "TRACK123";
-}
-
-(* Не отправлен, но есть tracking number? *)
-let bad2 = {
-  id = 2; items = ["ручка"];
-  is_submitted = true; is_paid = true; is_shipped = false;
-  payment_id = Some "PAY456"; tracking_number = Some "TRACK789";
-}
-```
-
-Булевы флаги создают 2^3 = 8 комбинаций, из которых допустимы только 4. Программист должен **помнить** инварианты, и компилятор ему не поможет.
-
-В Haskell эту проблему решают через алгебраические типы данных (ADT). В OCaml --- точно так же.
-
-### Решение: кодирование состояний в типах
-
-Вместо булевых флагов зададим каждое состояние как отдельный вариант:
-
-```ocaml
-type draft = {
-  id : int;
-  items : string list;
-}
-
-type submitted = {
-  id : int;
-  items : string list;
-  submitted_at : float;
-}
-
-type paid = {
-  id : int;
-  items : string list;
-  submitted_at : float;
-  payment_id : string;
-}
-
-type shipped = {
-  id : int;
-  items : string list;
-  submitted_at : float;
-  payment_id : string;
-  tracking_number : string;
-}
-
-type order =
-  | Draft of draft
-  | Submitted of submitted
-  | Paid of paid
-  | Shipped of shipped
-```
-
-Теперь невозможно создать заказ с `tracking_number`, но без `payment_id` --- тип `shipped` требует оба поля. Каждый переход между состояниями --- отдельная функция:
-
-```ocaml
-let submit (d : draft) ~submitted_at : submitted =
-  { id = d.id; items = d.items; submitted_at }
-
-let pay (s : submitted) ~payment_id : paid =
-  { id = s.id; items = s.items;
-    submitted_at = s.submitted_at; payment_id }
-
-let ship (p : paid) ~tracking_number : shipped =
-  { id = p.id; items = p.items;
-    submitted_at = p.submitted_at;
-    payment_id = p.payment_id; tracking_number }
-```
-
-Попытка нарушить порядок --- ошибка компиляции:
+Массивы в OCaml --- мутабельные коллекции с доступом по индексу за O(1):
 
 ```text
-# let d = { id = 1; items = ["книга"] };;
-# ship d ~tracking_number:"T123";;
-Error: This expression has type draft
-       but an expression of type paid was expected
+# let a = [| 1; 2; 3; 4; 5 |];;
+val a : int array = [|1; 2; 3; 4; 5|]
+
+# a.(0);;
+- : int = 1
+
+# a.(2) <- 99;;
+- : unit = ()
+
+# a;;
+- : int array = [|1; 2; 99; 4; 5|]
 ```
 
-### Пример: конечный автомат для заказа (Draft -> Submitted -> Paid -> Shipped)
+Синтаксис: `[| ... |]` --- литерал массива. `a.(i)` --- доступ по индексу. `a.(i) <- v` --- запись по индексу.
 
-Объединим всё в модуль:
-
-```ocaml
-module Order : sig
-  type draft
-  type submitted
-  type paid
-  type shipped
-  type t = Draft of draft | Submitted of submitted
-         | Paid of paid | Shipped of shipped
-
-  val create : items:string list -> draft
-  val submit : draft -> submitted
-  val pay : submitted -> payment_id:string -> paid
-  val ship : paid -> tracking_number:string -> shipped
-
-  val to_order : draft -> t
-  val items : t -> string list
-end = struct
-  type draft = { id : int; items : string list }
-  type submitted = { id : int; items : string list; submitted_at : float }
-  type paid = { id : int; items : string list; submitted_at : float;
-                payment_id : string }
-  type shipped = { id : int; items : string list; submitted_at : float;
-                   payment_id : string; tracking_number : string }
-  type t = Draft of draft | Submitted of submitted
-         | Paid of paid | Shipped of shipped
-
-  let next_id = ref 0
-  let fresh_id () = incr next_id; !next_id
-
-  let create ~items = { id = fresh_id (); items }
-
-  let submit d =
-    { id = d.id; items = d.items;
-      submitted_at = Unix.gettimeofday () }
-
-  let pay s ~payment_id =
-    { id = s.id; items = s.items;
-      submitted_at = s.submitted_at; payment_id }
-
-  let ship p ~tracking_number =
-    { id = p.id; items = p.items;
-      submitted_at = p.submitted_at;
-      payment_id = p.payment_id; tracking_number }
-
-  let to_order d = Draft d
-
-  let items = function
-    | Draft d -> d.items
-    | Submitted s -> s.items
-    | Paid p -> p.items
-    | Shipped s -> s.items
-end
-```
-
-Такая модель --- конечный автомат (finite state machine, FSM), где переходы между состояниями проверяются компилятором. Невозможно:
-
-- Оплатить неотправленный заказ (`pay` принимает только `submitted`).
-- Отправить неоплаченный заказ (`ship` принимает только `paid`).
-- Вернуться в предыдущее состояние (нет функции `unpay` или `unship`).
-
-### Phantom types для маркировки
-
-**Phantom types** (типы-фантомы) --- типовые параметры, которые не используются в представлении данных, но участвуют в проверке типов. Они позволяют «помечать» значения на уровне типов.
-
-В Haskell phantom types --- известный паттерн:
-
-```haskell
--- Haskell
-newtype Tagged tag a = Tagged a
-
-data Open
-data Closed
-
-type Handle tag = Tagged tag FileHandle
-
-open :: FilePath -> IO (Handle Open)
-close :: Handle Open -> IO (Handle Closed)
-read :: Handle Open -> IO String   -- нельзя читать закрытый!
-```
-
-В OCaml phantom types работают аналогично:
-
-```ocaml
-type draft_state
-type submitted_state
-type paid_state
-type shipped_state
-
-type 'state order = {
-  id : int;
-  items : string list;
-  data : string;   (* различные данные в зависимости от состояния *)
-}
-```
-
-Типы `draft_state`, `submitted_state` и т.д. --- **пустые** (у них нет конструкторов). Их единственная роль --- быть метками в параметре `'state`.
-
-```ocaml
-let create ~items : draft_state order =
-  { id = 0; items; data = "" }
-
-let submit (o : draft_state order) : submitted_state order =
-  { id = o.id; items = o.items; data = "submitted" }
-
-let pay (o : submitted_state order) ~payment_id : paid_state order =
-  { id = o.id; items = o.items; data = payment_id }
-
-let ship (o : paid_state order) ~tracking : shipped_state order =
-  { id = o.id; items = o.items; data = tracking }
-```
-
-Компилятор проверяет порядок переходов:
+### Создание массивов
 
 ```text
-# let o = create ~items:["книга"];;
-val o : draft_state order = ...
+# Array.make 5 0;;
+- : int array = [|0; 0; 0; 0; 0|]
 
-# let o = submit o;;
-val o : submitted_state order = ...
+# Array.init 5 (fun i -> i * i);;
+- : int array = [|0; 1; 4; 9; 16|]
 
-# ship o ~tracking:"T123";;
-Error: This expression has type submitted_state order
-       but an expression of type paid_state order was expected
+# Array.of_list [1; 2; 3];;
+- : int array = [|1; 2; 3|]
+
+# Array.to_list [| 1; 2; 3 |];;
+- : int list = [1; 2; 3]
 ```
 
-Phantom types особенно полезны, когда:
+### Когда массивы vs списки
 
-- Все состояния имеют **одинаковое** представление (один тип записи).
-- Нужно «пометить» значение, не меняя его структуру.
-- Нужно обеспечить протокол использования (open/close, lock/unlock, connect/disconnect).
+| Операция | Список | Массив |
+|----------|--------|--------|
+| Доступ по индексу | O(n) | O(1) |
+| Добавление в начало | O(1) | O(n) |
+| Конкатенация | O(n) | O(n) |
+| Сопоставление с образцом | Да | Нет |
+| Мутабельность | Нет | Да |
 
-Для заказа с **разными** данными в каждом состоянии (как `payment_id`, `tracking_number`) лучше подходят отдельные типы или GADT.
+Списки лучше для последовательной обработки (map, filter, fold). Массивы --- для случайного доступа и численных вычислений.
 
-## Parse, Don't Validate
+```admonish tip title="Для Python/TypeScript-разработчиков"
+В Python список (`list`) --- это на самом деле динамический массив (аналог `ArrayList` в Java). В TypeScript `Array<T>` --- тоже динамический массив. Оба мутабельны и поддерживают доступ по индексу за O(1).
 
-### Проблема: валидация возвращает `bool`, теряет информацию
+В OCaml `list` и `array` --- **разные** структуры данных:
 
-Рассмотрим типичную валидацию:
+- `list` --- односвязный иммутабельный список (как linked list). Доступ по индексу --- O(n), но добавление в начало --- O(1).
+- `array` --- мутабельный массив фиксированного размера с доступом O(1).
 
-```ocaml
-let is_valid_email (s : string) : bool =
-  String.contains s '@'
-
-let is_non_empty (s : string) : bool =
-  String.length s > 0
-
-let is_positive (n : int) : bool =
-  n > 0
+Если вы привыкли к `list.append()` в Python, помните: в OCaml списки не растут на месте. Вместо этого используйте `x :: xs` (добавление в начало) или `Array` для мутабельной коллекции.
 ```
 
-Эти функции проверяют данные, но **не сохраняют результат проверки** в типе. После вызова `is_valid_email` у нас по-прежнему `string` --- и ничто не мешает передать невалидный `string` в код, ожидающий валидный email:
+## Циклы
+
+OCaml поддерживает традиционные циклы --- `for` и `while`:
+
+### Цикл `for`
 
 ```ocaml
-let send_email (email : string) =
-  (* Надеемся, что email валидный... *)
-  Printf.printf "Отправляем на %s\n" email
-
-let process input =
-  if is_valid_email input then
-    send_email input   (* Ok, но... *)
-  else
-    print_endline "Невалидный email"
-
-(* Ничто не мешает вызвать напрямую: *)
-let () = send_email "это-не-email"   (* Компилируется! *)
+let print_range a b =
+  for i = a to b do
+    Printf.printf "%d " i
+  done;
+  print_newline ()
 ```
 
-Валидация через `bool` создаёт **зазор** между проверкой и использованием. Проверка выполняется в одном месте, а использование --- в другом, и между ними нет связи на уровне типов.
-
-### Решение: парсинг возвращает типизированное значение
-
-Вместо валидации (возвращает `bool`) используйте **парсинг** (возвращает типизированное значение):
-
-```ocaml
-(* Валидация --- теряет информацию *)
-val is_valid_email : string -> bool
-
-(* Парсинг --- сохраняет информацию в типе *)
-val parse_email : string -> (Email.t, string) result
+```text
+# print_range 1 5;;
+1 2 3 4 5
 ```
 
-Парсинг преобразует «сырые» данные (`string`, `int`, `Yojson.Safe.t`) в **типизированные** значения (`Email.t`, `Money.t`, `Config.t`). Если преобразование невозможно --- возвращает ошибку.
+Обратный цикл --- с `downto`:
 
 ```ocaml
-module Email : sig
-  type t
-  val parse : string -> (t, string) result
-  val to_string : t -> string
-end = struct
-  type t = string
-
-  let parse s =
-    if String.length s = 0 then Error "email не может быть пустым"
-    else if not (String.contains s '@') then Error "email должен содержать @"
-    else
-      let parts = String.split_on_char '@' s in
-      match parts with
-      | [_local; domain] when String.contains domain '.' -> Ok s
-      | _ -> Error "некорректный формат email"
-
-  let to_string t = t
-end
+let countdown n =
+  for i = n downto 1 do
+    Printf.printf "%d... " i
+  done;
+  print_endline "Пуск!"
 ```
 
-Теперь `send_email` принимает `Email.t`, а не `string`:
+### Цикл `while`
 
 ```ocaml
-let send_email (email : Email.t) =
-  Printf.printf "Отправляем на %s\n" (Email.to_string email)
-
-let process input =
-  match Email.parse input with
-  | Ok email -> send_email email   (* Гарантированно валидный *)
-  | Error msg -> Printf.printf "Ошибка: %s\n" msg
-
-(* Невозможно вызвать с невалидным значением: *)
-(* send_email "это-не-email"  --- ошибка компиляции! *)
+let find_first_negative arr =
+  let i = ref 0 in
+  let len = Array.length arr in
+  while !i < len && arr.(!i) >= 0 do
+    i := !i + 1
+  done;
+  if !i < len then Some !i else None
 ```
 
-### Связь с предыдущими паттернами
+Циклы в OCaml возвращают `unit`. Они полезны при работе с массивами и мутабельным состоянием, но для обработки списков предпочитайте `List.map`, `List.fold_left` и рекурсию.
 
-«Parse, Don't Validate» --- это **обобщение** smart constructors и «Make Illegal States Unrepresentable»:
+## Вывод: `print` и `Printf`
 
-1. **Smart constructors** --- парсинг примитивного значения в доменный тип: `string -> Email.t`, `float -> Money.t`.
-2. **Make Illegal States Unrepresentable** --- парсинг набора данных в допустимое состояние: вместо `{is_paid: bool; payment_id: string option}` создаём тип `Paid of {payment_id: string}`.
-3. **Parse, Don't Validate** --- философия: каждая граница системы (ввод пользователя, API, конфиг) --- это точка парсинга. Внутри системы работаем только с типизированными значениями.
+### Простой вывод
 
-Вот ключевая идея: **парсинг выполняется один раз** на границе системы. После этого все функции работают с типизированными данными и не нуждаются в повторной валидации. Тип сам по себе является доказательством валидности.
+```text
+# print_string "hello";;
+hello- : unit = ()
 
-### Границы программы и границы системы
+# print_endline "hello";;
+hello
+- : unit = ()
 
-Принцип «Parse, Don't Validate» --- мощный инструмент для отдельной программы. Но в реальном продакшене программа --- лишь один артефакт из многих. Статья Иана Данкана [*«What Functional Programmers Get Wrong About Systems»*](https://www.iankduncan.com/engineering/2026-02-09-what-functional-programmers-get-wrong-about-systems) (2026) формулирует проблему резко:
+# print_int 42;;
+42- : unit = ()
 
-> *«Единица корректности в продакшене --- не программа, а набор деплоев.»*
+# print_float 3.14;;
+3.14- : unit = ()
 
-Система типов проверяет свойства **одного артефакта**. Но в продакшене одновременно работают **несколько версий** вашего кода. Разрыв между этими двумя мирами --- источник реальных ошибок.
+# print_newline ();;
 
-**Проблема 1: несколько версий сосуществуют.** Деплой никогда не заменяет код атомарно. Во время rolling deploy старые и новые воркеры обрабатывают запросы одновременно. Представьте, что вы добавляете новый вариант в тип:
-
-```ocaml
-(* v1 *)
-type payment_status = Pending | Completed | Failed
-
-(* v2 --- добавили Refunded *)
-type payment_status = Pending | Completed | Failed | Refunded
+- : unit = ()
 ```
 
-На несколько минут старые воркеры будут получать сообщения с `Refunded` --- и не будут знать, что с ними делать. Типы гарантируют корректность **внутри** каждой версии, но **между версиями** нет проверки.
+### `Printf.printf` --- форматированный вывод
 
-**Проблема 2: сериализованные данные переживают код.** Очередь сообщений (Kafka, RabbitMQ) --- это «капсула времени для версий». Если Kafka хранит сообщения 30 дней, вы должны уметь десериализовать **30 разных форматов** одновременно. `parse` в «Parse, Don't Validate» работает на входе в программу, но что именно он парсит --- может оказаться артефактом давно откачанной версии.
+`Printf.printf` --- аналог `printf` из C, но **типобезопасный**:
 
-**Проблема 3: семантический дрейф обходит систему типов.** Самый коварный случай --- когда тип не меняется, но **смысл** значения меняется:
+```text
+# Printf.printf "Имя: %s, Возраст: %d\n" "Иван" 25;;
+Имя: Иван, Возраст: 25
+- : unit = ()
 
-```ocaml
-(* v1: amount — центы *)
-type payment = { amount : int; currency : string }
-
-(* v2: amount — доллары *)
-type payment = { amount : int; currency : string }
+# Printf.printf "Pi = %.4f\n" 3.14159;;
+Pi = 3.1416
+- : unit = ()
 ```
 
-Тип идентичен. Парсер пропустит оба формата. Но значение отличается в 100 раз. Никакой type checker этого не поймает.
+Спецификаторы формата:
 
-#### Как расширить «Parse, Don't Validate» на уровень системы
+| Спецификатор | Тип | Пример |
+|-------------|-----|--------|
+| `%d` | `int` | `42` |
+| `%f` | `float` | `3.14` |
+| `%s` | `string` | `"hello"` |
+| `%b` | `bool` | `true` |
+| `%c` | `char` | `'a'` |
+| `%a` | custom printer | --- |
+| `%%` | literal `%` | `%` |
 
-Данкан не отвергает принцип --- он показывает, что его нужно **расширить** за пределы одного артефакта:
+В OCaml форматная строка --- не обычная строка, а специальный тип `('a, 'b, 'c) format`. Компилятор проверяет соответствие типов на этапе компиляции:
 
-1. **Версионируйте сериализованные данные.** Каждое сообщение, API-ответ и миграция базы несёт неявный версионный контракт. Делайте его **явным** --- используйте schema ID, теги версий, маркеры формата. Реестры схем (Confluent Schema Registry, Buf для Protobuf) реализуют «parse, don't validate» **на границе между версиями**, а не только на границе одной программы.
-
-2. **Используйте паттерн expand-and-contract для миграций.** Код можно откатить, но схему базы данных --- нет. «Однонаправленная трещотка миграции» означает, что откат на старый код с новой схемой создаёт непротестированное состояние. Четырёхшаговый процесс:
-   - Добавить nullable колонку (expand).
-   - Записывать в оба формата.
-   - Бэкфиллить старые данные.
-   - Удалить старую колонку (contract).
-
-3. **Проверяйте совместимость на этапе деплоя, а не в рантайме.** GraphQL operations checks сравнивают предложенные изменения схемы с реальными клиентскими запросами **до** деплоя. Это переносит проверку совместимости из рантайма на этап сборки --- тот же принцип, что «Parse, Don't Validate», но на уровне всей системы.
-
-#### Практическое правило
-
-Разделяйте мир на три зоны:
-
-| Зона | Стратегия | Инструмент |
-|------|-----------|------------|
-| **Внутри программы** | Parse, Don't Validate | Система типов OCaml, smart constructors |
-| **Между версиями одного сервиса** | Версионированные схемы, совместимость | Protobuf/schema registry, expand-and-contract |
-| **Между разными сервисами** | Контрактное тестирование, API-версионирование | GraphQL operations checks, Pact, API gateways |
-
-Внутри программы тип --- это доказательство. На границе между версиями тип --- это **контракт**, который нуждается в явной проверке совместимости. «Parse, Don't Validate» остаётся верным принципом --- но его юрисдикция заканчивается на границе одного артефакта, а продакшен --- это ансамбль артефактов разных поколений.
-
-## Проект: типобезопасная платёжная система
-
-Модуль `lib/payment.ml` объединяет все паттерны главы в одном проекте --- типобезопасной платёжной системе.
-
-### Money --- smart constructor
-
-```ocaml
-module Money : sig
-  type t
-  val make : float -> (t, string) result
-  val amount : t -> float
-  val add : t -> t -> t
-  val to_string : t -> string
-end = struct
-  type t = float
-
-  let make f =
-    if f > 0.0 then Ok f
-    else Error "сумма должна быть положительной"
-
-  let amount t = t
-  let add a b = a +. b
-  let to_string t = Printf.sprintf "%.2f" t
-end
+```text
+# Printf.printf "%d" "hello";;
+Error: This expression has type string but an expression of type int was expected
 ```
 
-### CardNumber --- smart constructor
+### `Printf.sprintf` --- форматирование в строку
+
+```text
+# Printf.sprintf "Имя: %s, Возраст: %d" "Иван" 25;;
+- : string = "Имя: Иван, Возраст: 25"
+
+# Printf.sprintf "%.2f%%" 99.5;;
+- : string = "99.50%"
+```
+
+`sprintf` работает как `printf`, но возвращает строку вместо вывода на экран. Это удобно для формирования сообщений.
+
+## Ввод: `input_line` и `read_line`
+
+```text
+# let name = read_line ();;
+(пользователь вводит: Иван)
+val name : string = "Иван"
+```
+
+`read_line ()` читает строку из стандартного ввода. `input_line ic` читает строку из произвольного канала ввода.
+
+## Работа с файлами
+
+### Чтение файла
 
 ```ocaml
-module CardNumber : sig
-  type t
-  val make : string -> (t, string) result
-  val to_masked : t -> string
-  val to_string : t -> string
-end = struct
-  type t = string
+let read_file path =
+  In_channel.with_open_text path In_channel.input_all
+```
 
-  let make s =
-    let digits = String.to_seq s
-      |> Seq.filter (fun c -> c <> ' ' && c <> '-')
-      |> String.of_seq
+`In_channel.with_open_text` открывает файл, передаёт канал в функцию и **гарантирует закрытие** файла, даже при исключении. Это аналог `with` в Python или `bracket` в Haskell.
+
+```admonish tip title="Для Python/TypeScript-разработчиков"
+Паттерн `In_channel.with_open_text path f` --- прямой аналог контекстного менеджера `with` в Python:
+
+```python
+# Python
+with open("file.txt") as f:
+    content = f.read()
+
+# TypeScript (Node.js) --- нет встроенного аналога,
+# нужно try/finally или fs.readFileSync
+```
+
+В OCaml нет `with`-синтаксиса, но функции `with_open_*` выполняют ту же роль --- гарантируют закрытие ресурса при любом исходе вычисления. Это паттерн «bracket» (открыть-использовать-закрыть).
+```
+
+Построчное чтение:
+
+```ocaml
+let read_lines path =
+  In_channel.with_open_text path (fun ic ->
+    let rec loop acc =
+      match In_channel.input_line ic with
+      | Some line -> loop (line :: acc)
+      | None -> List.rev acc
     in
-    if String.length digits <> 16 then
-      Error "номер карты должен содержать 16 цифр"
-    else if not (String.for_all (fun c -> c >= '0' && c <= '9') digits) then
-      Error "номер карты должен содержать только цифры"
-    else
-      Ok digits
+    loop [])
+```
 
-  let to_masked t =
-    let len = String.length t in
-    String.init len (fun i ->
-      if i < len - 4 then '*' else t.[i])
+### Запись в файл
 
-  let to_string t = t
+```ocaml
+let write_file path content =
+  Out_channel.with_open_text path (fun oc ->
+    Out_channel.output_string oc content)
+
+let write_lines path lines =
+  Out_channel.with_open_text path (fun oc ->
+    List.iter (fun line ->
+      Out_channel.output_string oc (line ^ "\n")
+    ) lines)
+```
+
+### Добавление в файл
+
+```ocaml
+let append_to_file path content =
+  Out_channel.with_open_gen
+    [Open_append; Open_creat; Open_text] 0o644 path
+    (fun oc -> Out_channel.output_string oc content)
+```
+
+`with_open_gen` позволяет указать флаги открытия: `Open_append` --- добавление, `Open_creat` --- создание если не существует.
+
+## Последовательное выполнение: `;`
+
+Точка с запятой `;` --- оператор последовательного выполнения. Он вычисляет левое выражение, отбрасывает результат и вычисляет правое:
+
+```ocaml
+let greet name =
+  print_string "Привет, ";
+  print_string name;
+  print_endline "!"
+```
+
+Компилятор предупредит, если результат перед `;` не `unit`:
+
+```text
+# 1 + 2; print_endline "ok";;
+Warning 10: this expression should have type unit.
+```
+
+Если вы намеренно отбрасываете значение, используйте `ignore`:
+
+```ocaml
+let _ = ignore (1 + 2); print_endline "ok"
+```
+
+## Проект: менеджер записей
+
+Модуль `lib/records.ml` демонстрирует работу с мутабельным состоянием на примере простого хранилища записей.
+
+### Тип данных
+
+```ocaml
+type record = {
+  id : int;
+  name : string;
+  value : string;
+}
+
+type store = {
+  mutable entries : record list;
+  mutable next_id : int;
+}
+```
+
+### Операции
+
+```ocaml
+let create_store () =
+  { entries = []; next_id = 1 }
+
+let add_record store ~name ~value =
+  let record = { id = store.next_id; name; value } in
+  store.entries <- record :: store.entries;
+  store.next_id <- store.next_id + 1;
+  record
+
+let find_record store id =
+  List.find_opt (fun r -> r.id = id) store.entries
+
+let remove_record store id =
+  store.entries <- List.filter (fun r -> r.id <> id) store.entries
+
+let all_records store =
+  List.rev store.entries
+```
+
+## Functional Core, Imperative Shell
+
+### Идея паттерна
+
+В OCaml побочные эффекты не отражаются в типах, поэтому разделение чистого и мутабельного кода --- ответственность программиста. Паттерн **Functional Core, Imperative Shell** (FC/IS) помогает структурировать код:
+
+- **Functional Core** --- чистые функции без побочных эффектов. Вся бизнес-логика, валидация, преобразования данных. Легко тестировать, легко рассуждать.
+- **Imperative Shell** --- тонкая оболочка, управляющая состоянием и выполняющая эффекты (IO, мутация). Делегирует логику Functional Core.
+
+### Проблема: смешение логики и мутации
+
+В нашем менеджере записей логика и мутация переплетены. `add_record` одновременно **создаёт** запись и **мутирует** хранилище:
+
+```ocaml
+let add_record store ~name ~value =
+  let record = { id = store.next_id; name; value } in
+  store.entries <- record :: store.entries;    (* мутация! *)
+  store.next_id <- store.next_id + 1;         (* мутация! *)
+  record
+```
+
+Тестировать такую функцию сложнее --- нужно создавать мутабельный `store` для каждого теста.
+
+### Рефакторинг: разделение на Pure и Shell
+
+**Pure** --- чистые функции, работающие с иммутабельными данными:
+
+```ocaml
+module Pure = struct
+  let make_record ~id ~name ~value = { id; name; value }
+
+  let find entries id =
+    List.find_opt (fun r -> r.id = id) entries
+
+  let remove entries id =
+    List.filter (fun r -> r.id <> id) entries
+
+  let all entries = List.rev entries
 end
 ```
 
-```text
-# CardNumber.make "4111 1111 1111 1111";;
-- : (CardNumber.t, string) result = Ok <abstr>
-
-# CardNumber.make "123";;
-- : (CardNumber.t, string) result = Error "номер карты должен содержать 16 цифр"
-
-# let card = Result.get_ok (CardNumber.make "4111111111111111");;
-# CardNumber.to_masked card;;
-- : string = "************1111"
-```
-
-### PaymentState --- конечный автомат
+**Shell** --- мутабельная оболочка, делегирующая логику Pure:
 
 ```ocaml
-module PaymentState : sig
-  type draft
-  type submitted
-  type paid
-  type shipped
+module Shell = struct
+  let add store ~name ~value =
+    let record = Pure.make_record ~id:store.next_id ~name ~value in
+    store.entries <- record :: store.entries;
+    store.next_id <- store.next_id + 1;
+    record
 
-  type 'state payment
-
-  val create : amount:Money.t -> 'a -> draft payment
-  val submit : draft payment -> card:CardNumber.t -> submitted payment
-  val pay : submitted payment -> transaction_id:string -> paid payment
-  val ship : paid payment -> tracking:string -> shipped payment
-
-  val amount : 'state payment -> Money.t
-  val description : 'state payment -> string
-end = struct
-  type draft
-  type submitted
-  type paid
-  type shipped
-
-  type 'state payment = {
-    amount : Money.t;
-    description : string;
-    data : string;
-  }
-
-  let create ~amount description =
-    { amount; description; data = "" }
-
-  let submit p ~card =
-    { amount = p.amount;
-      description = p.description;
-      data = CardNumber.to_masked card }
-
-  let pay p ~transaction_id =
-    { amount = p.amount;
-      description = p.description;
-      data = transaction_id }
-
-  let ship p ~tracking =
-    { amount = p.amount;
-      description = p.description;
-      data = tracking }
-
-  let amount p = p.amount
-  let description p = p.description
+  let find store id = Pure.find store.entries id
+  let remove store id = store.entries <- Pure.remove store.entries id
+  let all store = Pure.all store.entries
 end
 ```
 
-Используем всю систему вместе:
+### Преимущества
+
+- **Тестируемость**: функции `Pure` можно тестировать без мутабельного состояния --- передаёте иммутабельный список, получаете результат.
+- **Читаемость**: из сигнатур ясно, где происходят эффекты (функции `Shell` принимают `store`), а где чистая логика.
+- **Повторное использование**: `Pure.find` и `Pure.remove` работают с любым `record list`, не только с `store.entries`.
+
+### Когда применять
+
+FC/IS особенно полезен, когда:
+
+- Бизнес-логика сложна и нуждается в тестах.
+- Код смешивает вычисления и побочные эффекты.
+- Несколько потребителей одной и той же логики (CLI, веб-сервер, тесты).
+
+Для простых случаев (счётчик на `ref`) разделение избыточно. Применяйте по мере роста сложности.
+
+```admonish info title="Подробнее"
+Детальное описание мутабельного состояния, массивов и императивного программирования: [Real World OCaml, глава «Imperative Programming»](https://dev.realworldocaml.org/imperative-programming.html).
+```
+
+## Сборщик мусора и управление памятью
+
+OCaml использует автоматическое управление памятью --- сборщик мусора (GC) освобождает объекты, которые больше не используются. Понимание работы GC помогает писать эффективный код и управлять ресурсами.
+
+### Generational GC
+
+Сборщик мусора OCaml --- **поколенческий** (generational). Он разделяет память на два поколения:
+
+- **Minor heap** (малая куча) --- маленькая область (~256KB по умолчанию). Все новые объекты создаются здесь. Сборка мусора в minor heap выполняется **очень быстро** с помощью алгоритма copying GC --- живые объекты копируются, а всё остальное освобождается разом.
+
+- **Major heap** (большая куча) --- большая область для **долгоживущих** объектов. Используется алгоритм mark-and-sweep: сначала помечаются живые объекты, затем неотмеченные освобождаются. Сборка выполняется инкрементально, чтобы не останавливать программу надолго.
+
+Типичное соотношение: на каждую major-сборку приходится ~100 minor-сборок. Объекты, пережившие minor-сборку, **переносятся** (promote) в major heap, где живут дольше.
+
+Такая схема работает хорошо благодаря **гипотезе поколений**: большинство объектов живут очень недолго. Функциональный код создаёт множество временных значений --- minor heap собирает их быстро и дёшево.
+
+### Модуль `Gc`
+
+Модуль `Gc` позволяет получать статистику и настраивать параметры сборщика:
 
 ```ocaml
-let process_payment () =
-  let ( let* ) = Result.bind in
-  let* amount = Money.make 99.99 in
-  let* card = CardNumber.make "4111 1111 1111 1111" in
+let stats = Gc.stat () in
+Printf.printf "Minor collections: %d\n" stats.minor_collections;
+Printf.printf "Major collections: %d\n" stats.major_collections;
+Printf.printf "Minor heap size: %d words\n" stats.heap_words;
 
-  let payment = PaymentState.create ~amount "Книга по OCaml" in
-  let payment = PaymentState.submit payment ~card in
-  let payment = PaymentState.pay payment ~transaction_id:"TXN-001" in
-  let payment = PaymentState.ship payment ~tracking:"TRACK-42" in
-
-  Ok (Printf.sprintf "Оплата %s за '%s' отправлена"
-    (Money.to_string (PaymentState.amount payment))
-    (PaymentState.description payment))
+(* Включение подробного вывода GC *)
+Gc.set { (Gc.get ()) with Gc.verbose = 0x01 }
 ```
 
-```text
-# process_payment ();;
-- : (string, string) result =
-Ok "Оплата 99.99 за 'Книга по OCaml' отправлена"
+`Gc.stat ()` возвращает запись типа `Gc.stat` с информацией о количестве сборок, размерах куч и другими метриками. `Gc.get ()` возвращает текущие настройки, а `Gc.set` позволяет их изменить --- например, включить подробный вывод отладочной информации.
+
+### Finalisers
+
+Финализеры --- функции, которые вызываются перед тем, как GC соберёт объект. Они полезны для освобождения внешних ресурсов (файловых дескрипторов, сетевых соединений):
+
+```ocaml
+let register_resource resource =
+  Gc.finalise (fun r -> cleanup r) resource
+
+(* ВАЖНО: OCaml НЕ гарантирует запуск finalisers при exit *)
+let () = at_exit Gc.full_major
 ```
 
-Попытка нарушить порядок --- ошибка компиляции:
+Важные предупреждения:
 
-```text
-# let p = PaymentState.create ~amount "test" in
-  PaymentState.ship p ~tracking:"T";;
-Error: This expression has type draft payment
-       but an expression of type paid payment was expected
+- **Финализеры не вызываются при `exit`** --- если программа завершается, GC не обязан собрать все объекты. Используйте `at_exit Gc.full_major`, чтобы форсировать полную сборку при завершении.
+- **Финализер не должен бросать исключения** --- исключение из финализера приведёт к непредсказуемому поведению.
+- **Не привязывайте финализер к значению, которое он замыкает** --- если финализер ссылается на тот же объект, к которому привязан, объект никогда не будет собран (циклическая ссылка).
+
+### Weak references
+
+Слабые ссылки (weak references) позволяют GC собирать значение, **даже если ссылка на него существует**. Это полезно для кешей --- если памяти достаточно, значение остаётся в кеше; если GC нуждается в памяти, кеш очищается автоматически:
+
+```ocaml
+let cache = Weak.create 100
+
+let get_or_compute n compute =
+  match Weak.get cache n with
+  | Some value -> value
+  | None ->
+    let value = compute () in
+    Weak.set cache n (Some value);
+    value
 ```
 
-Вся система типобезопасна:
+`Weak.create n` создаёт массив из `n` слабых ссылок. `Weak.get` возвращает `Some value`, если значение ещё не собрано, или `None`, если GC его уже освободил. `Weak.set` устанавливает значение в слот.
 
-- `Money.t` гарантирует положительную сумму.
-- `CardNumber.t` гарантирует 16 цифр.
-- Phantom types в `PaymentState` гарантируют порядок переходов.
+Слабые ссылки --- инструмент для ситуаций, когда вы хотите сохранить значение «если возможно», но не хотите мешать GC освобождать память. Типичный пример --- кеш вычислений, который автоматически уменьшается при нехватке памяти.
 
 ## Упражнения
 
 Решения пишите в `test/my_solutions.ml`. Проверяйте: `dune runtest`.
 
-1. **(Лёгкое)** Реализуйте модуль `PositiveInt` --- smart constructor для строго положительных целых чисел.
+1. **(Лёгкое)** Реализуйте модуль `Counter` --- счётчик на основе `ref`.
 
     ```ocaml
-    module PositiveInt : sig
+    val counter_create : int -> int ref
+    val counter_increment : int ref -> unit
+    val counter_decrement : int ref -> unit
+    val counter_reset : int ref -> unit
+    val counter_value : int ref -> int
+    ```
+
+    `counter_create 0` создаёт счётчик с начальным значением 0. `counter_increment` увеличивает на 1, `counter_decrement` уменьшает, `counter_reset` сбрасывает в 0.
+
+2. **(Среднее)** Реализуйте модуль `Logger` --- простой логгер, который накапливает сообщения в буфере.
+
+    ```ocaml
+    type logger
+    val logger_create : unit -> logger
+    val logger_log : logger -> string -> unit
+    val logger_messages : logger -> string list
+    val logger_clear : logger -> unit
+    val logger_count : logger -> int
+    ```
+
+    *Подсказка:* используйте `ref` со списком строк. `logger_messages` должна возвращать сообщения в порядке добавления.
+
+3. **(Среднее)** Реализуйте функцию `format_table`, которая форматирует список записей в текстовую таблицу.
+
+    ```ocaml
+    val format_table : (string * string) list -> string
+    ```
+
+    Например, `format_table [("Имя", "Иван"); ("Город", "Москва")]` должна вернуть:
+
+    ```
+    Имя   | Иван
+    Город | Москва
+    ```
+
+    *Подсказка:* используйте `Printf.sprintf` и вычислите максимальную длину ключа для выравнивания.
+
+4. **(Среднее)** Реализуйте функцию `array_sum_imperative`, которая вычисляет сумму элементов массива с помощью цикла `for` и ссылки-аккумулятора.
+
+    ```ocaml
+    val array_sum_imperative : int array -> int
+    ```
+
+    *Подсказка:* используйте `ref` для аккумулятора и `for i = 0 to Array.length arr - 1`.
+
+5. **(Среднее)** Robot Name --- генерация уникальных имён роботов формата AA000 (две буквы + три цифры). Каждый вызов `create` должен давать уникальное имя.
+
+    ```ocaml
+    module Robot : sig
       type t
-      val make : int -> (t, string) result
-      val value : t -> int
-      val add : t -> t -> t
-      val to_string : t -> string
+      val create : unit -> t
+      val name : t -> string
+      val reset : t -> t
     end
     ```
 
-    `make n` возвращает `Ok`, если `n > 0`, иначе `Error "число должно быть положительным"`. `add` складывает два значения.
+    `create ()` создаёт робота с уникальным именем. `name` возвращает имя. `reset` создаёт нового робота с новым уникальным именем.
 
-2. **(Среднее)** Реализуйте модуль `Email` --- smart constructor для email-адресов.
+6. **(Среднее)** LRU-кеш --- реализовать кеш с ограниченной ёмкостью. При переполнении вытесняется наименее использованный элемент.
 
     ```ocaml
-    module Email : sig
+    module LRU : sig
+      type ('k, 'v) t
+      val create : int -> ('k, 'v) t
+      val get : ('k, 'v) t -> 'k -> 'v option
+      val put : ('k, 'v) t -> 'k -> 'v -> unit
+      val size : ('k, 'v) t -> int
+    end
+    ```
+
+    `create n` создаёт кеш ёмкостью `n`. `put` добавляет элемент (вытесняя старейший при переполнении). `get` возвращает значение и делает элемент «недавно использованным».
+
+7. **(Среднее)** Отрефакторьте Logger (упражнение 2) в стиле Functional Core / Imperative Shell. Создайте модуль `LoggerPure` с чистыми функциями, работающими со списком строк, и модуль `LoggerShell`, управляющий мутабельным состоянием.
+
+    ```ocaml
+    module LoggerPure : sig
+      val add : string list -> string -> string list
+      val count : string list -> int
+      val messages : string list -> string list
+    end
+
+    module LoggerShell : sig
       type t
-      val make : string -> (t, string) result
-      val to_string : t -> string
+      val create : unit -> t
+      val log : t -> string -> unit
+      val messages : t -> string list
+      val count : t -> int
+      val clear : t -> unit
     end
     ```
 
-    Валидация: строка не пуста, содержит `@`, домен (часть после `@`) содержит `.`. `make "" -> Error "email не может быть пустым"`. `make "user" -> Error "email должен содержать @"`. `make "user@host" -> Error "некорректный домен"`. `make "user@host.com" -> Ok <email>`.
+    *Подсказка:* `LoggerPure` работает с `string list` напрямую. `LoggerShell` хранит `string list ref` и делегирует логику `LoggerPure`.
 
-3. **(Среднее)** Реализуйте модуль `NonEmptyList` --- список, гарантированно содержащий хотя бы один элемент.
+8. **(Сложное)** Bowling --- подсчёт очков в боулинге. Реализуйте модуль с мутабельным состоянием игры.
 
     ```ocaml
-    module NonEmptyList : sig
-      type 'a t
-      val make : 'a list -> ('a t, string) result
-      val singleton : 'a -> 'a t
-      val head : 'a t -> 'a
-      val tail : 'a t -> 'a list
-      val to_list : 'a t -> 'a list
-      val length : 'a t -> int
-      val map : ('a -> 'b) -> 'a t -> 'b t
+    module Bowling : sig
+      type t
+      val create : unit -> t
+      val roll : t -> int -> (unit, string) result
+      val score : t -> int
     end
     ```
 
-    Ключевое свойство: `head` и `tail` **не могут** завершиться ошибкой. `make [] -> Error`, `make [1;2;3] -> Ok`, `head -> 'a` (не `'a option`!).
+    Правила:
+    - Игра состоит из 10 фреймов.
+    - В каждом фрейме 2 броска (если не страйк).
+    - **Spare** (сбиты все 10 кеглей за 2 броска): 10 + следующий бросок.
+    - **Strike** (сбиты все 10 за 1 бросок): 10 + два следующих броска.
+    - 10-й фрейм: бонусные броски при spare/strike.
+    - Perfect game (12 страйков) = 300 очков.
 
-    *Подсказка:* внутреннее представление --- пара `'a * 'a list`.
-
-4. **(Среднее)** Смоделируйте светофор как конечный автомат с phantom types.
-
-    ```ocaml
-    module TrafficLight : sig
-      type red
-      type yellow
-      type green
-
-      type 'state light
-
-      val start : red light
-      val red_to_green : red light -> green light
-      val green_to_yellow : green light -> yellow light
-      val yellow_to_red : yellow light -> red light
-      val show : 'state light -> string
-    end
-    ```
-
-    Порядок переходов: Red -> Green -> Yellow -> Red -> ... Попытка вызвать `green_to_yellow` на `red light` должна быть ошибкой компиляции.
-
-5. **(Сложное)** Реализуйте модуль `Form` --- строитель формы с накоплением ошибок.
-
-    ```ocaml
-    module Form : sig
-      type 'a validated
-      val field : string -> string -> (string -> ('a, string) result) -> 'a validated
-      val map2 : ('a -> 'b -> 'c) -> 'a validated -> 'b validated -> 'c validated
-      val map3 : ('a -> 'b -> 'c -> 'd) ->
-        'a validated -> 'b validated -> 'c validated -> 'd validated
-      val run : 'a validated -> ('a, (string * string) list) result
-    end
-    ```
-
-    `field name raw_value parser` --- создаёт валидированное поле. `map2 f a b` --- комбинирует два поля, накапливая ошибки. `run` --- возвращает результат или список пар `(имя_поля, ошибка)`.
-
-    Пример:
-
-    ```ocaml
-    type user = { name : string; age : int }
-
-    let parse_name s =
-      if String.length s > 0 then Ok s
-      else Error "не может быть пустым"
-
-    let parse_age s =
-      match int_of_string_opt s with
-      | Some n when n > 0 -> Ok n
-      | _ -> Error "должен быть положительным числом"
-
-    let validate name_str age_str =
-      let open Form in
-      run (map2
-        (fun name age -> { name; age })
-        (field "имя" name_str parse_name)
-        (field "возраст" age_str parse_age))
-    ```
-
-    *Подсказка:* внутреннее представление `'a validated = ('a, (string * string) list) result`.
-
-6. **(Сложное)** Реализуйте модуль `FileHandle` --- API для работы с «файлами», где чтение и запись возможны только для открытых дескрипторов. Используйте phantom types.
-
-    ```ocaml
-    module FileHandle : sig
-      type opened
-      type closed
-
-      type 'state handle
-
-      val open_file : string -> opened handle
-      val read : opened handle -> string
-      val write : opened handle -> string -> opened handle
-      val close : opened handle -> closed handle
-      val name : 'state handle -> string
-    end
-    ```
-
-    Ключевое свойство: `read` и `write` принимают **только** `opened handle`. Попытка прочитать из закрытого дескриптора --- ошибка компиляции. `close` возвращает `closed handle`, по которому уже нельзя вызвать `read`/`write`.
-
-    *Подсказка:* внутреннее представление --- запись `{ name: string; content: string }`. Реальный файловый ввод-вывод не нужен --- эмулируйте работу со строками в памяти.
+    *Подсказка:* храните все броски в списке, а `score` вычисляйте проходом по фреймам.
 
 ## Заключение
 
 В этой главе мы:
 
-- Изучили **smart constructors** --- паттерн ограничения конструирования через абстрактные типы и функции-валидаторы.
-- Познакомились с принципом **Make Illegal States Unrepresentable** --- кодирование допустимых состояний в типах вместо булевых флагов.
-- Разобрали философию **Parse, Don't Validate** --- парсинг как способ преобразования данных в типизированные значения на границе системы.
-- Освоили **phantom types** --- типовые параметры-метки для статической проверки протоколов.
-- Реализовали проект --- типобезопасную платёжную систему, объединяющую все паттерны.
-- Сравнили подходы OCaml (модули, `.mli`, `private`) с подходами Haskell (`newtype`, phantom types).
+- Изучили ссылки (`ref`) --- мутабельные ячейки OCaml.
+- Познакомились с мутабельными записями и массивами.
+- Освоили ввод-вывод: `Printf.printf`, `Printf.sprintf`, `In_channel`, `Out_channel`.
+- Научились безопасно работать с файлами через `with_open_text`.
+- Разобрали циклы `for` и `while`.
+- Изучили паттерн Functional Core / Imperative Shell для разделения логики и эффектов.
+- Сравнили прямые эффекты OCaml с монадой `IO` Haskell.
 
-Все эти паттерны объединяет одна идея: **переложить проверку инвариантов с программиста на компилятор**. Чем больше ошибок ловится на этапе компиляции, тем надёжнее программа и тем меньше тестов нужно для проверки «невозможных» состояний.
-
-В следующей главе мы изучим конкурентное программирование с библиотекой Eio --- прямой стиль вместо промисов и колбэков.
+В следующей главе мы изучим проектирование через типы --- умные конструкторы, кодирование состояний в типах и паттерн «Parse, Don't Validate».

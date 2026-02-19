@@ -1,26 +1,17 @@
 (** Здесь вы можете писать свои решения упражнений. *)
 
-(** Упражнение 1: Ручная конвертация product -> JSON. *)
-type product = {
-  title : string;
-  price : float;
-  in_stock : bool;
-}
-
-let product_to_json (_p : product) : Yojson.Safe.t =
+(** Упражнение 1: Параллельное вычисление двух чисел Фибоначчи. *)
+let parallel_fib (_n : int) (_m : int) : int =
   failwith "todo"
 
-(** Упражнение 2: Ручная конвертация JSON -> product. *)
-let product_of_json (_json : Yojson.Safe.t) : (product, string) result =
+(** Упражнение 2: Конкурентный map. *)
+let concurrent_map : ('a -> 'b) -> 'a list -> 'b list =
+  fun _f _lst -> failwith "todo"
+
+(** Упражнение 3: Producer-consumer с суммированием. *)
+let produce_consume (_n : int) : int =
   failwith "todo"
 
-(** Упражнение 3: Преобразование списка JSON-объектов --- извлечь имена. *)
-let extract_names (_json : Yojson.Safe.t) : string list =
+(** Упражнение 4: Гонка --- результат первой завершившейся функции. *)
+let race (_tasks : (unit -> 'a) list) : 'a =
   failwith "todo"
-
-(** Упражнение 4: ppx --- тип с автоматической сериализацией. *)
-type config = {
-  host : string;
-  port : int;
-  debug : bool;
-} [@@deriving yojson]

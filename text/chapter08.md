@@ -1,17 +1,15 @@
-# Мутабельное состояние и прямые эффекты
+# Обработка ошибок и валидация
 
 ## Цели главы
 
-В этой главе мы изучим работу с **побочными эффектами** в OCaml --- язык, который принципиально отличается от Haskell тем, что не требует монады `IO` для взаимодействия с внешним миром:
+В этой главе мы подробно изучим идиоматическую обработку ошибок в OCaml:
 
-- Ссылки (`ref`) --- мутабельные ячейки.
-- Мутабельные записи --- поля с `mutable`.
-- Массивы --- мутабельные коллекции.
-- Ввод-вывод --- `Printf`, `print_endline`, `input_line`.
-- Работа с файлами --- `In_channel`, `Out_channel`.
-- Форматирование строк --- `Printf.sprintf`, `Format`.
-- Тип `unit` --- индикатор побочных эффектов.
-- Сравнение подхода OCaml с монадой `IO` Haskell.
+- Тип `option` --- когда значения может не быть.
+- Тип `result` --- когда нужна информация об ошибке.
+- **Let-операторы** (`let*`, `let+`) --- синтаксический сахар для цепочек вычислений.
+- **Накопление ошибок** --- паттерн, аналогичный аппликативной валидации Haskell.
+- **Исключения** vs `result` --- когда что использовать.
+- Проект: валидация формы.
 
 ## Подготовка проекта
 
@@ -22,707 +20,811 @@ $ cd exercises/chapter08
 $ dune build
 ```
 
-## Побочные эффекты в OCaml
+## Тип `option`: подробно
 
-В Haskell побочные эффекты изолированы типом `IO`:
+Мы уже знакомы с `option` из главы 5. Теперь рассмотрим его использование как инструмент обработки ошибок.
 
-```haskell
--- Haskell: эффекты видны в типе
-main :: IO ()
-main = putStrLn "Hello"
-```
+### Проблема: цепочки `option`
 
-В OCaml любая функция может выполнять побочные эффекты --- печатать, читать файлы, изменять состояние. Это часть философии языка: OCaml --- **практичный** функциональный язык, который не запрещает побочные эффекты, а поощряет их осознанное использование.
+Допустим, нам нужно извлечь значение из вложенной структуры:
 
 ```ocaml
-(* OCaml: эффекты не видны в типе *)
-let main () = print_endline "Hello"
-(* val main : unit -> unit *)
+type user = { name : string; address : address option }
+and address = { city : string; zip : string option }
 ```
 
-Тип `unit -> unit` подсказывает, что функция вызывается ради побочных эффектов (возвращает `()`), но компилятор это не проверяет.
-
-### Плюсы и минусы прямого стиля
-
-| Аспект | OCaml (прямые эффекты) | Haskell (IO-монада) |
-|--------|----------------------|---------------------|
-| Простота | Нет обёрток, привычный стиль | Требует монадических комбинаторов |
-| Типобезопасность | Эффекты не видны в типах | Эффекты отражены в типах |
-| Отладка | Можно вставить `print` где угодно | Нужно поднять в IO |
-| Рефакторинг | Сложнее отследить эффекты | Компилятор покажет все эффекты |
-| Тестирование | Нужна дисциплина | Чистые функции легко тестировать |
-
-Хорошая практика OCaml: **разделяйте чистые вычисления и побочные эффекты** самостоятельно, даже без помощи компилятора. Пишите чистые функции, а эффекты выполняйте на верхнем уровне.
-
-## Ссылки (`ref`)
-
-Ссылка (reference) --- мутабельная ячейка, содержащая одно значение:
-
-```text
-# let counter = ref 0;;
-val counter : int ref = {contents = 0}
-
-# !counter;;
-- : int = 0
-
-# counter := !counter + 1;;
-- : unit = ()
-
-# !counter;;
-- : int = 1
-```
-
-Три операции:
-
-- `ref v` --- создать ссылку с начальным значением `v`.
-- `!r` --- разыменование (чтение значения).
-- `r := v` --- присвоение (запись значения).
-
-### Тип `ref`
-
-`ref` --- это просто запись с мутабельным полем:
+Чтобы получить почтовый индекс пользователя, нужно проверить каждый уровень:
 
 ```ocaml
-type 'a ref = { mutable contents : 'a }
+let get_zip user =
+  match user.address with
+  | None -> None
+  | Some addr ->
+    match addr.zip with
+    | None -> None
+    | Some z -> Some z
 ```
 
-`ref 0` эквивалентно `{ contents = 0 }`. Оператор `!` --- это `fun r -> r.contents`. Оператор `:=` --- это `fun r v -> r.contents <- v`.
+Вложенные `match` быстро становятся нечитаемыми. Решение --- `Option.bind`.
 
-### Ссылки в функциях
+### `Option.bind` --- цепочка вычислений
 
 ```ocaml
-let make_counter () =
-  let n = ref 0 in
-  let increment () = n := !n + 1; !n in
-  let get () = !n in
-  (increment, get)
+let get_zip user =
+  Option.bind user.address (fun addr -> addr.zip)
+```
+
+`Option.bind opt f` --- если `opt` = `Some x`, вызывает `f x`. Если `opt` = `None`, возвращает `None`. Это позволяет строить цепочки:
+
+```ocaml
+let get_zip user =
+  user.address
+  |> Option.bind (fun addr -> addr.zip)
+```
+
+Для более длинных цепочек:
+
+```ocaml
+let process user =
+  user.address
+  |> Option.bind (fun addr -> addr.zip)
+  |> Option.map (fun zip -> "ZIP: " ^ zip)
+  |> Option.value ~default:"нет индекса"
+```
+
+## Тип `result`: подробно
+
+`option` не объясняет **почему** значения нет. `result` добавляет информацию об ошибке:
+
+```ocaml
+type ('a, 'e) result = Ok of 'a | Error of 'e
+```
+
+### Создание результатов
+
+```ocaml
+let parse_int s =
+  match int_of_string_opt s with
+  | Some n -> Ok n
+  | None -> Error ("не число: " ^ s)
+
+let non_negative n =
+  if n >= 0 then Ok n
+  else Error ("отрицательное число: " ^ string_of_int n)
 ```
 
 ```text
-# let (incr, get) = make_counter ();;
-# incr ();;
-- : int = 1
-# incr ();;
-- : int = 2
-# get ();;
-- : int = 2
+# parse_int "42";;
+- : (int, string) result = Ok 42
+
+# parse_int "abc";;
+- : (int, string) result = Error "не число: abc"
 ```
 
-Замыкание (closure) `increment` захватывает ссылку `n`. Каждый вызов `make_counter ()` создаёт новый независимый счётчик.
-
-### Ссылки vs иммутабельные значения
-
-Используйте ссылки **только когда мутабельность действительно нужна**:
-
-- Счётчики, кэши, аккумуляторы.
-- Циклы (хотя рекурсия обычно предпочтительнее).
-- Взаимодействие с мутабельными API.
-
-Для большинства задач иммутабельные значения и рекурсия лучше --- они проще для понимания и тестирования.
-
-## Мутабельные записи
-
-В главе 3 мы видели записи с `mutable`-полями. Теперь рассмотрим их подробнее:
+### `Result.bind` --- цепочка
 
 ```ocaml
-type account = {
-  owner : string;
-  mutable balance : float;
-}
+let parse_positive s =
+  Result.bind (parse_int s) non_negative
+```
+
+Или через `|>`:
+
+```ocaml
+let parse_positive s =
+  parse_int s
+  |> Result.bind non_negative
 ```
 
 ```text
-# let acc = { owner = "Иван"; balance = 1000.0 };;
-# acc.balance;;
-- : float = 1000.
-# acc.balance <- acc.balance -. 100.0;;
-- : unit = ()
-# acc.balance;;
-- : float = 900.
+# parse_positive "42";;
+- : (int, string) result = Ok 42
+
+# parse_positive "-5";;
+- : (int, string) result = Error "отрицательное число: -5"
+
+# parse_positive "abc";;
+- : (int, string) result = Error "не число: abc"
 ```
 
-Оператор `<-` изменяет мутабельное поле «на месте». Неизменяемые поля (`owner`) нельзя менять.
+Цепочка прерывается на первой ошибке --- это поведение **fail-fast** (как `Either` в Haskell).
 
-### Пример: простой стек
+```admonish tip title="Для Python/TS-разработчиков"
+`result` в OCaml решает ту же проблему, что `try/except` в Python и `try/catch` в TypeScript, но на уровне типов. Вместо `try: x = parse_int(s) except ValueError: ...` вы пишете `match parse_int s with Ok n -> ... | Error e -> ...`. Ключевое преимущество: тип `(int, string) result` в сигнатуре **явно говорит**, что функция может вернуть ошибку. В Python `def parse_int(s: str) -> int` скрывает возможность `ValueError`.
+```
+
+### `Result.map`
 
 ```ocaml
-type 'a stack = {
-  mutable items : 'a list;
-  mutable size : int;
-}
-
-let create_stack () = { items = []; size = 0 }
-
-let push x s =
-  s.items <- x :: s.items;
-  s.size <- s.size + 1
-
-let pop s =
-  match s.items with
-  | [] -> None
-  | x :: rest ->
-    s.items <- rest;
-    s.size <- s.size - 1;
-    Some x
+let double_positive s =
+  parse_positive s
+  |> Result.map (fun n -> n * 2)
 ```
 
-## Массивы
+`Result.map f r` --- если `r = Ok x`, возвращает `Ok (f x)`. Если `r = Error e`, возвращает `Error e` без изменений.
 
-Массивы в OCaml --- мутабельные коллекции с доступом по индексу за O(1):
+## Let-операторы
 
-```text
-# let a = [| 1; 2; 3; 4; 5 |];;
-val a : int array = [|1; 2; 3; 4; 5|]
+Цепочки `Result.bind` работают, но выглядят громоздко. **Let-операторы** (binding operators) --- синтаксический сахар, делающий код линейным:
 
-# a.(0);;
-- : int = 1
-
-# a.(2) <- 99;;
-- : unit = ()
-
-# a;;
-- : int array = [|1; 2; 99; 4; 5|]
-```
-
-Синтаксис: `[| ... |]` --- литерал массива. `a.(i)` --- доступ по индексу. `a.(i) <- v` --- запись по индексу.
-
-### Создание массивов
-
-```text
-# Array.make 5 0;;
-- : int array = [|0; 0; 0; 0; 0|]
-
-# Array.init 5 (fun i -> i * i);;
-- : int array = [|0; 1; 4; 9; 16|]
-
-# Array.of_list [1; 2; 3];;
-- : int array = [|1; 2; 3|]
-
-# Array.to_list [| 1; 2; 3 |];;
-- : int list = [1; 2; 3]
-```
-
-### Когда массивы vs списки
-
-| Операция | Список | Массив |
-|----------|--------|--------|
-| Доступ по индексу | O(n) | O(1) |
-| Добавление в начало | O(1) | O(n) |
-| Конкатенация | O(n) | O(n) |
-| Сопоставление с образцом | Да | Нет |
-| Мутабельность | Нет | Да |
-
-Списки лучше для последовательной обработки (map, filter, fold). Массивы --- для случайного доступа и численных вычислений.
-
-## Циклы
-
-OCaml поддерживает традиционные циклы --- `for` и `while`:
-
-### Цикл `for`
+### Определение let-операторов
 
 ```ocaml
-let print_range a b =
-  for i = a to b do
-    Printf.printf "%d " i
-  done;
-  print_newline ()
+let ( let* ) = Result.bind
+let ( let+ ) x f = Result.map f x
 ```
 
-```text
-# print_range 1 5;;
-1 2 3 4 5
-```
+- `let*` --- bind (цепочка с возможной ошибкой).
+- `let+` --- map (преобразование успешного результата).
 
-Обратный цикл --- с `downto`:
+### Использование
 
 ```ocaml
-let countdown n =
-  for i = n downto 1 do
-    Printf.printf "%d... " i
-  done;
-  print_endline "Пуск!"
+let parse_and_sum a b =
+  let* x = parse_int a in
+  let* y = parse_int b in
+  Ok (x + y)
 ```
 
-### Цикл `while`
+Это эквивалентно:
 
 ```ocaml
-let find_first_negative arr =
-  let i = ref 0 in
-  let len = Array.length arr in
-  while !i < len && arr.(!i) >= 0 do
-    i := !i + 1
-  done;
-  if !i < len then Some !i else None
+let parse_and_sum a b =
+  Result.bind (parse_int a) (fun x ->
+    Result.bind (parse_int b) (fun y ->
+      Ok (x + y)))
 ```
 
-Циклы в OCaml возвращают `unit`. Они полезны при работе с массивами и мутабельным состоянием, но для обработки списков предпочитайте `List.map`, `List.fold_left` и рекурсию.
+Let-операторы превращают вложенную структуру в линейную последовательность шагов, читающуюся сверху вниз.
 
-## Вывод: `print` и `Printf`
-
-### Простой вывод
-
-```text
-# print_string "hello";;
-hello- : unit = ()
-
-# print_endline "hello";;
-hello
-- : unit = ()
-
-# print_int 42;;
-42- : unit = ()
-
-# print_float 3.14;;
-3.14- : unit = ()
-
-# print_newline ();;
-
-- : unit = ()
+```admonish tip title="Для TypeScript-разработчиков"
+Let-операторы `let*` в OCaml напоминают `async/await` в TypeScript. Как `await` «разворачивает» `Promise`, так `let*` «разворачивает» `Result`. Сравните: в TS `const x = await parseAsync(a); const y = await parseAsync(b); return x + y;` --- и в OCaml `let* x = parse_int a in let* y = parse_int b in Ok (x + y)`. Структура кода практически одинакова, но `let*` работает не только с асинхронностью, а с любым типом-обёрткой: `option`, `result`, и даже пользовательскими.
 ```
 
-### `Printf.printf` --- форматированный вывод
+### Сравнение с do-нотацией Haskell
 
-`Printf.printf` --- аналог `printf` из C, но **типобезопасный**:
-
-```text
-# Printf.printf "Имя: %s, Возраст: %d\n" "Иван" 25;;
-Имя: Иван, Возраст: 25
-- : unit = ()
-
-# Printf.printf "Pi = %.4f\n" 3.14159;;
-Pi = 3.1416
-- : unit = ()
 ```
-
-Спецификаторы формата:
-
-| Спецификатор | Тип | Пример |
-|-------------|-----|--------|
-| `%d` | `int` | `42` |
-| `%f` | `float` | `3.14` |
-| `%s` | `string` | `"hello"` |
-| `%b` | `bool` | `true` |
-| `%c` | `char` | `'a'` |
-| `%a` | custom printer | --- |
-| `%%` | literal `%` | `%` |
-
-В OCaml форматная строка --- не обычная строка, а специальный тип `('a, 'b, 'c) format`. Компилятор проверяет соответствие типов на этапе компиляции:
-
-```text
-# Printf.printf "%d" "hello";;
-Error: This expression has type string but an expression of type int was expected
+-- Haskell (do-нотация)
+parseAndSum a b = do
+  x <- parseInt a
+  y <- parseInt b
+  return (x + y)
 ```
-
-### `Printf.sprintf` --- форматирование в строку
-
-```text
-# Printf.sprintf "Имя: %s, Возраст: %d" "Иван" 25;;
-- : string = "Имя: Иван, Возраст: 25"
-
-# Printf.sprintf "%.2f%%" 99.5;;
-- : string = "99.50%"
-```
-
-`sprintf` работает как `printf`, но возвращает строку вместо вывода на экран. Это удобно для формирования сообщений.
-
-## Ввод: `input_line` и `read_line`
-
-```text
-# let name = read_line ();;
-(пользователь вводит: Иван)
-val name : string = "Иван"
-```
-
-`read_line ()` читает строку из стандартного ввода. `input_line ic` читает строку из произвольного канала ввода.
-
-## Работа с файлами
-
-### Чтение файла
 
 ```ocaml
-let read_file path =
-  In_channel.with_open_text path In_channel.input_all
+(* OCaml (let-операторы) *)
+let parse_and_sum a b =
+  let* x = parse_int a in
+  let* y = parse_int b in
+  Ok (x + y)
 ```
 
-`In_channel.with_open_text` открывает файл, передаёт канал в функцию и **гарантирует закрытие** файла, даже при исключении. Это аналог `with` в Python или `bracket` в Haskell.
+Структура практически идентична. `let*` соответствует `<-`, `Ok` соответствует `return`.
 
-Построчное чтение:
+### Let-операторы для `option`
+
+Аналогично можно определить let-операторы для `option`:
 
 ```ocaml
-let read_lines path =
-  In_channel.with_open_text path (fun ic ->
-    let rec loop acc =
-      match In_channel.input_line ic with
-      | Some line -> loop (line :: acc)
-      | None -> List.rev acc
-    in
-    loop [])
+let ( let* ) = Option.bind
+let ( let+ ) x f = Option.map f x
 ```
-
-### Запись в файл
 
 ```ocaml
-let write_file path content =
-  Out_channel.with_open_text path (fun oc ->
-    Out_channel.output_string oc content)
-
-let write_lines path lines =
-  Out_channel.with_open_text path (fun oc ->
-    List.iter (fun line ->
-      Out_channel.output_string oc (line ^ "\n")
-    ) lines)
+let get_zip user =
+  let* addr = user.address in
+  addr.zip
 ```
 
-### Добавление в файл
+### Область видимости
+
+Let-операторы --- обычные значения OCaml. Они подчиняются обычным правилам области видимости. Чтобы не путать `let*` для `option` и `result`, определяйте их в отдельных модулях:
 
 ```ocaml
-let append_to_file path content =
-  Out_channel.with_open_gen
-    [Open_append; Open_creat; Open_text] 0o644 path
-    (fun oc -> Out_channel.output_string oc content)
-```
+module Option_syntax = struct
+  let ( let* ) = Option.bind
+  let ( let+ ) x f = Option.map f x
+end
 
-`with_open_gen` позволяет указать флаги открытия: `Open_append` --- добавление, `Open_creat` --- создание если не существует.
-
-## Последовательное выполнение: `;`
-
-Точка с запятой `;` --- оператор последовательного выполнения. Он вычисляет левое выражение, отбрасывает результат и вычисляет правое:
-
-```ocaml
-let greet name =
-  print_string "Привет, ";
-  print_string name;
-  print_endline "!"
-```
-
-Компилятор предупредит, если результат перед `;` не `unit`:
-
-```text
-# 1 + 2; print_endline "ok";;
-Warning 10: this expression should have type unit.
-```
-
-Если вы намеренно отбрасываете значение, используйте `ignore`:
-
-```ocaml
-let _ = ignore (1 + 2); print_endline "ok"
-```
-
-## Проект: менеджер записей
-
-Модуль `lib/records.ml` демонстрирует работу с мутабельным состоянием на примере простого хранилища записей.
-
-### Тип данных
-
-```ocaml
-type record = {
-  id : int;
-  name : string;
-  value : string;
-}
-
-type store = {
-  mutable entries : record list;
-  mutable next_id : int;
-}
-```
-
-### Операции
-
-```ocaml
-let create_store () =
-  { entries = []; next_id = 1 }
-
-let add_record store ~name ~value =
-  let record = { id = store.next_id; name; value } in
-  store.entries <- record :: store.entries;
-  store.next_id <- store.next_id + 1;
-  record
-
-let find_record store id =
-  List.find_opt (fun r -> r.id = id) store.entries
-
-let remove_record store id =
-  store.entries <- List.filter (fun r -> r.id <> id) store.entries
-
-let all_records store =
-  List.rev store.entries
-```
-
-## Functional Core, Imperative Shell
-
-### Идея паттерна
-
-В OCaml побочные эффекты не отражаются в типах, поэтому разделение чистого и мутабельного кода --- ответственность программиста. Паттерн **Functional Core, Imperative Shell** (FC/IS) помогает структурировать код:
-
-- **Functional Core** --- чистые функции без побочных эффектов. Вся бизнес-логика, валидация, преобразования данных. Легко тестировать, легко рассуждать.
-- **Imperative Shell** --- тонкая оболочка, управляющая состоянием и выполняющая эффекты (IO, мутация). Делегирует логику Functional Core.
-
-### Проблема: смешение логики и мутации
-
-В нашем менеджере записей логика и мутация переплетены. `add_record` одновременно **создаёт** запись и **мутирует** хранилище:
-
-```ocaml
-let add_record store ~name ~value =
-  let record = { id = store.next_id; name; value } in
-  store.entries <- record :: store.entries;    (* мутация! *)
-  store.next_id <- store.next_id + 1;         (* мутация! *)
-  record
-```
-
-Тестировать такую функцию сложнее --- нужно создавать мутабельный `store` для каждого теста.
-
-### Рефакторинг: разделение на Pure и Shell
-
-**Pure** --- чистые функции, работающие с иммутабельными данными:
-
-```ocaml
-module Pure = struct
-  let make_record ~id ~name ~value = { id; name; value }
-
-  let find entries id =
-    List.find_opt (fun r -> r.id = id) entries
-
-  let remove entries id =
-    List.filter (fun r -> r.id <> id) entries
-
-  let all entries = List.rev entries
+module Result_syntax = struct
+  let ( let* ) = Result.bind
+  let ( let+ ) x f = Result.map f x
 end
 ```
 
-**Shell** --- мутабельная оболочка, делегирующая логику Pure:
+Использование:
 
 ```ocaml
-module Shell = struct
-  let add store ~name ~value =
-    let record = Pure.make_record ~id:store.next_id ~name ~value in
-    store.entries <- record :: store.entries;
-    store.next_id <- store.next_id + 1;
-    record
+let get_zip user =
+  let open Option_syntax in
+  let* addr = user.address in
+  addr.zip
 
-  let find store id = Pure.find store.entries id
-  let remove store id = store.entries <- Pure.remove store.entries id
-  let all store = Pure.all store.entries
+let parse_and_sum a b =
+  let open Result_syntax in
+  let* x = parse_int a in
+  let* y = parse_int b in
+  Ok (x + y)
+```
+
+## Накопление ошибок
+
+`Result.bind` (и `let*`) прерывает цепочку на **первой** ошибке. Но иногда нужно собрать **все** ошибки --- например, при валидации формы.
+
+В Haskell для этого используется аппликативный функтор `Validation`. В OCaml мы реализуем тот же паттерн проще:
+
+### Подход: список валидаций
+
+```ocaml
+let validate_all validations input =
+  let errors =
+    List.filter_map (fun validate ->
+      match validate input with
+      | Ok () -> None
+      | Error e -> Some e
+    ) validations
+  in
+  match errors with
+  | [] -> Ok input
+  | es -> Error es
+```
+
+Каждая валидация --- функция `'a -> (unit, string) result`. Мы запускаем **все** валидации и собираем ошибки:
+
+```ocaml
+let non_empty field_name value =
+  if String.length value = 0 then Error (field_name ^ " не может быть пустым")
+  else Ok ()
+
+let min_length field_name n value =
+  if String.length value < n then
+    Error (field_name ^ " должен быть не короче " ^ string_of_int n ^ " символов")
+  else Ok ()
+
+let validate_name name =
+  validate_all [
+    non_empty "Имя";
+    min_length "Имя" 2;
+  ] name
+```
+
+```text
+# validate_name "";;
+- : (string, string list) result =
+Error ["Имя не может быть пустым"; "Имя должен быть не короче 2 символов"]
+
+# validate_name "A";;
+- : (string, string list) result = Error ["Имя должен быть не короче 2 символов"]
+
+# validate_name "Иван";;
+- : (string, string list) result = Ok "Иван"
+```
+
+### Комбинирование валидаций нескольких полей
+
+```ocaml
+let combine_results results =
+  let oks, errors =
+    List.fold_left (fun (oks, errs) r ->
+      match r with
+      | Ok v -> (v :: oks, errs)
+      | Error es -> (oks, es @ errs)
+    ) ([], []) results
+  in
+  match errors with
+  | [] -> Ok (List.rev oks)
+  | es -> Error es
+```
+
+## Исключения vs `result`
+
+OCaml поддерживает оба подхода к ошибкам: исключения и `result`.
+
+### Исключения
+
+```ocaml
+exception Invalid_input of string
+
+let parse_int_exn s =
+  match int_of_string_opt s with
+  | Some n -> n
+  | None -> raise (Invalid_input ("не число: " ^ s))
+```
+
+Перехват:
+
+```ocaml
+let safe_parse s =
+  try Ok (parse_int_exn s)
+  with Invalid_input msg -> Error msg
+```
+
+### Когда что использовать
+
+| Ситуация | Подход | Причина |
+|----------|--------|---------|
+| Ожидаемая ошибка (ввод пользователя, файл не найден) | `result` | Ошибка --- часть логики, должна быть в типе |
+| Программная ошибка (нарушение инварианта, баг) | Исключение | Не должна возникать в корректной программе |
+| Высокопроизводительный код | Исключение | Нет аллокации при успехе (zero-cost happy path) |
+| API библиотеки | `result` | Пользователь видит все возможные ошибки в типе |
+| Локальное восстановление | `result` | Легко обрабатывать через `match` и `let*` |
+| Глобальный обработчик (top-level) | Исключение | `try ... with` на верхнем уровне |
+
+### Конвертация
+
+```ocaml
+(* result -> exception *)
+let unwrap = function
+  | Ok x -> x
+  | Error msg -> failwith msg
+
+(* exception -> result *)
+let try_result f =
+  try Ok (f ())
+  with exn -> Error (Printexc.to_string exn)
+```
+
+Идиоматический OCaml часто предоставляет оба варианта: `List.find` (бросает `Not_found`) и `List.find_opt` (возвращает `option`).
+
+```admonish info title="Подробнее"
+Детальное описание обработки ошибок в OCaml: [Real World OCaml, глава «Error Handling»](https://dev.realworldocaml.org/error-handling.html)
+```
+
+## Конвертация `option` ↔ `result`
+
+```ocaml
+let option_to_result ~error = function
+  | Some x -> Ok x
+  | None -> Error error
+
+let result_to_option = function
+  | Ok x -> Some x
+  | Error _ -> None
+```
+
+```text
+# option_to_result ~error:"не найдено" (Some 42);;
+- : (int, string) result = Ok 42
+
+# option_to_result ~error:"не найдено" None;;
+- : (int, string) result = Error "не найдено"
+```
+
+Также есть `Option.to_result` и `Result.to_option` в стандартной библиотеке.
+
+## Проект: валидация формы
+
+Модуль `lib/validation.ml` реализует систему валидации, объединяющую все концепции главы.
+
+### Типы
+
+```ocaml
+type address = {
+  street : string;
+  city : string;
+  state : string;
+}
+
+type person = {
+  first_name : string;
+  last_name : string;
+  address : address;
+}
+
+type errors = string list
+```
+
+### Валидаторы
+
+```ocaml
+let non_empty field_name value =
+  if String.length (String.trim value) = 0 then
+    Error (field_name ^ " не может быть пустым")
+  else Ok ()
+
+let max_length field_name n value =
+  if String.length value > n then
+    Error (field_name ^ " не может быть длиннее " ^ string_of_int n ^ " символов")
+  else Ok ()
+```
+
+### Валидация с накоплением ошибок
+
+```ocaml
+let validate_all validations input =
+  let errors = List.filter_map (fun v ->
+    match v input with
+    | Ok () -> None
+    | Error e -> Some e
+  ) validations
+  in
+  match errors with
+  | [] -> Ok input
+  | es -> Error es
+
+let validate_address street city state =
+  let errors =
+    (match validate_all [non_empty "Улица"; max_length "Улица" 100] street with
+     | Ok _ -> [] | Error es -> es)
+    @ (match validate_all [non_empty "Город"; max_length "Город" 50] city with
+       | Ok _ -> [] | Error es -> es)
+    @ (match validate_all [non_empty "Регион"; max_length "Регион" 50] state with
+       | Ok _ -> [] | Error es -> es)
+  in
+  match errors with
+  | [] -> Ok { street; city; state }
+  | es -> Error es
+```
+
+## Сравнение подходов к обработке ошибок
+
+В OCaml существует несколько подходов к обработке ошибок. Каждый имеет свои компромиссы. Рассмотрим их от простого к наиболее выразительному.
+
+### 1. Исключения
+
+Самый простой подход --- использовать исключения:
+
+```ocaml
+let parse_age s =
+  let n = int_of_string s in  (* бросает Failure *)
+  if n < 0 then failwith "отрицательный возраст"
+  else n
+
+let parse_name s =
+  if String.length s = 0 then failwith "пустое имя"
+  else s
+```
+
+**Плюсы:** просто, мало кода, нет оборачивания в `Ok`/`Error`.
+
+**Минусы:** из сигнатуры функции `val parse_age : string -> int` невозможно понять, что она может завершиться ошибкой. Вызывающий код не обязан обрабатывать ошибку --- компилятор не предупредит. Ошибка «невидима» в типе.
+
+### 2. `(_, string) result` --- явная ошибка
+
+```ocaml
+let parse_age s : (int, string) result =
+  match int_of_string_opt s with
+  | None -> Error ("не число: " ^ s)
+  | Some n when n < 0 -> Error "отрицательный возраст"
+  | Some n -> Ok n
+
+let parse_name s : (string, string) result =
+  if String.length s = 0 then Error "пустое имя"
+  else Ok s
+```
+
+**Плюсы:** ошибка явно указана в типе. Компилятор заставляет обработать `Error`.
+
+**Минусы:** ошибки --- просто строки. Нельзя программно различить «не число» и «отрицательный возраст». Нельзя написать exhaustive match по вариантам ошибок.
+
+### 3. `(_, custom_error) result` --- различимые ошибки
+
+```ocaml
+type age_error = NotANumber of string | NegativeAge of int
+
+let parse_age s : (int, age_error) result =
+  match int_of_string_opt s with
+  | None -> Error (NotANumber s)
+  | Some n when n < 0 -> Error (NegativeAge n)
+  | Some n -> Ok n
+
+type name_error = EmptyName
+
+let parse_name s : (string, name_error) result =
+  if String.length s = 0 then Error EmptyName
+  else Ok s
+```
+
+**Плюсы:** ошибки различимые, можно pattern match по вариантам. Exhaustive checking --- компилятор предупредит, если забыли обработать вариант.
+
+**Минусы:** **не composable**. Нельзя просто скомпоновать `parse_age` и `parse_name` через `let*`, потому что типы ошибок разные (`age_error` vs `name_error`):
+
+```ocaml
+(* Не компилируется: age_error ≠ name_error *)
+let parse_person age_str name_str =
+  let* age = parse_age age_str in
+  let* name = parse_name name_str in
+  Ok (name, age)
+```
+
+Пришлось бы создавать объединяющий тип и вручную оборачивать ошибки:
+
+```ocaml
+type person_error = AgeError of age_error | NameError of name_error
+
+let parse_person age_str name_str =
+  let* age = parse_age age_str |> Result.map_error (fun e -> AgeError e) in
+  let* name = parse_name name_str |> Result.map_error (fun e -> NameError e) in
+  Ok (name, age)
+```
+
+Это работает, но требует boilerplate для каждой новой комбинации.
+
+### 4. `(_, [> poly_variant]) result` --- composable, различимые, exhaustive
+
+Полиморфные варианты решают проблему композиции:
+
+```ocaml
+let parse_age s : (int, [> `NotANumber of string | `NegativeAge of int]) result =
+  match int_of_string_opt s with
+  | None -> Error (`NotANumber s)
+  | Some n when n < 0 -> Error (`NegativeAge n)
+  | Some n -> Ok n
+
+let parse_name s : (string, [> `EmptyName]) result =
+  if String.length s = 0 then Error `EmptyName
+  else Ok s
+```
+
+Теперь композиция работает **без дополнительного кода**:
+
+```ocaml
+let parse_person age_str name_str =
+  let* age = parse_age age_str in
+  let* name = parse_name name_str in
+  Ok (name, age)
+(* inferred: (string * int, [> `NotANumber of string | `NegativeAge of int | `EmptyName]) result *)
+```
+
+**Плюсы:** composable (типы ошибок объединяются автоматически), различимые (можно match), exhaustive (компилятор проверяет полноту).
+
+**Минусы:** более сложные типы в сигнатурах, непривычный синтаксис для новичков.
+
+## Полиморфные варианты для composable ошибок
+
+Рассмотрим подробнее, как использовать полиморфные варианты для построения composable системы ошибок.
+
+### Определение ошибок в модулях
+
+Каждый модуль определяет свой тип ошибок как полиморфный вариант:
+
+```ocaml
+module Parser : sig
+  type tree = Leaf of string | Node of tree * tree
+  type error = [ `SyntaxError of string | `UnexpectedChar of char ]
+
+  val parse : string -> (tree, [> error]) result
+end
+
+module Validator : sig
+  type error = [ `TooShort of int | `TooLong of int ]
+
+  val validate : Parser.tree -> (Parser.tree, [> error]) result
 end
 ```
 
-### Преимущества
+Обратите внимание на `[> error]` --- «открытый» полиморфный вариант. Это означает: «содержит как минимум эти варианты, но может содержать и другие». Именно это свойство позволяет типам автоматически объединяться.
 
-- **Тестируемость**: функции `Pure` можно тестировать без мутабельного состояния --- передаёте иммутабельный список, получаете результат.
-- **Читаемость**: из сигнатур ясно, где происходят эффекты (функции `Shell` принимают `store`), а где чистая логика.
-- **Повторное использование**: `Pure.find` и `Pure.remove` работают с любым `record list`, не только с `store.entries`.
+### Автоматический union при композиции
 
-### Когда применять
-
-FC/IS особенно полезен, когда:
-
-- Бизнес-логика сложна и нуждается в тестах.
-- Код смешивает вычисления и побочные эффекты.
-- Несколько потребителей одной и той же логики (CLI, веб-сервер, тесты).
-
-Для простых случаев (счётчик на `ref`) разделение избыточно. Применяйте по мере роста сложности.
-
-## Сборщик мусора и управление памятью
-
-OCaml использует автоматическое управление памятью --- сборщик мусора (GC) освобождает объекты, которые больше не используются. Понимание работы GC помогает писать эффективный код и управлять ресурсами.
-
-### Generational GC
-
-Сборщик мусора OCaml --- **поколенческий** (generational). Он разделяет память на два поколения:
-
-- **Minor heap** (малая куча) --- маленькая область (~256KB по умолчанию). Все новые объекты создаются здесь. Сборка мусора в minor heap выполняется **очень быстро** с помощью алгоритма copying GC --- живые объекты копируются, а всё остальное освобождается разом.
-
-- **Major heap** (большая куча) --- большая область для **долгоживущих** объектов. Используется алгоритм mark-and-sweep: сначала помечаются живые объекты, затем неотмеченные освобождаются. Сборка выполняется инкрементально, чтобы не останавливать программу надолго.
-
-Типичное соотношение: на каждую major-сборку приходится ~100 minor-сборок. Объекты, пережившие minor-сборку, **переносятся** (promote) в major heap, где живут дольше.
-
-Такая схема работает хорошо благодаря **гипотезе поколений**: большинство объектов живут очень недолго. Функциональный код создаёт множество временных значений --- minor heap собирает их быстро и дёшево.
-
-### Модуль `Gc`
-
-Модуль `Gc` позволяет получать статистику и настраивать параметры сборщика:
+Когда мы используем `let*` для цепочки функций с разными типами ошибок, OCaml автоматически вычисляет объединение:
 
 ```ocaml
-let stats = Gc.stat () in
-Printf.printf "Minor collections: %d\n" stats.minor_collections;
-Printf.printf "Major collections: %d\n" stats.major_collections;
-Printf.printf "Minor heap size: %d words\n" stats.heap_words;
-
-(* Включение подробного вывода GC *)
-Gc.set { (Gc.get ()) with Gc.verbose = 0x01 }
+let process_input (source : string) =
+  let ( let* ) = Result.bind in
+  let* tree = Parser.parse source in
+  let* tree = Validator.validate tree in
+  Ok tree
+(* inferred: (Parser.tree, [> Parser.error | Validator.error ]) result *)
 ```
 
-`Gc.stat ()` возвращает запись типа `Gc.stat` с информацией о количестве сборок, размерах куч и другими метриками. `Gc.get ()` возвращает текущие настройки, а `Gc.set` позволяет их изменить --- например, включить подробный вывод отладочной информации.
+Компилятор выведет тип, содержащий **все** возможные варианты ошибок из обоих модулей. Никакого ручного оборачивания или `map_error` не нужно.
 
-### Finalisers
+### Обработка ошибок
 
-Финализеры --- функции, которые вызываются перед тем, как GC соберёт объект. Они полезны для освобождения внешних ресурсов (файловых дескрипторов, сетевых соединений):
+При обработке ошибок можно делать exhaustive match:
 
 ```ocaml
-let register_resource resource =
-  Gc.finalise (fun r -> cleanup r) resource
-
-(* ВАЖНО: OCaml НЕ гарантирует запуск finalisers при exit *)
-let () = at_exit Gc.full_major
+let handle result =
+  match result with
+  | Ok tree -> print_endline "Успех"
+  | Error (`SyntaxError msg) -> Printf.printf "Синтаксическая ошибка: %s\n" msg
+  | Error (`UnexpectedChar c) -> Printf.printf "Неожиданный символ: %c\n" c
+  | Error (`TooShort n) -> Printf.printf "Слишком коротко: %d\n" n
+  | Error (`TooLong n) -> Printf.printf "Слишком длинно: %d\n" n
 ```
 
-Важные предупреждения:
+Если тип замкнут (закрытый полиморфный вариант `[ ... ]` без `>`), компилятор предупредит, если вы забыли обработать вариант.
 
-- **Финализеры не вызываются при `exit`** --- если программа завершается, GC не обязан собрать все объекты. Используйте `at_exit Gc.full_major`, чтобы форсировать полную сборку при завершении.
-- **Финализер не должен бросать исключения** --- исключение из финализера приведёт к непредсказуемому поведению.
-- **Не привязывайте финализер к значению, которое он замыкает** --- если финализер ссылается на тот же объект, к которому привязан, объект никогда не будет собран (циклическая ссылка).
+## `and*` для параллельного сбора ошибок
 
-### Weak references
+`let*` останавливается на первой ошибке (fail-fast). Но иногда нужно собрать **все** ошибки сразу --- например, при валидации формы. Для этого используется оператор `and*`.
 
-Слабые ссылки (weak references) позволяют GC собирать значение, **даже если ссылка на него существует**. Это полезно для кешей --- если памяти достаточно, значение остаётся в кеше; если GC нуждается в памяти, кеш очищается автоматически:
+### Определение `and*`
 
 ```ocaml
-let cache = Weak.create 100
-
-let get_or_compute n compute =
-  match Weak.get cache n with
-  | Some value -> value
-  | None ->
-    let value = compute () in
-    Weak.set cache n (Some value);
-    value
+let ( and* ) left right =
+  match left, right with
+  | Ok l, Ok r -> Ok (l, r)
+  | Error l, Error r -> Error (l @ r)
+  | Error e, _ | _, Error e -> Error e
 ```
 
-`Weak.create n` создаёт массив из `n` слабых ссылок. `Weak.get` возвращает `Some value`, если значение ещё не собрано, или `None`, если GC его уже освободил. `Weak.set` устанавливает значение в слот.
+`and*` работает так: если оба результата --- `Ok`, объединяет значения в пару. Если оба --- `Error`, конкатенирует списки ошибок. Если ошибка только в одном --- возвращает её.
 
-Слабые ссылки --- инструмент для ситуаций, когда вы хотите сохранить значение «если возможно», но не хотите мешать GC освобождать память. Типичный пример --- кеш вычислений, который автоматически уменьшается при нехватке памяти.
+### Использование
+
+```ocaml
+let validate_name input =
+  if String.length input.name = 0 then Error ["имя пустое"]
+  else Ok input.name
+
+let validate_age input =
+  if input.age < 0 then Error ["возраст отрицательный"]
+  else Ok input.age
+
+let validate_email input =
+  if not (String.contains input.email '@') then Error ["нет @ в email"]
+  else Ok input.email
+
+let validate input =
+  let* name = validate_name input
+  and* age = validate_age input
+  and* email = validate_email input
+  in Ok { name; age; email }
+```
+
+```admonish tip title="Для Python/TS-разработчиков"
+Накопление ошибок решает ту же задачу, что библиотеки валидации вроде `pydantic` в Python или `zod`/`yup` в TypeScript. Например, в `zod` вы пишете `schema.safeParse(data)` и получаете объект с массивом ошибок. В OCaml паттерн с `and*` и `validate_all` даёт то же поведение, но без внешних зависимостей и с проверкой типов на этапе компиляции.
+```
+
+Если несколько валидаций провалились, все ошибки будут собраны в один список:
+
+```text
+# validate { name = ""; age = -1; email = "bad" };;
+- : ... = Error ["имя пустое"; "возраст отрицательный"; "нет @ в email"]
+```
+
+### Отличие `let*` от `and*`
+
+- `let*` --- **последовательная** цепочка. Каждый шаг зависит от результата предыдущего. Останавливается на первой ошибке.
+- `and*` --- **параллельная** валидация. Все проверки выполняются независимо. Ошибки накапливаются.
+
+Комбинация `let*` и `and*` даёт гибкую систему: зависимые проверки через `let*`, независимые через `and*`.
+
+## Outcome type
+
+Иногда разделение на `Ok` и `Error` слишком грубое. Бывают ситуации, когда операция **успешна, но с предупреждениями** (warnings). Для этого можно использовать тип `outcome`:
+
+```ocaml
+type ('ok, 'warning) outcome = {
+  result : 'ok option;
+  errors : 'warning list;
+}
+```
+
+Поле `result` содержит `Some value`, если операция успешна (возможно, с предупреждениями), или `None`, если провалилась. Поле `errors` содержит список предупреждений или ошибок.
+
+### Конструкторы
+
+```ocaml
+let outcome_ok ?(warnings = []) result =
+  { result = Some result; warnings }
+
+let outcome_fail warnings =
+  { result = None; warnings }
+```
+
+### Пример использования
+
+```ocaml
+let validate_password password =
+  let warnings = [] in
+  let warnings =
+    if String.length password < 12 then
+      "рекомендуется пароль длиннее 12 символов" :: warnings
+    else warnings
+  in
+  let warnings =
+    if not (String.exists (fun c -> c >= '0' && c <= '9') password) then
+      "рекомендуется добавить цифры" :: warnings
+    else warnings
+  in
+  if String.length password < 6 then
+    outcome_fail ["пароль слишком короткий"]
+  else
+    outcome_ok ~warnings:(List.rev warnings) password
+```
+
+```text
+# validate_password "abc";;
+- : (string, string) outcome =
+  { result = None; errors = ["пароль слишком короткий"] }
+
+# validate_password "abcdef";;
+- : (string, string) outcome =
+  { result = Some "abcdef";
+    errors = ["рекомендуется пароль длиннее 12 символов";
+              "рекомендуется добавить цифры"] }
+
+# validate_password "myStr0ngPa55word";;
+- : (string, string) outcome =
+  { result = Some "myStr0ngPa55word"; errors = [] }
+```
+
+Outcome полезен для recoverable errors --- ситуаций, где операция может продолжиться, но стоит предупредить пользователя.
 
 ## Упражнения
 
 Решения пишите в `test/my_solutions.ml`. Проверяйте: `dune runtest`.
 
-1. **(Лёгкое)** Реализуйте модуль `Counter` --- счётчик на основе `ref`.
+1. **(Среднее)** Реализуйте функцию `validate_phone`, которая проверяет телефонный номер. Номер валиден, если: непустой, все символы --- цифры, длина >= 7.
 
     ```ocaml
-    val counter_create : int -> int ref
-    val counter_increment : int ref -> unit
-    val counter_decrement : int ref -> unit
-    val counter_reset : int ref -> unit
-    val counter_value : int ref -> int
+    val validate_phone : string -> (string, string list) result
     ```
 
-    `counter_create 0` создаёт счётчик с начальным значением 0. `counter_increment` увеличивает на 1, `counter_decrement` уменьшает, `counter_reset` сбрасывает в 0.
+    Используйте `validate_all` из библиотеки. Функция должна накапливать все ошибки.
 
-2. **(Среднее)** Реализуйте модуль `Logger` --- простой логгер, который накапливает сообщения в буфере.
+    *Подсказка:* для проверки символов используйте `String.for_all` (OCaml >= 4.13) или `String.iter` с `ref`.
+
+2. **(Среднее)** Реализуйте функцию `validate_person`, которая валидирует все поля персоны и накапливает ошибки.
 
     ```ocaml
-    type logger
-    val logger_create : unit -> logger
-    val logger_log : logger -> string -> unit
-    val logger_messages : logger -> string list
-    val logger_clear : logger -> unit
-    val logger_count : logger -> int
+    val validate_person :
+      string -> string -> string -> string -> string ->
+      (person, string list) result
     ```
 
-    *Подсказка:* используйте `ref` со списком строк. `logger_messages` должна возвращать сообщения в порядке добавления.
+    Аргументы: first_name, last_name, street, city, state. Используйте `non_empty` из библиотеки.
 
-3. **(Среднее)** Реализуйте функцию `format_table`, которая форматирует список записей в текстовую таблицу.
+    *Подсказка:* соберите ошибки из всех полей через конкатенацию списков.
+
+3. **(Среднее)** Реализуйте функцию `traverse_result`, которая применяет функцию к каждому элементу списка, собирая все успехи или все ошибки.
 
     ```ocaml
-    val format_table : (string * string) list -> string
+    val traverse_result :
+      ('a -> ('b, 'e) result) -> 'a list -> ('b list, 'e list) result
     ```
 
-    Например, `format_table [("Имя", "Иван"); ("Город", "Москва")]` должна вернуть:
+    Если все вызовы вернули `Ok` --- возвращает `Ok` со списком результатов. Если хотя бы один вернул `Error` --- возвращает `Error` со списком всех ошибок.
 
-    ```
-    Имя   | Иван
-    Город | Москва
-    ```
+    *Подсказка:* используйте `List.fold_left`, накапливая и успехи, и ошибки.
 
-    *Подсказка:* используйте `Printf.sprintf` и вычислите максимальную длину ключа для выравнивания.
-
-4. **(Среднее)** Реализуйте функцию `array_sum_imperative`, которая вычисляет сумму элементов массива с помощью цикла `for` и ссылки-аккумулятора.
+4. **(Лёгкое)** Реализуйте функции конвертации между `option` и `result`.
 
     ```ocaml
-    val array_sum_imperative : int array -> int
+    val option_to_result : error:'e -> 'a option -> ('a, 'e) result
+    val result_to_option : ('a, 'e) result -> 'a option
     ```
 
-    *Подсказка:* используйте `ref` для аккумулятора и `for i = 0 to Array.length arr - 1`.
-
-5. **(Среднее)** Robot Name --- генерация уникальных имён роботов формата AA000 (две буквы + три цифры). Каждый вызов `create` должен давать уникальное имя.
+5. **(Среднее)** ISBN Verifier --- проверить валидность ISBN-10. Формула: (d1 x 10 + d2 x 9 + ... + d10 x 1) mod 11 = 0. Символ 'X' на последней позиции означает 10. Дефисы в строке игнорируются.
 
     ```ocaml
-    module Robot : sig
-      type t
-      val create : unit -> t
-      val name : t -> string
-      val reset : t -> t
-    end
+    val isbn_verifier : string -> bool
     ```
 
-    `create ()` создаёт робота с уникальным именем. `name` возвращает имя. `reset` создаёт нового робота с новым уникальным именем.
+    *Подсказка:* отфильтруйте дефисы, проверьте длину = 10, преобразуйте символы в числа (с учётом 'X'), вычислите контрольную сумму.
 
-6. **(Среднее)** LRU-кеш --- реализовать кеш с ограниченной ёмкостью. При переполнении вытесняется наименее использованный элемент.
+6. **(Среднее)** Luhn algorithm --- проверить номер по алгоритму Луна. Алгоритм: удалить пробелы; если осталась одна цифра или меньше --- невалидно; удвоить каждую вторую цифру справа; если результат > 9, вычесть 9; сумма всех цифр должна делиться на 10.
 
     ```ocaml
-    module LRU : sig
-      type ('k, 'v) t
-      val create : int -> ('k, 'v) t
-      val get : ('k, 'v) t -> 'k -> 'v option
-      val put : ('k, 'v) t -> 'k -> 'v -> unit
-      val size : ('k, 'v) t -> int
-    end
+    val luhn : string -> bool
     ```
 
-    `create n` создаёт кеш ёмкостью `n`. `put` добавляет элемент (вытесняя старейший при переполнении). `get` возвращает значение и делает элемент «недавно использованным».
+    *Подсказка:* переверните список цифр, удваивайте элементы с нечётным индексом (1, 3, 5, ...).
 
-7. **(Среднее)** Отрефакторьте Logger (упражнение 2) в стиле Functional Core / Imperative Shell. Создайте модуль `LoggerPure` с чистыми функциями, работающими со списком строк, и модуль `LoggerShell`, управляющий мутабельным состоянием.
+7. **(Среднее)** `validate_email` --- валидация email с полиморфными вариантами. Возвращает `(string, [> \`EmptyEmail | \`NoAtSign | \`InvalidDomain of string]) result`. Пустая строка --- `EmptyEmail`, нет '@' --- `NoAtSign`, домен без точки --- `InvalidDomain`.
 
     ```ocaml
-    module LoggerPure : sig
-      val add : string list -> string -> string list
-      val count : string list -> int
-      val messages : string list -> string list
-    end
-
-    module LoggerShell : sig
-      type t
-      val create : unit -> t
-      val log : t -> string -> unit
-      val messages : t -> string list
-      val count : t -> int
-      val clear : t -> unit
-    end
+    val validate_email : string ->
+      (string, [> `EmptyEmail | `NoAtSign | `InvalidDomain of string]) result
     ```
 
-    *Подсказка:* `LoggerPure` работает с `string list` напрямую. `LoggerShell` хранит `string list ref` и делегирует логику `LoggerPure`.
-
-8. **(Сложное)** Bowling --- подсчёт очков в боулинге. Реализуйте модуль с мутабельным состоянием игры.
-
-    ```ocaml
-    module Bowling : sig
-      type t
-      val create : unit -> t
-      val roll : t -> int -> (unit, string) result
-      val score : t -> int
-    end
-    ```
-
-    Правила:
-    - Игра состоит из 10 фреймов.
-    - В каждом фрейме 2 броска (если не страйк).
-    - **Spare** (сбиты все 10 кеглей за 2 броска): 10 + следующий бросок.
-    - **Strike** (сбиты все 10 за 1 бросок): 10 + два следующих броска.
-    - 10-й фрейм: бонусные броски при spare/strike.
-    - Perfect game (12 страйков) = 300 очков.
-
-    *Подсказка:* храните все броски в списке, а `score` вычисляйте проходом по фреймам.
+    *Подсказка:* используйте `String.contains` и `String.split_on_char`.
 
 ## Заключение
 
 В этой главе мы:
 
-- Изучили ссылки (`ref`) --- мутабельные ячейки OCaml.
-- Познакомились с мутабельными записями и массивами.
-- Освоили ввод-вывод: `Printf.printf`, `Printf.sprintf`, `In_channel`, `Out_channel`.
-- Научились безопасно работать с файлами через `with_open_text`.
-- Разобрали циклы `for` и `while`.
-- Изучили паттерн Functional Core / Imperative Shell для разделения логики и эффектов.
-- Сравнили прямые эффекты OCaml с монадой `IO` Haskell.
+- Подробно изучили `option` и `result` как инструменты обработки ошибок.
+- Познакомились с let-операторами (`let*`, `let+`) --- синтаксическим сахаром для цепочек.
+- Реализовали накопление ошибок --- аналог аппликативной валидации Haskell, но проще.
+- Сравнили исключения и `result` --- когда использовать каждый подход.
+- Научились конвертировать между `option` и `result`.
+- Сравнили четыре подхода к обработке ошибок: от исключений до полиморфных вариантов.
+- Изучили полиморфные варианты для composable, различимых и exhaustive ошибок.
+- Познакомились с оператором `and*` для параллельного сбора ошибок.
+- Рассмотрели Outcome type для ситуаций, когда нужны предупреждения наряду с результатом.
 
-В следующей главе мы изучим проектирование через типы --- умные конструкторы, кодирование состояний в типах и паттерн «Parse, Don't Validate».
+В следующей главе мы изучим мутабельное состояние и прямые эффекты --- ввод-вывод, работу с файлами и ссылки `ref`.

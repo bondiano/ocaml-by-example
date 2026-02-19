@@ -1,665 +1,456 @@
-# FFI и JSON
+# Конкурентность с Eio
 
 ## Цели главы
 
-В этой главе мы изучим два важных аспекта практической разработки на OCaml:
+В этой главе мы изучим конкурентное и параллельное программирование в OCaml 5 с использованием библиотеки **Eio** --- прямой стиль (direct-style) вместо промисов и колбэков:
 
-- **FFI (Foreign Function Interface)** --- вызов C-функций из OCaml.
-- **Работа с JSON** --- парсинг и генерация JSON с помощью библиотеки Yojson.
-- **Автоматическая сериализация** --- ppx_deriving_yojson для генерации кодеков.
-- Сравнение с подходом Haskell (aeson, FFI).
+- **Домены** (domains) --- настоящий параллелизм на нескольких ядрах.
+- **Файберы** (fibers) --- легковесная конкурентность внутри домена.
+- **Eio** --- библиотека прямого стиля для конкурентного ввода-вывода.
+- **Структурированная конкурентность** --- все задачи завершаются до выхода из scope.
+- **Каналы** (`Eio.Stream`) --- безопасная коммуникация между файберами.
+- **Таймауты** и отмена операций.
+- Сравнение с Lwt и Async.
 
 ## Подготовка проекта
 
-Код этой главы находится в `exercises/chapter12`. Соберите проект:
+Код этой главы находится в `exercises/chapter12`. Этой главе нужны дополнительные библиотеки:
 
 ```text
+$ opam install eio eio_main
 $ cd exercises/chapter12
 $ dune build
 ```
 
-Для этой главы требуются библиотеки `yojson` и `ppx_deriving_yojson`. Убедитесь, что они установлены:
+## OCaml 5 и многоядерность
 
-```text
-$ opam install yojson ppx_deriving_yojson
-```
+OCaml 5 --- историческое обновление языка, добавившее поддержку параллелизма. До OCaml 5 существовал глобальный мьютекс (GIL), не позволявший выполнять OCaml-код на нескольких ядрах одновременно.
 
-## Часть 1: FFI --- вызов C-функций из OCaml
+OCaml 5 предлагает два уровня конкурентности:
 
-### Зачем нужен FFI?
+1. **Домены** (domains) --- потоки уровня ОС для настоящего параллелизма.
+2. **Effect handlers** --- механизм для реализации легковесной конкурентности (файберов).
 
-OCaml --- компилируемый язык с эффективной средой выполнения, но иногда нужно:
+## Домены
 
-- Использовать существующие C-библиотеки (OpenSSL, SQLite, zlib).
-- Вызывать системные функции ОС.
-- Оптимизировать критичные участки кода на C.
-- Интегрироваться с экосистемой других языков через C ABI.
-
-В Haskell для FFI используется ключевое слово `foreign import`:
-
-```haskell
--- Haskell FFI
-foreign import ccall "sin" c_sin :: CDouble -> CDouble
-```
-
-В OCaml аналогичную роль играет ключевое слово `external`.
-
-### Ключевое слово `external`
-
-`external` объявляет функцию, реализованную на C:
+Домен (domain) --- единица параллелизма. Каждый домен выполняется на отдельном ядре процессора:
 
 ```ocaml
-external c_sin : float -> float = "caml_sin_float" "sin"
-  [@@unboxed] [@@noalloc]
-external c_cos : float -> float = "caml_cos_float" "cos"
-  [@@unboxed] [@@noalloc]
+let () =
+  let d = Domain.spawn (fun () ->
+    Printf.printf "Домен: %d\n" (Domain.self () :> int)
+  ) in
+  Printf.printf "Основной домен\n";
+  Domain.join d
 ```
 
-Разберём синтаксис:
+`Domain.spawn f` запускает функцию `f` в новом домене. `Domain.join d` ожидает завершения домена и возвращает результат.
 
-- `external c_sin` --- имя функции в OCaml.
-- `: float -> float` --- тип функции в OCaml.
-- `= "caml_sin_float" "sin"` --- два имени C-функций: первое для байткод-компилятора, второе для нативного.
-- `[@@unboxed]` --- аргументы и результат передаются без упаковки (boxing). Требует указания двух C-имён.
-- `[@@noalloc]` --- функция не выделяет память в куче OCaml.
-
-### Соответствие типов OCaml и C
-
-| Тип OCaml | Тип C | Примечание |
-|-----------|-------|------------|
-| `int` | `intnat` | Машинное целое минус 1 бит (тег) |
-| `float` | `double` | 64-битное число с плавающей точкой |
-| `bool` | `intnat` | 0 = false, 1 = true |
-| `string` | `char *` | Строки OCaml --- не нуль-терминированные! |
-| `unit` | `value` | Представлен как `Val_unit` |
-| `'a array` | `value` | Массив боксированных значений |
-
-### Пример: математические функции из libm
-
-Стандартная библиотека C `libm` содержит математические функции, которые можно вызывать напрямую:
+### Параллельное вычисление
 
 ```ocaml
-external c_sin : float -> float = "caml_sin_float" "sin"
-  [@@unboxed] [@@noalloc]
-external c_cos : float -> float = "caml_cos_float" "cos"
-  [@@unboxed] [@@noalloc]
-external c_sqrt : float -> float = "caml_sqrt_float" "sqrt"
-  [@@unboxed] [@@noalloc]
-external c_exp : float -> float = "caml_exp_float" "exp"
-  [@@unboxed] [@@noalloc]
-external c_log : float -> float = "caml_log_float" "log"
-  [@@unboxed] [@@noalloc]
+let parallel_sum arr =
+  let n = Array.length arr in
+  let mid = n / 2 in
+  let d = Domain.spawn (fun () ->
+    let sum = ref 0 in
+    for i = 0 to mid - 1 do sum := !sum + arr.(i) done;
+    !sum
+  ) in
+  let sum2 = ref 0 in
+  for i = mid to n - 1 do sum2 := !sum2 + arr.(i) done;
+  Domain.join d + !sum2
 ```
 
-Использование:
+Массив делится пополам, каждая половина суммируется в своём домене параллельно.
 
-```text
-# c_sin 0.0;;
-- : float = 0.
+### Ограничения доменов
 
-# c_sin (Float.pi /. 2.0);;
-- : float = 1.
+- Доменов должно быть **мало** (по числу ядер). Создание домена --- дорогая операция.
+- Для тысяч конкурентных задач используйте **файберы**.
 
-# c_cos 0.0;;
-- : float = 1.
+```admonish tip title="Для Python/TypeScript-разработчиков"
+Домены в OCaml 5 --- это аналог **настоящих потоков** (не `threading` в Python, который ограничен GIL). Ближайшая аналогия:
 
-# c_sqrt 2.0;;
-- : float = 1.41421356237309515
+| | Python | Go | OCaml 5 |
+|---|---|---|---|
+| Настоящий параллелизм | `multiprocessing` | горутины + GOMAXPROCS | домены |
+| Ограничение | Отдельные процессы, IPC | Тысячи горутин, но 1 рантайм | Мало доменов (по числу ядер) |
+| Легковесная конкурентность | `asyncio` | горутины | файберы (Eio) |
+
+До OCaml 5 ситуация была как в Python: глобальный мьютекс (GIL/GIL аналог) не позволял параллелить OCaml-код. Теперь домены снимают это ограничение, но их должно быть мало --- для массовой конкурентности используйте файберы.
 ```
 
-Атрибуты `[@@unboxed]` и `[@@noalloc]` --- оптимизации для простых числовых функций. `[@@unboxed]` избегает упаковки `float` в блок кучи, а `[@@noalloc]` сообщает сборщику мусора, что вызов безопасен. При использовании `[@@unboxed]` обязательно указывать два имени C-функций --- для байткод-компилятора и для нативного.
+## Eio: конкурентность прямого стиля
 
-### Простые external без атрибутов
+**Eio** --- библиотека для конкурентного ввода-вывода, использующая effect handlers OCaml 5. Её главное преимущество --- **прямой стиль**: код выглядит как обычный последовательный, без промисов, монад или колбэков.
 
-Если не нужны оптимизации `[@@unboxed]` и `[@@noalloc]`, можно указать одно имя C-функции:
+### Сравнение подходов
 
 ```ocaml
-external c_abs : int -> int = "abs"
+(* Lwt (промисы, старый стиль) *)
+let fetch_lwt url =
+  let open Lwt.Syntax in
+  let* response = Http.get url in
+  let* body = Http.read_body response in
+  Lwt.return (String.length body)
+
+(* Eio (прямой стиль, новый стиль) *)
+let fetch_eio url =
+  let response = Http.get url in
+  let body = Http.read_body response in
+  String.length body
 ```
 
-Это проще, но медленнее для числовых типов из-за боксинга.
+В Eio нет `let*`, `>>=`, `Lwt.return` --- код читается как обычный последовательный код, но при этом файберы корректно переключаются при ожидании I/O.
 
-### Функции с несколькими аргументами
+```admonish tip title="Для Python/TypeScript-разработчиков"
+Eio --- это ответ OCaml на проблему «цветных функций» (colored functions). В Python `asyncio` и TypeScript `async/await` создают разделение на «обычные» и «асинхронные» функции:
 
-Для C-функций с несколькими аргументами тоже нужно указать **два** имени --- для байткод-компилятора и нативного:
+```python
+# Python: async "заражает" весь стек вызовов
+async def fetch(url):
+    response = await aiohttp.get(url)  # async!
+    return response.text
+
+# Нельзя вызвать из обычной функции без await
+```
+
+В Eio такого разделения нет. Конкурентный код выглядит точно так же, как синхронный --- нет `async`, `await`, `>>=`. Файберы переключаются автоматически при I/O-операциях. Это стало возможным благодаря effect handlers в OCaml 5.
+```
+
+### Запуск Eio
+
+Любая Eio-программа начинается с `Eio_main.run`:
 
 ```ocaml
-external c_pow : float -> float -> float
-  = "caml_pow_bytecode" "pow" [@@unboxed] [@@noalloc]
+let () =
+  Eio_main.run @@ fun env ->
+  let stdout = Eio.Stdenv.stdout env in
+  Eio.Flow.copy_string "Привет, Eio!\n" stdout
 ```
 
-Первое имя --- обёртка для байткода (все аргументы передаются как `value`), второе --- нативная C-функция.
+`Eio_main.run` инициализирует event loop и передаёт `env` --- окружение с доступом к файловой системе, сети, стандартному вводу-выводу и часам.
 
-### Безопасность FFI
+### Окружение `env`
 
-FFI --- **небезопасная** операция. Компилятор OCaml **не проверяет** соответствие типов с C-функцией. Если вы объявите неправильный тип, программа может упасть с segfault:
+| Функция | Описание |
+|---------|----------|
+| `Eio.Stdenv.stdout env` | Стандартный вывод |
+| `Eio.Stdenv.stdin env` | Стандартный ввод |
+| `Eio.Stdenv.stderr env` | Стандартный вывод ошибок |
+| `Eio.Stdenv.clock env` | Часы (для таймаутов и sleep) |
+| `Eio.Stdenv.fs env` | Файловая система |
+| `Eio.Stdenv.net env` | Сетевой стек |
+
+Передача `env` через аргументы вместо глобальных функций --- это **dependency injection**: тесты могут подставить моковое окружение.
+
+## Файберы
+
+Файбер (fiber) --- легковесный «зелёный поток», работающий внутри домена. В отличие от доменов, файберы дёшевы --- можно запустить тысячи.
+
+### `Eio.Fiber.both`
+
+`Eio.Fiber.both` запускает две функции конкурентно и ждёт завершения обеих:
 
 ```ocaml
-(* ОПАСНО: неправильный тип! sin принимает double, а не int *)
-external bad_sin : int -> int = "sin"
-(* Это скомпилируется, но вызовет undefined behavior *)
+let () =
+  Eio_main.run @@ fun _env ->
+  Eio.Fiber.both
+    (fun () -> traceln "Файбер A: начал"; traceln "Файбер A: закончил")
+    (fun () -> traceln "Файбер B: начал"; traceln "Файбер B: закончил")
 ```
 
-Правила безопасности:
+`traceln` --- отладочный вывод Eio (потокобезопасный, в отличие от `Printf.printf`).
 
-1. Убедитесь, что типы OCaml соответствуют типам C.
-2. Не используйте `[@@noalloc]` если C-функция может вызвать callback в OCaml.
-3. Будьте осторожны со строками --- строки OCaml не нуль-терминированы.
-4. Не передавайте OCaml-значения в C без правильного маршаллинга.
-
-### Библиотека ctypes
-
-Для более сложного FFI (структуры, указатели, callbacks) существует библиотека **ctypes**, которая позволяет описывать C-привязки целиком на OCaml:
+### `Eio.Fiber.all` и `Eio.Fiber.any`
 
 ```ocaml
-(* С ctypes (концептуально): *)
-open Ctypes
-open Foreign
+(* Запустить все задачи конкурентно, дождаться завершения всех *)
+Eio.Fiber.all [
+  (fun () -> task1 ());
+  (fun () -> task2 ());
+  (fun () -> task3 ());
+]
 
-let c_strlen = foreign "strlen" (string @-> returning int)
-let c_puts = foreign "puts" (string @-> returning int)
+(* Запустить все, вернуть результат первой завершившейся *)
+Eio.Fiber.any [
+  (fun () -> task1 ());
+  (fun () -> task2 ());
+]
 ```
 
-`ctypes` безопаснее ручных `external`-объявлений, потому что генерирует правильный маршаллинг автоматически. Но `external` быстрее для простых случаев, так как не имеет накладных расходов.
+`Fiber.all` ждёт **все** задачи. `Fiber.any` возвращает результат **первой** завершившейся и отменяет остальные.
 
-Подробное изучение ctypes выходит за рамки этой главы, но знать о его существовании полезно.
+### `Eio.Fiber.fork`
 
-## Часть 2: JSON с Yojson
-
-### Зачем JSON?
-
-JSON --- самый популярный формат обмена данными в веб-разработке и API. В OCaml основная библиотека для работы с JSON --- **Yojson**.
-
-В Haskell для JSON используется `aeson`:
-
-```haskell
--- Haskell: aeson
-import Data.Aeson
-data Person = Person { name :: Text, age :: Int }
-  deriving (Generic, FromJSON, ToJSON)
-```
-
-В OCaml аналогичную роль играет связка `yojson` + `ppx_deriving_yojson`.
-
-### Тип `Yojson.Safe.t`
-
-`Yojson.Safe.t` --- алгебраический тип, представляющий любое JSON-значение:
+Для запуска файбера в фоне используется `Fiber.fork` внутри `Switch`:
 
 ```ocaml
-type t =
-  | `Null
-  | `Bool of bool
-  | `Int of int
-  | `Float of float
-  | `String of string
-  | `List of t list
-  | `Assoc of (string * t) list
+let () =
+  Eio_main.run @@ fun _env ->
+  Eio.Switch.run @@ fun sw ->
+  Eio.Fiber.fork ~sw (fun () ->
+    traceln "Фоновый файбер"
+  );
+  traceln "Основной файбер"
 ```
 
-Это **полиморфные варианты** (polymorphic variants). Обратите внимание на обратный апостроф перед именем конструктора.
+## Структурированная конкурентность
 
-Примеры:
-
-```text
-# `Null;;
-- : [> `Null ] = `Null
-
-# `Bool true;;
-- : [> `Bool of bool ] = `Bool true
-
-# `Int 42;;
-- : [> `Int of int ] = `Int 42
-
-# `String "hello";;
-- : [> `String of string ] = `String "hello"
-
-# `List [`Int 1; `Int 2; `Int 3];;
-- : [> `List of [> `Int of int ] list ] = `List [`Int 1; `Int 2; `Int 3]
-
-# `Assoc [("name", `String "Alice"); ("age", `Int 30)];;
-- : ... = `Assoc [("name", `String "Alice"); ("age", `Int 30)]
-```
-
-### Парсинг JSON из строки
-
-`Yojson.Safe.from_string` преобразует строку в `Yojson.Safe.t`:
-
-```text
-# Yojson.Safe.from_string {|{"name": "Alice", "age": 30}|};;
-- : Yojson.Safe.t = `Assoc [("name", `String "Alice"); ("age", `Int 30)]
-
-# Yojson.Safe.from_string {|[1, 2, 3]|};;
-- : Yojson.Safe.t = `List [`Int 1; `Int 2; `Int 3]
-
-# Yojson.Safe.from_string "null";;
-- : Yojson.Safe.t = `Null
-```
-
-Обратите внимание на синтаксис **quoted strings** `{| ... |}` --- строки OCaml, в которых не нужно экранировать кавычки. Очень удобно для JSON.
-
-### Генерация JSON в строку
-
-`Yojson.Safe.to_string` преобразует `Yojson.Safe.t` обратно в строку:
-
-```text
-# let json = `Assoc [("name", `String "Bob"); ("age", `Int 25)] in
-  Yojson.Safe.to_string json;;
-- : string = "{\"name\":\"Bob\",\"age\":25}"
-
-# Yojson.Safe.pretty_to_string json;;
-- : string = "{\n  \"name\": \"Bob\",\n  \"age\": 25\n}"
-```
-
-`pretty_to_string` выводит JSON с отступами --- удобно для отладки.
-
-### Ручной парсинг: сопоставление с образцом
-
-Главная сила OCaml при работе с JSON --- **pattern matching**. Можно безопасно разобрать JSON-структуру:
+**Switch** --- ключевая абстракция Eio для управления временем жизни файберов:
 
 ```ocaml
-let parse_name json =
-  match json with
-  | `Assoc fields ->
-    (match List.assoc_opt "name" fields with
-     | Some (`String name) -> Ok name
-     | Some _ -> Error "name is not a string"
-     | None -> Error "name field missing")
-  | _ -> Error "expected JSON object"
+Eio.Switch.run @@ fun sw ->
+  Eio.Fiber.fork ~sw (fun () -> task1 ());
+  Eio.Fiber.fork ~sw (fun () -> task2 ());
+  (* Switch.run не вернётся, пока оба файбера не завершатся *)
 ```
 
-Для вложенных структур парсинг выглядит так:
+Правила:
 
-```ocaml
-type address = {
-  street : string;
-  city : string;
-  zip : string;
-}
+1. Все файберы, созданные внутри `Switch.run`, **должны завершиться** до выхода.
+2. Если один файбер бросает исключение --- остальные **отменяются**.
+3. Нельзя «забыть» файбер --- нет утечек горутин/промисов.
 
-type contact = {
-  name : string;
-  age : int;
-  email : string option;
-  address : address;
-}
+Это называется **структурированная конкурентность** --- время жизни конкурентных задач привязано к лексической области видимости.
 
-let contact_of_json (json : Yojson.Safe.t) : (contact, string) result =
-  match json with
-  | `Assoc fields ->
-    (match
-       List.assoc_opt "name" fields,
-       List.assoc_opt "age" fields,
-       List.assoc_opt "email" fields,
-       List.assoc_opt "address" fields
-     with
-     | Some (`String name), Some (`Int age), email_json, Some (`Assoc addr) ->
-       let email = match email_json with
-         | Some (`String e) -> Some e
-         | _ -> None
-       in
-       (match
-          List.assoc_opt "street" addr,
-          List.assoc_opt "city" addr,
-          List.assoc_opt "zip" addr
-        with
-        | Some (`String street), Some (`String city), Some (`String zip) ->
-          Ok { name; age; email; address = { street; city; zip } }
-        | _ -> Error "invalid address fields")
-     | _ -> Error "missing or invalid fields")
-  | _ -> Error "expected JSON object"
+```admonish tip title="Для Python/TypeScript-разработчиков"
+Структурированная конкурентность в Eio --- аналог `TaskGroup` из Python 3.11+ и `Promise.all` с контролем жизненного цикла:
+
+```python
+# Python 3.11+ --- структурированная конкурентность
+async with asyncio.TaskGroup() as tg:
+    tg.create_task(task1())
+    tg.create_task(task2())
+# Все задачи гарантированно завершены здесь
 ```
 
-Ручной парсинг надёжен и явен, но **многословен**. Для каждого типа нужно писать конвертер вручную.
+В Eio `Switch.run` играет ту же роль, что `TaskGroup`. Без `Switch` невозможно запустить фоновый файбер --- это предотвращает «забытые» задачи и утечки горутин/промисов, с которыми часто сталкиваются в Go и Node.js.
+```
 
-### Ручная генерация JSON
+## Каналы: `Eio.Stream`
 
-Построить JSON-значение из OCaml-типа тоже просто:
+`Eio.Stream` --- потокобезопасная очередь для коммуникации между файберами:
 
 ```ocaml
-let contact_to_json (c : contact) : Yojson.Safe.t =
-  `Assoc [
-    ("name", `String c.name);
-    ("age", `Int c.age);
-    ("email", match c.email with Some e -> `String e | None -> `Null);
-    ("address", `Assoc [
-      ("street", `String c.address.street);
-      ("city", `String c.address.city);
-      ("zip", `String c.address.zip);
-    ]);
+let () =
+  Eio_main.run @@ fun _env ->
+  let stream = Eio.Stream.create 10 in  (* буфер на 10 элементов *)
+  Eio.Fiber.both
+    (fun () ->
+      for i = 1 to 5 do
+        Eio.Stream.add stream i;
+        traceln "Отправил: %d" i
+      done)
+    (fun () ->
+      for _ = 1 to 5 do
+        let v = Eio.Stream.take stream in
+        traceln "Получил: %d" v
+      done)
+```
+
+- `Eio.Stream.create n` --- создать канал с буфером размера `n`. Если `n = 0` --- синхронный канал (отправитель блокируется до получения).
+- `Eio.Stream.add stream v` --- отправить значение (блокируется, если буфер полон).
+- `Eio.Stream.take stream` --- получить значение (блокируется, если буфер пуст).
+
+### Паттерн Producer-Consumer
+
+```ocaml
+let producer stream n =
+  for i = 1 to n do
+    Eio.Stream.add stream (Some i)
+  done;
+  Eio.Stream.add stream None  (* сигнал завершения *)
+
+let consumer stream =
+  let rec loop acc =
+    match Eio.Stream.take stream with
+    | None -> List.rev acc
+    | Some v -> loop (v :: acc)
+  in
+  loop []
+```
+
+## Таймауты и отмена
+
+### `Eio.Time.sleep`
+
+```ocaml
+let () =
+  Eio_main.run @@ fun env ->
+  let clock = Eio.Stdenv.clock env in
+  traceln "Начало";
+  Eio.Time.sleep clock 1.0;
+  traceln "Прошла 1 секунда"
+```
+
+### Таймаут с `Fiber.any`
+
+```ocaml
+let with_timeout clock seconds f =
+  Eio.Fiber.any [
+    (fun () -> Some (f ()));
+    (fun () -> Eio.Time.sleep clock seconds; None);
   ]
 ```
 
-### Вспомогательные функции
+Если `f` завершается за `seconds` секунд --- возвращает `Some result`. Иначе --- `None`, а `f` отменяется.
 
-Полезно вынести повторяющиеся паттерны в утилиты:
+## Сравнение Eio с Lwt и Async
+
+| Аспект | Lwt | Async | Eio |
+|--------|-----|-------|-----|
+| Стиль | Монадический (`>>=`) | Монадический (`>>=`) | Прямой |
+| Параллелизм | Нет (1 ядро) | Нет (1 ядро) | Да (домены) |
+| Механизм | Промисы | Deferred | Effect handlers |
+| Структурированность | Нет | Нет | Да (Switch) |
+| Зрелость | Высокая | Высокая | Растущая |
+
+Eio --- будущее конкурентности в OCaml. Lwt и Async остаются для обратной совместимости.
+
+```admonish info title="Подробнее"
+Подробное описание конкурентного программирования в OCaml: [Real World OCaml, глава «Concurrent Programming with Async»](https://dev.realworldocaml.org/concurrent-programming.html). Хотя глава описывает библиотеку Async, базовые концепции (промисы, event loop, конкурентный I/O) применимы и к Eio.
+```
+
+## Проект: конкурентные вычисления
+
+Модуль `lib/concurrent.ml` демонстрирует базовые паттерны конкурентности с Eio.
+
+### Параллельный map
 
 ```ocaml
-let json_string_field key json =
-  match json with
-  | `Assoc fields ->
-    (match List.assoc_opt key fields with
-     | Some (`String s) -> Some s
-     | _ -> None)
-  | _ -> None
-
-let json_int_field key json =
-  match json with
-  | `Assoc fields ->
-    (match List.assoc_opt key fields with
-     | Some (`Int n) -> Some n
-     | _ -> None)
-  | _ -> None
+let parallel_map f lst =
+  Eio.Fiber.List.map f lst
 ```
 
-Использование:
+`Eio.Fiber.List.map` выполняет `f` для каждого элемента конкурентно (в отдельных файберах) и собирает результаты в том же порядке.
 
-```text
-# let json = Yojson.Safe.from_string {|{"name": "Alice", "age": 30}|} in
-  json_string_field "name" json;;
-- : string option = Some "Alice"
-
-# json_int_field "age" json;;
-- : int option = Some 30
-
-# json_string_field "missing" json;;
-- : string option = None
-```
-
-## Часть 3: ppx_deriving_yojson
-
-### Проблема ручных кодеков
-
-Ручные конвертеры JSON имеют недостатки:
-
-- Много шаблонного кода.
-- Легко допустить ошибку в имени поля.
-- При изменении типа нужно обновлять конвертеры вручную.
-
-### Автоматическая генерация с `[@@deriving yojson]`
-
-`ppx_deriving_yojson` --- PPX-расширение, которое автоматически генерирует функции сериализации и десериализации:
+### Параллельная свёртка
 
 ```ocaml
-type address = {
-  street : string;
-  city : string;
-  zip : string;
-} [@@deriving yojson]
-
-type contact = {
-  name : string;
-  age : int;
-  email : string option;
-  address : address;
-} [@@deriving yojson]
+let parallel_sum lst =
+  let results = Eio.Fiber.List.map (fun x -> x) lst in
+  List.fold_left ( + ) 0 results
 ```
 
-Аннотация `[@@deriving yojson]` генерирует две функции:
+## Buf_read и сетевое взаимодействие
 
-- `address_to_yojson : address -> Yojson.Safe.t`
-- `address_of_yojson : Yojson.Safe.t -> (address, string) result`
+До сих пор мы работали с файберами, каналами и таймаутами. Но Eio также предоставляет удобные средства для **буферизованного чтения** данных из потоков и **сетевого взаимодействия**.
 
-И аналогично для `contact`:
+### Buf_read --- буферизованное чтение
 
-- `contact_to_yojson : contact -> Yojson.Safe.t`
-- `contact_of_yojson : Yojson.Safe.t -> (contact, string) result`
-
-### Использование
-
-```text
-# let alice = {
-    name = "Alice"; age = 30; email = Some "alice@example.com";
-    address = { street = "Main St"; city = "Moscow"; zip = "101000" }
-  };;
-
-# let json = contact_to_yojson alice;;
-# Yojson.Safe.pretty_to_string json;;
-- : string = {
-  "name": "Alice",
-  "age": 30,
-  "email": ["Some", "alice@example.com"],
-  "address": {
-    "street": "Main St",
-    "city": "Moscow",
-    "zip": "101000"
-  }
-}
-```
-
-Обратите внимание: `option` сериализуется как `["Some", value]` или `"None"` по умолчанию. Это отличается от ручной сериализации, где мы использовали `null`.
-
-### Десериализация
-
-```text
-# let json_str = {|{"name":"Bob","age":25,"email":"None",
-    "address":{"street":"Elm St","city":"SPb","zip":"190000"}}|} in
-  let json = Yojson.Safe.from_string json_str in
-  contact_of_yojson json;;
-- : (contact, string) result = Ok {name = "Bob"; age = 25; email = None; ...}
-```
-
-Функция `contact_of_yojson` возвращает `result` --- `Ok` при успехе или `Error` с описанием ошибки.
-
-### Настройка dune
-
-Для использования `ppx_deriving_yojson` нужно настроить `dune`:
-
-```lisp
-(library
- (name mylib)
- (libraries yojson)
- (preprocess (pps ppx_deriving_yojson)))
-```
-
-Ключевая строка --- `(preprocess (pps ppx_deriving_yojson))`, которая включает PPX-препроцессор.
-
-### Только сериализация или десериализация
-
-Можно сгенерировать только одну из двух функций:
+`Eio.Buf_read` оборачивает поток (`flow`) в буфер и позволяет читать данные построчно, побайтово или по произвольным разделителям. Это аналог `Buffered_reader` в других языках:
 
 ```ocaml
-type log_entry = {
-  timestamp : float;
-  message : string;
-} [@@deriving to_yojson]
-(* Генерирует только log_entry_to_yojson *)
-
-type config = {
-  host : string;
-  port : int;
-} [@@deriving of_yojson]
-(* Генерирует только config_of_yojson *)
+let read_http_status flow =
+  let buf = Eio.Buf_read.of_flow flow ~max_size:4096 in
+  let status_line = Eio.Buf_read.line buf in
+  status_line
 ```
 
-## Часть 4: Проект --- парсер конфигурации
+`Eio.Buf_read.of_flow flow ~max_size:n` создаёт буферизованный читатель с ограничением буфера в `n` байт. `Eio.Buf_read.line buf` читает одну строку (до `\n`).
 
-Соберём всё вместе --- напишем парсер конфигурационного файла в формате JSON.
+Основные функции `Buf_read`:
 
-### Тип конфигурации
+| Функция | Описание |
+|---------|----------|
+| `Eio.Buf_read.line buf` | Прочитать строку до `\n` |
+| `Eio.Buf_read.take n buf` | Прочитать ровно `n` байт |
+| `Eio.Buf_read.at_end_of_input buf` | Проверить, достигнут ли конец потока |
+| `Eio.Buf_read.any_char buf` | Прочитать один символ |
+
+### Custom-парсеры для бинарных протоколов
+
+`Buf_read` позволяет создавать собственные комбинаторы для чтения бинарных данных. Например, целые числа разной ширины:
 
 ```ocaml
-type database_config = {
-  host : string;
-  port : int;
-  name : string;
-} [@@deriving yojson]
-
-type app_config = {
-  debug : bool;
-  log_level : string;
-  database : database_config;
-} [@@deriving yojson]
+module R = struct
+  include Eio.Buf_read
+  let int8 = map (Fun.flip String.get_int8 0) (take 1)
+  let int16_be = map (Fun.flip String.get_int16_be 0) (take 2)
+end
 ```
 
-### Чтение конфигурации
+Здесь `take n` читает `n` байт как строку, а `map f parser` применяет функцию `f` к результату парсера. Такой подход удобен для реализации бинарных протоколов (например, чтение заголовков пакетов).
+
+### Networking --- сетевое взаимодействие
+
+Eio предоставляет модуль `Eio.Net` для работы с TCP/UDP. Сетевой стек доступен через `Eio.Stdenv.net env`.
+
+#### TCP-клиент
 
 ```ocaml
-let load_config path =
-  let content = In_channel.with_open_text path In_channel.input_all in
-  let json = Yojson.Safe.from_string content in
-  app_config_of_yojson json
-
-let save_config path config =
-  let json = app_config_to_yojson config in
-  let content = Yojson.Safe.pretty_to_string json in
-  Out_channel.with_open_text path (fun oc ->
-    Out_channel.output_string oc content)
+let tcp_client ~net ~host ~port =
+  let addr = `Tcp (Eio.Net.Ipaddr.V4.loopback, port) in
+  Eio.Net.connect net addr |> fun flow ->
+  let buf = Eio.Buf_read.of_flow flow ~max_size:4096 in
+  Eio.Flow.copy_string "GET / HTTP/1.0\r\n\r\n" flow;
+  Eio.Buf_read.line buf
 ```
 
-### Пример конфигурации
+Разберём по шагам:
 
-```json
-{
-  "debug": true,
-  "log_level": "info",
-  "database": {
-    "host": "localhost",
-    "port": 5432,
-    "name": "mydb"
-  }
-}
-```
+1. `Eio.Net.connect net addr` --- устанавливает TCP-соединение и возвращает `flow`.
+2. `Eio.Flow.copy_string ... flow` --- отправляет данные в поток.
+3. `Eio.Buf_read.of_flow flow` --- оборачивает поток для буферизованного чтения.
+4. `Eio.Buf_read.line buf` --- читает строку ответа.
 
-Этот паттерн --- типичный для OCaml-приложений: определить тип с `[@@deriving yojson]`, затем использовать `from_string` / `to_string` для ввода-вывода.
+#### Адреса
 
-## Сравнение с Haskell
+Eio поддерживает несколько видов адресов:
 
-| Аспект | OCaml (yojson + ppx) | Haskell (aeson) |
-|--------|---------------------|-----------------|
-| Тип JSON | `Yojson.Safe.t` (полиморфные варианты) | `Value` (ADT) |
-| Автодеривация | `[@@deriving yojson]` | `deriving (FromJSON, ToJSON)` |
-| Генерируемые функции | `t_to_yojson`, `t_of_yojson` | `toJSON`, `parseJSON` |
-| Возврат десериализации | `(t, string) result` | `Parser t` (монада) |
-| Ручной парсинг | Pattern matching | `.:`, `.:?`, `withObject` |
-| FFI | `external` + C stubs | `foreign import ccall` |
-| Типобезопасность FFI | Нет (доверие программисту) | Нет (доверие программисту) |
-| Высокоуровневый FFI | ctypes | inline-c, c2hs |
+- `` `Tcp (ip, port) `` --- TCP-соединение.
+- `Eio.Net.Ipaddr.V4.loopback` --- `127.0.0.1`.
+- `Eio.Net.Ipaddr.V6.loopback` --- `::1`.
 
-Общая идея одинакова: определить тип данных, автоматически получить сериализаторы, использовать их для ввода-вывода JSON.
-
-## Ctypes --- высокоуровневый FFI
-
-В разделе про FFI мы кратко упомянули библиотеку **ctypes**. Рассмотрим её подробнее --- ctypes позволяет описывать C-типы и вызывать C-функции **целиком на OCaml**, без написания C-кода и стабов вручную.
-
-### Установка
-
-```text
-$ opam install ctypes ctypes-foreign
-```
-
-### Основы: вызов C-функций
-
-Модуль `Foreign` предоставляет функцию `foreign`, которая связывает имя C-функции с описанием её типа:
-
-```ocaml
-open Ctypes
-open Foreign
-
-let c_sqrt = foreign "sqrt" (double @-> returning double)
-let c_pow = foreign "pow" (double @-> double @-> returning double)
-```
-
-Оператор `@->` описывает аргументы, а `returning t` --- тип возвращаемого значения. Типы (`double`, `int`, `string` и т.д.) --- это значения модуля `Ctypes`, а не типы OCaml.
-
-После объявления `c_sqrt` и `c_pow` --- обычные OCaml-функции:
-
-```text
-# c_sqrt 2.0;;
-- : float = 1.41421356237309515
-
-# c_pow 2.0 10.0;;
-- : float = 1024.
-```
-
-### Определение C-структур
-
-Ctypes позволяет описывать C-структуры:
-
-```ocaml
-type point
-let point : point structure typ = structure "point"
-let x = field point "x" double
-let y = field point "y" double
-let () = seal point
-
-(* Создание и использование *)
-let p = make point in
-setf p x 3.0;
-setf p y 4.0;
-let dist = sqrt (getf p x ** 2.0 +. getf p y ** 2.0)
-```
-
-Порядок действий:
-
-1. `structure "point"` --- объявить структуру с именем `point`.
-2. `field point "x" double` --- добавить поле `x` типа `double`.
-3. `seal point` --- завершить определение (вычислить размер и выравнивание).
-4. `make point` --- создать экземпляр структуры.
-5. `setf` / `getf` --- записать / прочитать поле.
-
-**Частая ошибка:** если забыть вызвать `seal t`, при попытке использовать структуру вы получите исключение `Ctypes_static.IncompleteType`.
-
-### Два подхода к связыванию
-
-Ctypes поддерживает два режима работы:
-
-1. **Dynamic linking** (через `libffi`) --- быстрый старт, не требует компиляции C-кода. Библиотека загружается в рантайме (`.so` на Linux, `.dylib` на macOS). Удобно для прототипирования.
-
-2. **Stub generation** --- production-подход. Ctypes генерирует C-стабы на этапе сборки. Результат эффективнее (нет overhead от libffi), но сборка сложнее.
-
-Для большинства задач dynamic linking достаточно. Stub generation имеет смысл, когда FFI-вызовы находятся на горячем пути.
-
-### Ограничения
-
-- Generated stubs не поддерживают атрибуты `[@noalloc]` и `[@unboxed]`, которые доступны при ручном `external`.
-- Dynamic linking требует наличия `.so`/`.dylib` в системе в рантайме.
-- Ctypes медленнее ручных `external` для простых числовых функций из-за дополнительного уровня абстракции.
-
-Для простых числовых функций `external` с `[@@unboxed] [@@noalloc]` остаётся лучшим выбором. Ctypes раскрывает свою мощь при работе со структурами, указателями, массивами и сложными C API.
+Обратите внимание: `net` передаётся как аргумент (dependency injection), что позволяет подставить мок-сеть в тестах.
 
 ## Упражнения
 
 Решения пишите в `test/my_solutions.ml`. Проверяйте: `dune runtest`.
 
-1. **(Среднее)** Реализуйте ручную конвертацию `product_to_json` для типа:
+Все упражнения этой главы выполняются внутри `Eio_main.run`. Тесты оборачивают ваши функции в Eio-окружение.
+
+1. **(Среднее)** Реализуйте функцию `parallel_fib`, которая вычисляет N-й и M-й числа Фибоначчи параллельно, используя `Eio.Fiber.both`, и возвращает их сумму.
 
     ```ocaml
-    type product = {
-      title : string;
-      price : float;
-      in_stock : bool;
-    }
+    val parallel_fib : int -> int -> int
     ```
 
-    Функция должна возвращать `Yojson.Safe.t` --- JSON-объект с полями `"title"`, `"price"`, `"in_stock"`.
+    *Подсказка:* напишите обычную функцию `fib n` и используйте `Eio.Fiber.both` с `ref` для сбора результатов.
 
-2. **(Среднее)** Реализуйте обратную конвертацию `product_of_json`:
+2. **(Среднее)** Реализуйте функцию `concurrent_map`, которая применяет функцию к каждому элементу списка конкурентно, используя `Eio.Fiber.List.map`.
 
     ```ocaml
-    val product_of_json : Yojson.Safe.t -> (product, string) result
+    val concurrent_map : ('a -> 'b) -> 'a list -> 'b list
     ```
 
-    При невалидном JSON верните `Error` с описанием ошибки.
-
-3. **(Среднее)** Реализуйте функцию `extract_names`, которая из JSON-массива объектов извлекает значения поля `"name"`:
+3. **(Среднее)** Реализуйте паттерн producer-consumer: функцию `produce_consume`, где producer отправляет числа от 1 до n в `Eio.Stream`, а consumer суммирует их.
 
     ```ocaml
-    val extract_names : Yojson.Safe.t -> string list
+    val produce_consume : int -> int
     ```
 
-    Например, для `[{"name": "Alice"}, {"name": "Bob"}, {"age": 25}]` результат: `["Alice"; "Bob"]`. Объекты без поля `"name"` пропускаются.
+    *Подсказка:* используйте `Eio.Stream.create`, `Eio.Fiber.both`, `Some`/`None` как сигнал завершения.
 
-4. **(Лёгкое)** Определите тип `config` с полями `host : string`, `port : int`, `debug : bool` и аннотацией `[@@deriving yojson]`. Убедитесь, что автоматическая сериализация и десериализация работают (тесты проверят roundtrip).
+4. **(Среднее)** Реализуйте функцию `race`, которая запускает список функций конкурентно и возвращает результат первой завершившейся.
+
+    ```ocaml
+    val race : (unit -> 'a) list -> 'a
+    ```
+
+    *Подсказка:* используйте `Eio.Fiber.any`.
 
 ## Заключение
 
 В этой главе мы:
 
-- Изучили FFI: ключевое слово `external` для вызова C-функций.
-- Разобрали соответствие типов OCaml и C.
-- Познакомились с библиотекой Yojson и типом `Yojson.Safe.t`.
-- Научились вручную парсить и генерировать JSON через pattern matching.
-- Освоили `ppx_deriving_yojson` для автоматической сериализации.
-- Написали парсер конфигурации --- типичный паттерн для OCaml-приложений.
+- Познакомились с доменами --- единицей параллелизма OCaml 5.
+- Изучили Eio --- библиотеку прямого стиля для конкурентности.
+- Разобрали файберы и структурированную конкурентность через `Switch`.
+- Научились использовать каналы (`Eio.Stream`) для коммуникации.
+- Познакомились с таймаутами и отменой операций.
+- Сравнили Eio с Lwt и Async.
 
-В следующей главе мы изучим **обработчики эффектов (Effect Handlers)** --- одну из ключевых новинок OCaml 5, которая открывает новые подходы к структурированию побочных эффектов.
+В следующей главе мы изучим обработчики эффектов --- одну из ключевых новинок OCaml 5.

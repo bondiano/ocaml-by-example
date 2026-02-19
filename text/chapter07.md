@@ -1,15 +1,16 @@
-# Обработка ошибок и валидация
+# Модули и функторы
 
 ## Цели главы
 
-В этой главе мы подробно изучим идиоматическую обработку ошибок в OCaml:
+В этой главе мы изучим **модульную систему** OCaml --- одну из самых мощных среди всех языков программирования. Вместо классов типов (type classes) Haskell, OCaml использует модули для абстракции, инкапсуляции и параметрического полиморфизма:
 
-- Тип `option` --- когда значения может не быть.
-- Тип `result` --- когда нужна информация об ошибке.
-- **Let-операторы** (`let*`, `let+`) --- синтаксический сахар для цепочек вычислений.
-- **Накопление ошибок** --- паттерн, аналогичный аппликативной валидации Haskell.
-- **Исключения** vs `result` --- когда что использовать.
-- Проект: валидация формы.
+- Модули --- именованные коллекции типов и значений.
+- Сигнатуры (module types) --- интерфейсы модулей.
+- Абстрактные типы --- сокрытие реализации.
+- Функторы --- параметризованные модули.
+- Модули первого класса --- передача модулей как значений.
+- `include` и `open` --- композиция модулей.
+- Сравнение с классами типов Haskell.
 
 ## Подготовка проекта
 
@@ -20,795 +21,772 @@ $ cd exercises/chapter07
 $ dune build
 ```
 
-## Тип `option`: подробно
+## Модули
 
-Мы уже знакомы с `option` из главы 4. Теперь рассмотрим его использование как инструмент обработки ошибок.
-
-### Проблема: цепочки `option`
-
-Допустим, нам нужно извлечь значение из вложенной структуры:
+В OCaml каждый `.ml`-файл автоматически является модулем. Но модули можно также определять **внутри** файла:
 
 ```ocaml
-type user = { name : string; address : address option }
-and address = { city : string; zip : string option }
+module Counter = struct
+  type t = int
+  let zero = 0
+  let increment c = c + 1
+  let to_string c = string_of_int c
+end
 ```
 
-Чтобы получить почтовый индекс пользователя, нужно проверить каждый уровень:
-
-```ocaml
-let get_zip user =
-  match user.address with
-  | None -> None
-  | Some addr ->
-    match addr.zip with
-    | None -> None
-    | Some z -> Some z
-```
-
-Вложенные `match` быстро становятся нечитаемыми. Решение --- `Option.bind`.
-
-### `Option.bind` --- цепочка вычислений
-
-```ocaml
-let get_zip user =
-  Option.bind user.address (fun addr -> addr.zip)
-```
-
-`Option.bind opt f` --- если `opt` = `Some x`, вызывает `f x`. Если `opt` = `None`, возвращает `None`. Это позволяет строить цепочки:
-
-```ocaml
-let get_zip user =
-  user.address
-  |> Option.bind (fun addr -> addr.zip)
-```
-
-Для более длинных цепочек:
-
-```ocaml
-let process user =
-  user.address
-  |> Option.bind (fun addr -> addr.zip)
-  |> Option.map (fun zip -> "ZIP: " ^ zip)
-  |> Option.value ~default:"нет индекса"
-```
-
-## Тип `result`: подробно
-
-`option` не объясняет **почему** значения нет. `result` добавляет информацию об ошибке:
-
-```ocaml
-type ('a, 'e) result = Ok of 'a | Error of 'e
-```
-
-### Создание результатов
-
-```ocaml
-let parse_int s =
-  match int_of_string_opt s with
-  | Some n -> Ok n
-  | None -> Error ("не число: " ^ s)
-
-let non_negative n =
-  if n >= 0 then Ok n
-  else Error ("отрицательное число: " ^ string_of_int n)
-```
+Использование:
 
 ```text
-# parse_int "42";;
-- : (int, string) result = Ok 42
+# Counter.zero;;
+- : int = 0
 
-# parse_int "abc";;
-- : (int, string) result = Error "не число: abc"
+# Counter.increment Counter.zero;;
+- : int = 1
+
+# Counter.to_string 42;;
+- : string = "42"
 ```
 
-### `Result.bind` --- цепочка
+Модуль --- это именованная коллекция **типов**, **значений** и **вложенных модулей**.
+
+### Вложенные модули
+
+Модули могут быть вложенными:
 
 ```ocaml
-let parse_positive s =
-  Result.bind (parse_int s) non_negative
+module Geometry = struct
+  module Point = struct
+    type t = { x : float; y : float }
+    let origin = { x = 0.0; y = 0.0 }
+    let distance p1 p2 =
+      Float.sqrt ((p1.x -. p2.x) ** 2.0 +. (p1.y -. p2.y) ** 2.0)
+  end
+
+  module Circle = struct
+    type t = { center : Point.t; radius : float }
+    let area c = Float.pi *. c.radius *. c.radius
+  end
+end
 ```
 
-Или через `|>`:
+Обращение: `Geometry.Point.origin`, `Geometry.Circle.area`.
+
+## Сигнатуры
+
+Сигнатура (module type) --- это **интерфейс** модуля. Она описывает, какие типы и значения модуль предоставляет:
 
 ```ocaml
-let parse_positive s =
-  parse_int s
-  |> Result.bind non_negative
+module type Printable = sig
+  type t
+  val to_string : t -> string
+end
 ```
 
-```text
-# parse_positive "42";;
-- : (int, string) result = Ok 42
+Сигнатура `Printable` говорит: «модуль должен иметь тип `t` и функцию `to_string : t -> string`». Тип `t` --- **абстрактный** --- сигнатура не раскрывает его реализацию.
 
-# parse_positive "-5";;
-- : (int, string) result = Error "отрицательное число: -5"
+### Ограничение модуля сигнатурой
 
-# parse_positive "abc";;
-- : (int, string) result = Error "не число: abc"
-```
-
-Цепочка прерывается на первой ошибке --- это поведение **fail-fast** (как `Either` в Haskell).
-
-### `Result.map`
+Сигнатуру можно применить к модулю:
 
 ```ocaml
-let double_positive s =
-  parse_positive s
-  |> Result.map (fun n -> n * 2)
+module IntPrintable : Printable with type t = int = struct
+  type t = int
+  let to_string = string_of_int
+end
 ```
 
-`Result.map f r` --- если `r = Ok x`, возвращает `Ok (f x)`. Если `r = Error e`, возвращает `Error e` без изменений.
+Конструкция `with type t = int` раскрывает абстрактный тип --- пользователи модуля видят, что `t = int`. Без неё тип `t` был бы непрозрачным.
 
-## Let-операторы
+```admonish tip title="Для Python/TS-разработчиков"
+Сигнатуры модулей в OCaml --- аналог интерфейсов (`interface`) в TypeScript и абстрактных базовых классов (`ABC`) или протоколов (`Protocol`) в Python. Например, `module type Printable = sig type t val to_string : t -> string end` --- это как `interface Printable<T> { toString(value: T): string }` в TS. Ключевое отличие: в OCaml сигнатура может скрывать реализацию типа (`type t` без определения), чего в TypeScript и Python добиться сложнее.
+```
 
-Цепочки `Result.bind` работают, но выглядят громоздко. **Let-операторы** (binding operators) --- синтаксический сахар, делающий код линейным:
+```admonish info title="Подробнее"
+Детальное описание модульной системы: [Real World OCaml, глава «Files, Modules, and Programs»](https://dev.realworldocaml.org/files-modules-and-programs.html)
+```
 
-### Определение let-операторов
+### Абстрактные типы
+
+Абстрактные типы --- мощный механизм инкапсуляции. Они скрывают реализацию, позволяя менять её без нарушения внешнего кода:
 
 ```ocaml
-let ( let* ) = Result.bind
-let ( let+ ) x f = Result.map f x
-```
-
-- `let*` --- bind (цепочка с возможной ошибкой).
-- `let+` --- map (преобразование успешного результата).
-
-### Использование
-
-```ocaml
-let parse_and_sum a b =
-  let* x = parse_int a in
-  let* y = parse_int b in
-  Ok (x + y)
-```
-
-Это эквивалентно:
-
-```ocaml
-let parse_and_sum a b =
-  Result.bind (parse_int a) (fun x ->
-    Result.bind (parse_int b) (fun y ->
-      Ok (x + y)))
-```
-
-Let-операторы превращают вложенную структуру в линейную последовательность шагов, читающуюся сверху вниз.
-
-### Сравнение с do-нотацией Haskell
-
-```
--- Haskell (do-нотация)
-parseAndSum a b = do
-  x <- parseInt a
-  y <- parseInt b
-  return (x + y)
-```
-
-```ocaml
-(* OCaml (let-операторы) *)
-let parse_and_sum a b =
-  let* x = parse_int a in
-  let* y = parse_int b in
-  Ok (x + y)
-```
-
-Структура практически идентична. `let*` соответствует `<-`, `Ok` соответствует `return`.
-
-### Let-операторы для `option`
-
-Аналогично можно определить let-операторы для `option`:
-
-```ocaml
-let ( let* ) = Option.bind
-let ( let+ ) x f = Option.map f x
-```
-
-```ocaml
-let get_zip user =
-  let* addr = user.address in
-  addr.zip
-```
-
-### Область видимости
-
-Let-операторы --- обычные значения OCaml. Они подчиняются обычным правилам области видимости. Чтобы не путать `let*` для `option` и `result`, определяйте их в отдельных модулях:
-
-```ocaml
-module Option_syntax = struct
-  let ( let* ) = Option.bind
-  let ( let+ ) x f = Option.map f x
+module type Stack = sig
+  type 'a t
+  val empty : 'a t
+  val push : 'a -> 'a t -> 'a t
+  val pop : 'a t -> ('a * 'a t) option
+  val is_empty : 'a t -> bool
 end
 
-module Result_syntax = struct
-  let ( let* ) = Result.bind
-  let ( let+ ) x f = Result.map f x
+module ListStack : Stack = struct
+  type 'a t = 'a list
+  let empty = []
+  let push x s = x :: s
+  let pop = function
+    | [] -> None
+    | x :: rest -> Some (x, rest)
+  let is_empty = function
+    | [] -> true
+    | _ :: _ -> false
+end
+```
+
+Пользователи `ListStack` работают с типом `'a ListStack.t`, не зная, что внутри это список. Мы можем заменить реализацию на массив --- внешний код не изменится.
+
+```text
+# let s = ListStack.push 1 (ListStack.push 2 ListStack.empty);;
+val s : int ListStack.t = <abstr>
+
+# ListStack.pop s;;
+- : (int * int ListStack.t) option = Some (1, <abstr>)
+```
+
+Обратите внимание: utop показывает `<abstr>` вместо конкретного значения --- тип абстрагирован.
+
+## Сравнение с классами типов Haskell
+
+В Haskell абстракция и полиморфизм достигаются через классы типов:
+
+```haskell
+-- Haskell
+class Hashable a where
+  hash :: a -> Int
+
+instance Hashable Int where
+  hash = id
+```
+
+В OCaml ту же задачу решают **сигнатуры и модули**:
+
+```ocaml
+(* OCaml *)
+module type Hashable = sig
+  type t
+  val hash : t -> int
+end
+
+module IntHashable : Hashable with type t = int = struct
+  type t = int
+  let hash x = x
+end
+```
+
+### Основные различия
+
+| Аспект | Haskell (классы типов) | OCaml (модули) |
+|--------|----------------------|----------------|
+| Диспетчеризация | Автоматическая (компилятор выбирает инстанс) | Явная (модуль передаётся как аргумент) |
+| Уникальность | Один инстанс на тип | Несколько модулей для одного типа |
+| Расширяемость | Инстансы добавляются где угодно | Модули создаются в одном месте |
+| Абстракция | Ограничения в типах (`Eq a =>`) | Параметры функторов |
+
+У каждого подхода свои плюсы. Автоматическая диспетчеризация Haskell удобнее для простых случаев. Явные модули OCaml дают больше контроля и позволяют иметь несколько реализаций для одного типа (например, разные порядки сортировки).
+
+## Функторы
+
+Функтор (functor) --- это **модуль, параметризованный другим модулем**. Функтор принимает модуль как аргумент и возвращает новый модуль. Это аналог параметрического полиморфизма на уровне модулей.
+
+### Пример: множество
+
+Стандартная библиотека OCaml предоставляет функтор `Set.Make`:
+
+```ocaml
+module IntSet = Set.Make(Int)
+```
+
+`Int` --- модуль с типом `t = int` и функцией `compare`. `Set.Make` --- функтор, принимающий модуль с `compare` и создающий модуль множества:
+
+```text
+# let s = IntSet.of_list [3; 1; 4; 1; 5; 9; 2; 6];;
+val s : IntSet.t = <abstr>
+
+# IntSet.elements s;;
+- : int list = [1; 2; 3; 4; 5; 6; 9]
+
+# IntSet.mem 3 s;;
+- : bool = true
+```
+
+### Создание функтора
+
+Определим собственный функтор. Начнём с сигнатуры для сравнимых типов:
+
+```ocaml
+module type Comparable = sig
+  type t
+  val compare : t -> t -> int
+end
+```
+
+Теперь функтор, создающий модуль множества на основе сортированного списка:
+
+```ocaml
+module MakeSet (Elt : Comparable) : sig
+  type t
+  val empty : t
+  val add : Elt.t -> t -> t
+  val mem : Elt.t -> t -> bool
+  val elements : t -> Elt.t list
+  val of_list : Elt.t list -> t
+end = struct
+  type t = Elt.t list
+
+  let empty = []
+
+  let rec add x = function
+    | [] -> [x]
+    | (y :: _) as lst when Elt.compare x y < 0 -> x :: lst
+    | y :: rest when Elt.compare x y = 0 -> y :: rest
+    | y :: rest -> y :: add x rest
+
+  let rec mem x = function
+    | [] -> false
+    | y :: _ when Elt.compare x y = 0 -> true
+    | y :: rest when Elt.compare x y > 0 -> mem x rest
+    | _ -> false
+
+  let elements s = s
+
+  let of_list lst = List.fold_left (fun acc x -> add x acc) empty lst
 end
 ```
 
 Использование:
 
 ```ocaml
-let get_zip user =
-  let open Option_syntax in
-  let* addr = user.address in
-  addr.zip
+module StringSet = MakeSet(String)
 
-let parse_and_sum a b =
-  let open Result_syntax in
-  let* x = parse_int a in
-  let* y = parse_int b in
-  Ok (x + y)
+let s = StringSet.of_list ["banana"; "apple"; "cherry"]
+let _ = StringSet.mem "apple" s   (* true *)
+let _ = StringSet.elements s      (* ["apple"; "banana"; "cherry"] *)
 ```
 
-## Накопление ошибок
+Функтор `MakeSet` принимает модуль с `Comparable` сигнатурой и создаёт специализированное множество.
 
-`Result.bind` (и `let*`) прерывает цепочку на **первой** ошибке. Но иногда нужно собрать **все** ошибки --- например, при валидации формы.
+```admonish tip title="Для TypeScript-разработчиков"
+Функторы в OCaml --- это как generic-фабрики модулей. Если в TypeScript вы бы написали `function createSet<T extends Comparable<T>>(): SetModule<T>`, то в OCaml это `module MakeSet (Elt : Comparable) = struct ... end`. Функтор принимает не тип, а целый **модуль** с типами и функциями, и возвращает новый модуль. Это мощнее generics: параметром может быть не только тип, но и набор операций над ним.
+```
 
-В Haskell для этого используется аппликативный функтор `Validation`. В OCaml мы реализуем тот же паттерн проще:
+### Функторы стандартной библиотеки
 
-### Подход: список валидаций
+OCaml stdlib использует функторы повсеместно:
 
 ```ocaml
-let validate_all validations input =
-  let errors =
-    List.filter_map (fun validate ->
-      match validate input with
-      | Ok () -> None
-      | Error e -> Some e
-    ) validations
-  in
-  match errors with
-  | [] -> Ok input
-  | es -> Error es
+(* Множество *)
+module IntSet = Set.Make(Int)
+module StringSet = Set.Make(String)
+
+(* Словарь (Map) *)
+module IntMap = Map.Make(Int)
+module StringMap = Map.Make(String)
+
+(* Хэш-таблица *)
+module IntTable = Hashtbl.Make(struct
+  type t = int
+  let equal = Int.equal
+  let hash = Hashtbl.hash
+end)
 ```
 
-Каждая валидация --- функция `'a -> (unit, string) result`. Мы запускаем **все** валидации и собираем ошибки:
+## Полугруппы и моноиды
+
+Модульная система OCaml позволяет естественно выразить алгебраические абстракции. Две из самых полезных --- **полугруппа** (semigroup) и **моноид** (monoid).
+
+### Полугруппа: тип с ассоциативной операцией
 
 ```ocaml
-let non_empty field_name value =
-  if String.length value = 0 then Error (field_name ^ " не может быть пустым")
-  else Ok ()
-
-let min_length field_name n value =
-  if String.length value < n then
-    Error (field_name ^ " должен быть не короче " ^ string_of_int n ^ " символов")
-  else Ok ()
-
-let validate_name name =
-  validate_all [
-    non_empty "Имя";
-    min_length "Имя" 2;
-  ] name
-```
-
-```text
-# validate_name "";;
-- : (string, string list) result =
-Error ["Имя не может быть пустым"; "Имя должен быть не короче 2 символов"]
-
-# validate_name "A";;
-- : (string, string list) result = Error ["Имя должен быть не короче 2 символов"]
-
-# validate_name "Иван";;
-- : (string, string list) result = Ok "Иван"
-```
-
-### Комбинирование валидаций нескольких полей
-
-```ocaml
-let combine_results results =
-  let oks, errors =
-    List.fold_left (fun (oks, errs) r ->
-      match r with
-      | Ok v -> (v :: oks, errs)
-      | Error es -> (oks, es @ errs)
-    ) ([], []) results
-  in
-  match errors with
-  | [] -> Ok (List.rev oks)
-  | es -> Error es
-```
-
-## Исключения vs `result`
-
-OCaml поддерживает оба подхода к ошибкам: исключения и `result`.
-
-### Исключения
-
-```ocaml
-exception Invalid_input of string
-
-let parse_int_exn s =
-  match int_of_string_opt s with
-  | Some n -> n
-  | None -> raise (Invalid_input ("не число: " ^ s))
-```
-
-Перехват:
-
-```ocaml
-let safe_parse s =
-  try Ok (parse_int_exn s)
-  with Invalid_input msg -> Error msg
-```
-
-### Когда что использовать
-
-| Ситуация | Подход | Причина |
-|----------|--------|---------|
-| Ожидаемая ошибка (ввод пользователя, файл не найден) | `result` | Ошибка --- часть логики, должна быть в типе |
-| Программная ошибка (нарушение инварианта, баг) | Исключение | Не должна возникать в корректной программе |
-| Высокопроизводительный код | Исключение | Нет аллокации при успехе (zero-cost happy path) |
-| API библиотеки | `result` | Пользователь видит все возможные ошибки в типе |
-| Локальное восстановление | `result` | Легко обрабатывать через `match` и `let*` |
-| Глобальный обработчик (top-level) | Исключение | `try ... with` на верхнем уровне |
-
-### Конвертация
-
-```ocaml
-(* result -> exception *)
-let unwrap = function
-  | Ok x -> x
-  | Error msg -> failwith msg
-
-(* exception -> result *)
-let try_result f =
-  try Ok (f ())
-  with exn -> Error (Printexc.to_string exn)
-```
-
-Идиоматический OCaml часто предоставляет оба варианта: `List.find` (бросает `Not_found`) и `List.find_opt` (возвращает `option`).
-
-## Конвертация `option` ↔ `result`
-
-```ocaml
-let option_to_result ~error = function
-  | Some x -> Ok x
-  | None -> Error error
-
-let result_to_option = function
-  | Ok x -> Some x
-  | Error _ -> None
-```
-
-```text
-# option_to_result ~error:"не найдено" (Some 42);;
-- : (int, string) result = Ok 42
-
-# option_to_result ~error:"не найдено" None;;
-- : (int, string) result = Error "не найдено"
-```
-
-Также есть `Option.to_result` и `Result.to_option` в стандартной библиотеке.
-
-## Проект: валидация формы
-
-Модуль `lib/validation.ml` реализует систему валидации, объединяющую все концепции главы.
-
-### Типы
-
-```ocaml
-type address = {
-  street : string;
-  city : string;
-  state : string;
-}
-
-type person = {
-  first_name : string;
-  last_name : string;
-  address : address;
-}
-
-type errors = string list
-```
-
-### Валидаторы
-
-```ocaml
-let non_empty field_name value =
-  if String.length (String.trim value) = 0 then
-    Error (field_name ^ " не может быть пустым")
-  else Ok ()
-
-let max_length field_name n value =
-  if String.length value > n then
-    Error (field_name ^ " не может быть длиннее " ^ string_of_int n ^ " символов")
-  else Ok ()
-```
-
-### Валидация с накоплением ошибок
-
-```ocaml
-let validate_all validations input =
-  let errors = List.filter_map (fun v ->
-    match v input with
-    | Ok () -> None
-    | Error e -> Some e
-  ) validations
-  in
-  match errors with
-  | [] -> Ok input
-  | es -> Error es
-
-let validate_address street city state =
-  let errors =
-    (match validate_all [non_empty "Улица"; max_length "Улица" 100] street with
-     | Ok _ -> [] | Error es -> es)
-    @ (match validate_all [non_empty "Город"; max_length "Город" 50] city with
-       | Ok _ -> [] | Error es -> es)
-    @ (match validate_all [non_empty "Регион"; max_length "Регион" 50] state with
-       | Ok _ -> [] | Error es -> es)
-  in
-  match errors with
-  | [] -> Ok { street; city; state }
-  | es -> Error es
-```
-
-## Сравнение подходов к обработке ошибок
-
-В OCaml существует несколько подходов к обработке ошибок. Каждый имеет свои компромиссы. Рассмотрим их от простого к наиболее выразительному.
-
-### 1. Исключения
-
-Самый простой подход --- использовать исключения:
-
-```ocaml
-let parse_age s =
-  let n = int_of_string s in  (* бросает Failure *)
-  if n < 0 then failwith "отрицательный возраст"
-  else n
-
-let parse_name s =
-  if String.length s = 0 then failwith "пустое имя"
-  else s
-```
-
-**Плюсы:** просто, мало кода, нет оборачивания в `Ok`/`Error`.
-
-**Минусы:** из сигнатуры функции `val parse_age : string -> int` невозможно понять, что она может завершиться ошибкой. Вызывающий код не обязан обрабатывать ошибку --- компилятор не предупредит. Ошибка «невидима» в типе.
-
-### 2. `(_, string) result` --- явная ошибка
-
-```ocaml
-let parse_age s : (int, string) result =
-  match int_of_string_opt s with
-  | None -> Error ("не число: " ^ s)
-  | Some n when n < 0 -> Error "отрицательный возраст"
-  | Some n -> Ok n
-
-let parse_name s : (string, string) result =
-  if String.length s = 0 then Error "пустое имя"
-  else Ok s
-```
-
-**Плюсы:** ошибка явно указана в типе. Компилятор заставляет обработать `Error`.
-
-**Минусы:** ошибки --- просто строки. Нельзя программно различить «не число» и «отрицательный возраст». Нельзя написать exhaustive match по вариантам ошибок.
-
-### 3. `(_, custom_error) result` --- различимые ошибки
-
-```ocaml
-type age_error = NotANumber of string | NegativeAge of int
-
-let parse_age s : (int, age_error) result =
-  match int_of_string_opt s with
-  | None -> Error (NotANumber s)
-  | Some n when n < 0 -> Error (NegativeAge n)
-  | Some n -> Ok n
-
-type name_error = EmptyName
-
-let parse_name s : (string, name_error) result =
-  if String.length s = 0 then Error EmptyName
-  else Ok s
-```
-
-**Плюсы:** ошибки различимые, можно pattern match по вариантам. Exhaustive checking --- компилятор предупредит, если забыли обработать вариант.
-
-**Минусы:** **не composable**. Нельзя просто скомпоновать `parse_age` и `parse_name` через `let*`, потому что типы ошибок разные (`age_error` vs `name_error`):
-
-```ocaml
-(* Не компилируется: age_error ≠ name_error *)
-let parse_person age_str name_str =
-  let* age = parse_age age_str in
-  let* name = parse_name name_str in
-  Ok (name, age)
-```
-
-Пришлось бы создавать объединяющий тип и вручную оборачивать ошибки:
-
-```ocaml
-type person_error = AgeError of age_error | NameError of name_error
-
-let parse_person age_str name_str =
-  let* age = parse_age age_str |> Result.map_error (fun e -> AgeError e) in
-  let* name = parse_name name_str |> Result.map_error (fun e -> NameError e) in
-  Ok (name, age)
-```
-
-Это работает, но требует boilerplate для каждой новой комбинации.
-
-### 4. `(_, [> poly_variant]) result` --- composable, различимые, exhaustive
-
-Полиморфные варианты решают проблему композиции:
-
-```ocaml
-let parse_age s : (int, [> `NotANumber of string | `NegativeAge of int]) result =
-  match int_of_string_opt s with
-  | None -> Error (`NotANumber s)
-  | Some n when n < 0 -> Error (`NegativeAge n)
-  | Some n -> Ok n
-
-let parse_name s : (string, [> `EmptyName]) result =
-  if String.length s = 0 then Error `EmptyName
-  else Ok s
-```
-
-Теперь композиция работает **без дополнительного кода**:
-
-```ocaml
-let parse_person age_str name_str =
-  let* age = parse_age age_str in
-  let* name = parse_name name_str in
-  Ok (name, age)
-(* inferred: (string * int, [> `NotANumber of string | `NegativeAge of int | `EmptyName]) result *)
-```
-
-**Плюсы:** composable (типы ошибок объединяются автоматически), различимые (можно match), exhaustive (компилятор проверяет полноту).
-
-**Минусы:** более сложные типы в сигнатурах, непривычный синтаксис для новичков.
-
-## Полиморфные варианты для composable ошибок
-
-Рассмотрим подробнее, как использовать полиморфные варианты для построения composable системы ошибок.
-
-### Определение ошибок в модулях
-
-Каждый модуль определяет свой тип ошибок как полиморфный вариант:
-
-```ocaml
-module Parser : sig
-  type tree = Leaf of string | Node of tree * tree
-  type error = [ `SyntaxError of string | `UnexpectedChar of char ]
-
-  val parse : string -> (tree, [> error]) result
-end
-
-module Validator : sig
-  type error = [ `TooShort of int | `TooLong of int ]
-
-  val validate : Parser.tree -> (Parser.tree, [> error]) result
+module type Semigroup = sig
+  type t
+  val combine : t -> t -> t
 end
 ```
 
-Обратите внимание на `[> error]` --- «открытый» полиморфный вариант. Это означает: «содержит как минимум эти варианты, но может содержать и другие». Именно это свойство позволяет типам автоматически объединяться.
-
-### Автоматический union при композиции
-
-Когда мы используем `let*` для цепочки функций с разными типами ошибок, OCaml автоматически вычисляет объединение:
+Полугруппа --- это тип `t` с операцией `combine`, которая ассоциативна: `combine (combine a b) c = combine a (combine b c)`. Примеры:
 
 ```ocaml
-let process_input (source : string) =
-  let ( let* ) = Result.bind in
-  let* tree = Parser.parse source in
-  let* tree = Validator.validate tree in
-  Ok tree
-(* inferred: (Parser.tree, [> Parser.error | Validator.error ]) result *)
+module IntSum : Semigroup with type t = int = struct
+  type t = int
+  let combine = ( + )
+end
+
+module IntProduct : Semigroup with type t = int = struct
+  type t = int
+  let combine = ( * )
+end
+
+module StringConcat : Semigroup with type t = string = struct
+  type t = string
+  let combine = ( ^ )
+end
 ```
 
-Компилятор выведет тип, содержащий **все** возможные варианты ошибок из обоих модулей. Никакого ручного оборачивания или `map_error` не нужно.
+Обратите внимание: для `int` мы определили **два** модуля-полугруппы --- суммирование и умножение. В Haskell для этого потребовались бы newtype-обёртки (`Sum`, `Product`). В OCaml модули позволяют иметь несколько реализаций для одного типа без каких-либо обёрток.
 
-### Обработка ошибок
-
-При обработке ошибок можно делать exhaustive match:
+### Моноид: полугруппа с нейтральным элементом
 
 ```ocaml
-let handle result =
-  match result with
-  | Ok tree -> print_endline "Успех"
-  | Error (`SyntaxError msg) -> Printf.printf "Синтаксическая ошибка: %s\n" msg
-  | Error (`UnexpectedChar c) -> Printf.printf "Неожиданный символ: %c\n" c
-  | Error (`TooShort n) -> Printf.printf "Слишком коротко: %d\n" n
-  | Error (`TooLong n) -> Printf.printf "Слишком длинно: %d\n" n
+module type Monoid = sig
+  include Semigroup
+  val empty : t
+end
 ```
 
-Если тип замкнут (закрытый полиморфный вариант `[ ... ]` без `>`), компилятор предупредит, если вы забыли обработать вариант.
-
-## `and*` для параллельного сбора ошибок
-
-`let*` останавливается на первой ошибке (fail-fast). Но иногда нужно собрать **все** ошибки сразу --- например, при валидации формы. Для этого используется оператор `and*`.
-
-### Определение `and*`
+Моноид расширяет полугруппу нейтральным элементом `empty`: `combine empty x = x` и `combine x empty = x`.
 
 ```ocaml
-let ( and* ) left right =
-  match left, right with
-  | Ok l, Ok r -> Ok (l, r)
-  | Error l, Error r -> Error (l @ r)
-  | Error e, _ | _, Error e -> Error e
+module IntSumMonoid : Monoid with type t = int = struct
+  type t = int
+  let combine = ( + )
+  let empty = 0
+end
+
+module IntProductMonoid : Monoid with type t = int = struct
+  type t = int
+  let combine = ( * )
+  let empty = 1
+end
+
+module StringMonoid : Monoid with type t = string = struct
+  type t = string
+  let combine = ( ^ )
+  let empty = ""
+end
+
+module ListMonoid (A : sig type t end) : Monoid with type t = A.t list = struct
+  type t = A.t list
+  let combine = ( @ )
+  let empty = []
+end
 ```
 
-`and*` работает так: если оба результата --- `Ok`, объединяет значения в пару. Если оба --- `Error`, конкатенирует списки ошибок. Если ошибка только в одном --- возвращает её.
+### `concat_all` через first-class module
 
-### Использование
+Моноид позволяет свернуть **любой** список значений в одно:
 
 ```ocaml
-let validate_name input =
-  if String.length input.name = 0 then Error ["имя пустое"]
-  else Ok input.name
-
-let validate_age input =
-  if input.age < 0 then Error ["возраст отрицательный"]
-  else Ok input.age
-
-let validate_email input =
-  if not (String.contains input.email '@') then Error ["нет @ в email"]
-  else Ok input.email
-
-let validate input =
-  let* name = validate_name input
-  and* age = validate_age input
-  and* email = validate_email input
-  in Ok { name; age; email }
-```
-
-Если несколько валидаций провалились, все ошибки будут собраны в один список:
-
-```text
-# validate { name = ""; age = -1; email = "bad" };;
-- : ... = Error ["имя пустое"; "возраст отрицательный"; "нет @ в email"]
-```
-
-### Отличие `let*` от `and*`
-
-- `let*` --- **последовательная** цепочка. Каждый шаг зависит от результата предыдущего. Останавливается на первой ошибке.
-- `and*` --- **параллельная** валидация. Все проверки выполняются независимо. Ошибки накапливаются.
-
-Комбинация `let*` и `and*` даёт гибкую систему: зависимые проверки через `let*`, независимые через `and*`.
-
-## Outcome type
-
-Иногда разделение на `Ok` и `Error` слишком грубое. Бывают ситуации, когда операция **успешна, но с предупреждениями** (warnings). Для этого можно использовать тип `outcome`:
-
-```ocaml
-type ('ok, 'warning) outcome = {
-  result : 'ok option;
-  errors : 'warning list;
-}
-```
-
-Поле `result` содержит `Some value`, если операция успешна (возможно, с предупреждениями), или `None`, если провалилась. Поле `errors` содержит список предупреждений или ошибок.
-
-### Конструкторы
-
-```ocaml
-let outcome_ok ?(warnings = []) result =
-  { result = Some result; warnings }
-
-let outcome_fail warnings =
-  { result = None; warnings }
-```
-
-### Пример использования
-
-```ocaml
-let validate_password password =
-  let warnings = [] in
-  let warnings =
-    if String.length password < 12 then
-      "рекомендуется пароль длиннее 12 символов" :: warnings
-    else warnings
-  in
-  let warnings =
-    if not (String.exists (fun c -> c >= '0' && c <= '9') password) then
-      "рекомендуется добавить цифры" :: warnings
-    else warnings
-  in
-  if String.length password < 6 then
-    outcome_fail ["пароль слишком короткий"]
-  else
-    outcome_ok ~warnings:(List.rev warnings) password
+let concat_all (type a) (module M : Monoid with type t = a) (lst : a list) : a =
+  List.fold_left M.combine M.empty lst
 ```
 
 ```text
-# validate_password "abc";;
-- : (string, string) outcome =
-  { result = None; errors = ["пароль слишком короткий"] }
+# concat_all (module IntSumMonoid) [1; 2; 3; 4];;
+- : int = 10
 
-# validate_password "abcdef";;
-- : (string, string) outcome =
-  { result = Some "abcdef";
-    errors = ["рекомендуется пароль длиннее 12 символов";
-              "рекомендуется добавить цифры"] }
+# concat_all (module IntProductMonoid) [1; 2; 3; 4];;
+- : int = 24
 
-# validate_password "myStr0ngPa55word";;
-- : (string, string) outcome =
-  { result = Some "myStr0ngPa55word"; errors = [] }
+# concat_all (module StringMonoid) ["hello"; " "; "world"];;
+- : string = "hello world"
 ```
 
-Outcome полезен для recoverable errors --- ситуаций, где операция может продолжиться, но стоит предупредить пользователя.
+Одна функция `concat_all` работает с любым моноидом. Модуль передаётся как значение первого класса.
+
+### `OptionMonoid` --- функтор: из Semigroup делаем Monoid
+
+Из любой полугруппы можно построить моноид, обернув тип в `option`: нейтральный элемент --- `None`, а `combine` объединяет значения внутри `Some`:
+
+```ocaml
+module OptionMonoid (S : Semigroup) : Monoid with type t = S.t option = struct
+  type t = S.t option
+  let empty = None
+  let combine a b =
+    match a, b with
+    | None, x | x, None -> x
+    | Some x, Some y -> Some (S.combine x y)
+end
+```
+
+```text
+# module OptIntMax = OptionMonoid(struct
+    type t = int
+    let combine = max
+  end);;
+
+# OptIntMax.combine (Some 3) (Some 5);;
+- : int option = Some 5
+
+# OptIntMax.combine None (Some 5);;
+- : int option = Some 5
+
+# OptIntMax.empty;;
+- : int option = None
+```
+
+Даже если `max` не имеет нейтрального элемента (наименьшего `int` не существует), `OptionMonoid` добавляет его через `None`.
+
+### Сравнение с Haskell
+
+В Haskell моноид --- это класс типов:
+
+```haskell
+-- Haskell
+class Monoid a where
+  mempty  :: a
+  mappend :: a -> a -> a
+
+-- Проблема: для int нужны newtype
+newtype Sum = Sum Int
+instance Monoid Sum where ...
+
+newtype Product = Product Int
+instance Monoid Product where ...
+```
+
+В OCaml модульный подход устраняет необходимость в newtype-обёртках. `IntSumMonoid` и `IntProductMonoid` --- это просто разные модули, оба с `type t = int`. Нет ограничения «один инстанс на тип».
+
+## `open` и `include`
+
+### `open`
+
+`open` делает содержимое модуля доступным без квалификации:
+
+```ocaml
+let f () =
+  let open List in
+  [1; 2; 3] |> filter (fun x -> x > 1) |> map (fun x -> x * 2)
+```
+
+Локальный `let open M in ...` ограничивает область видимости. Глобальный `open M` в начале файла открывает модуль для всего файла. Используйте глобальный `open` осторожно --- он может вызвать конфликты имён.
+
+### `include`
+
+`include` копирует содержимое одного модуля в другой:
+
+```ocaml
+module ExtendedList = struct
+  include List
+
+  let sum lst = fold_left ( + ) 0 lst
+
+  let mean lst =
+    let n = length lst in
+    if n = 0 then 0.0
+    else float_of_int (sum lst) /. float_of_int n
+end
+```
+
+`ExtendedList` содержит все функции `List` плюс `sum` и `mean`. Это удобно для расширения существующих модулей.
+
+`include` работает и с сигнатурами:
+
+```ocaml
+module type Extended_comparable = sig
+  include Comparable
+  val equal : t -> t -> bool
+  val min : t -> t -> t
+end
+```
+
+## Модули первого класса
+
+В OCaml модули можно использовать как **обычные значения** --- передавать в функции, возвращать из функций, хранить в структурах данных. Такие модули называются модулями первого класса (first-class modules).
+
+### Упаковка и распаковка
+
+```ocaml
+(* Упаковка модуля в значение *)
+let int_printable = (module IntPrintable : Printable with type t = int)
+
+(* Распаковка значения обратно в модуль *)
+let print_value (type a) (module P : Printable with type t = a) (x : a) =
+  P.to_string x
+```
+
+```text
+# print_value (module IntPrintable) 42;;
+- : string = "42"
+```
+
+### Пример: полиморфная функция с модулем
+
+```ocaml
+module type Comparable = sig
+  type t
+  val compare : t -> t -> int
+end
+
+let max_element (type a) (module C : Comparable with type t = a) (lst : a list) =
+  match lst with
+  | [] -> None
+  | x :: rest ->
+    Some (List.fold_left (fun acc y ->
+      if C.compare y acc > 0 then y else acc
+    ) x rest)
+```
+
+```text
+# max_element (module Int) [3; 1; 4; 1; 5];;
+- : int option = Some 5
+
+# max_element (module String) ["banana"; "apple"; "cherry"];;
+- : string option = Some "cherry"
+```
+
+Функция `max_element` принимает модуль `Comparable` как значение и использует его для сравнения. Это аналог передачи словаря type class в Haskell, но явный.
+
+```admonish tip title="Для Python-разработчиков"
+Модули первого класса --- это как передача «стратегии» в функцию. В Python вы бы передали класс или объект с нужными методами: `def max_element(comparator, lst)`. В OCaml передаётся целый модуль: `max_element (module Int) [3; 1; 4]`. Преимущество --- типовая система OCaml гарантирует, что переданный модуль содержит все нужные операции. В Python ошибка «нет такого метода» обнаружится только в рантайме.
+```
+
+### Когда использовать модули первого класса
+
+- Когда нужно выбрать реализацию **в рантайме**.
+- Для хранения разных модулей в коллекции.
+- Для конфигурируемых алгоритмов (выбор стратегии сортировки, хэширования и т.д.).
+
+## Проект: библиотека хэширования
+
+Модуль `lib/hashable.ml` демонстрирует функторный подход к хэшированию.
+
+### Сигнатура
+
+```ocaml
+module type Hashable = sig
+  type t
+  val hash : t -> int
+end
+```
+
+### Реализации
+
+```ocaml
+let combine h1 h2 = h1 * 31 + h2
+
+module IntHash : Hashable with type t = int = struct
+  type t = int
+  let hash x = x
+end
+
+module StringHash : Hashable with type t = string = struct
+  type t = string
+  let hash s =
+    String.fold_left (fun acc c -> combine acc (Char.code c)) 0 s
+end
+
+module PairHash (H1 : Hashable) (H2 : Hashable)
+  : Hashable with type t = H1.t * H2.t = struct
+  type t = H1.t * H2.t
+  let hash (a, b) = combine (H1.hash a) (H2.hash b)
+end
+```
+
+`PairHash` --- функтор с **двумя** параметрами. Он принимает два модуля `Hashable` и создаёт хэшируемый тип-пару.
+
+### Функтор для HashSet
+
+```ocaml
+module MakeHashSet (H : Hashable) : sig
+  type t
+  val empty : t
+  val add : H.t -> t -> t
+  val mem : H.t -> t -> bool
+  val to_list : t -> H.t list
+end = struct
+  let num_buckets = 16
+  type t = H.t list array
+
+  let empty = Array.make num_buckets []
+
+  let bucket_index x = abs (H.hash x) mod num_buckets
+
+  let add x s =
+    let s' = Array.copy s in
+    let i = bucket_index x in
+    if not (List.mem x s'.(i)) then
+      s'.(i) <- x :: s'.(i);
+    s'
+
+  let mem x s =
+    List.mem x s.(bucket_index x)
+
+  let to_list s =
+    Array.to_list s |> List.concat
+end
+```
+
+## Паттерн modules-as-types
+
+В OCaml-сообществе существует устоявшаяся конвенция: основной тип модуля называется `t`. Это позволяет обращаться к типу как `Module.t`, что читается естественно и единообразно.
+
+### Конвенция `type t`
+
+```ocaml
+(* Было *)
+type entry = { name: string; address: string }
+let make_entry ~name ~address = { name; address }
+
+(* Стало *)
+type t = { name: string; address: string }
+let make ~name ~address = { name; address }
+```
+
+Функции тоже именуются без суффикса типа: `make` вместо `make_entry`, `pp` вместо `pp_entry`, `to_string` вместо `entry_to_string`. Поскольку функции находятся внутри модуля, квалификация `Entry.make`, `Entry.to_string` делает суффикс избыточным.
+
+### `.mli` файлы и `private`
+
+Для контроля конструирования значений используют `.mli`-файлы (интерфейсы модулей) с ключевым словом `private`:
+
+```ocaml
+(* user.ml *)
+type t = { name: string; age: int }
+let make ~name ~age =
+  assert (age > 0);
+  { name; age }
+
+(* user.mli *)
+type t = private { name: string; age: int }
+val make : name:string -> age:int -> t
+```
+
+`private` позволяет читать поля (`user.name`), но запрещает конструирование напрямую --- только через `make`. Это обеспечивает инварианты (в данном случае `age > 0`) без потери удобства чтения полей.
+
+## IO-агностичные библиотеки через функторы
+
+### Проблема
+
+Библиотека может зависеть от конкретной реализации IO: Lwt (асинхронный), Eio (эффект-ориентированный), синхронный stdlib. Привязка к одной реализации ограничивает переиспользование.
+
+### Решение: абстрагировать IO через сигнатуру
+
+```ocaml
+module type IO = sig
+  type +'a t
+  val return : 'a -> 'a t
+  val bind : 'a t -> ('a -> 'b t) -> 'b t
+end
+```
+
+### Функтор, параметризованный IO
+
+```ocaml
+module Make_service (IO : IO) = struct
+  open IO
+  let process data =
+    bind (return (String.uppercase_ascii data)) (fun upper ->
+    return ("processed: " ^ upper))
+end
+```
+
+Модуль `Make_service` не знает, какой IO используется --- синхронный, Lwt или Eio. Он работает с любой реализацией, удовлетворяющей сигнатуре `IO`.
+
+### Инстанцирование для синхронного IO
+
+```ocaml
+module Sync_IO : IO with type 'a t = 'a = struct
+  type 'a t = 'a
+  let return x = x
+  let bind x f = f x
+end
+
+module Sync_service = Make_service(Sync_IO)
+let result = Sync_service.process "hello"
+(* result = "processed: HELLO" *)
+```
+
+Синхронная реализация `Sync_IO` --- это тождественная монада: `type 'a t = 'a`, `return` --- это `id`, `bind` --- это применение функции. При подстановке `Sync_IO` весь монадический код сводится к обычным синхронным вызовам.
+
+Этот паттерн широко используется в экосистеме OCaml для создания библиотек, совместимых с разными рантаймами.
 
 ## Упражнения
 
 Решения пишите в `test/my_solutions.ml`. Проверяйте: `dune runtest`.
 
-1. **(Среднее)** Реализуйте функцию `validate_phone`, которая проверяет телефонный номер. Номер валиден, если: непустой, все символы --- цифры, длина >= 7.
+1. **(Среднее)** Создайте модуль `IntSet` с сигнатурой `Set_intf`, реализующий множество целых чисел на основе сортированного списка.
 
     ```ocaml
-    val validate_phone : string -> (string, string list) result
+    val int_set_empty : My_solutions.IntSet.t
+    val int_set_add : int -> My_solutions.IntSet.t -> My_solutions.IntSet.t
+    val int_set_mem : int -> My_solutions.IntSet.t -> bool
+    val int_set_elements : My_solutions.IntSet.t -> int list
     ```
 
-    Используйте `validate_all` из библиотеки. Функция должна накапливать все ошибки.
+    *Подсказка:* добавление в сортированный список --- вставка на правильную позицию с помощью рекурсии.
 
-    *Подсказка:* для проверки символов используйте `String.for_all` (OCaml >= 4.13) или `String.iter` с `ref`.
-
-2. **(Среднее)** Реализуйте функцию `validate_person`, которая валидирует все поля персоны и накапливает ошибки.
+2. **(Сложное)** Реализуйте функтор `MakeSet`, параметризованный модулем с сигнатурой `Comparable`, который создаёт множество.
 
     ```ocaml
-    val validate_person :
-      string -> string -> string -> string -> string ->
-      (person, string list) result
+    module MakeSet (Elt : Comparable) : sig
+      type t
+      val empty : t
+      val add : Elt.t -> t -> t
+      val mem : Elt.t -> t -> bool
+      val elements : t -> Elt.t list
+    end
     ```
 
-    Аргументы: first_name, last_name, street, city, state. Используйте `non_empty` из библиотеки.
+    *Подсказка:* аналогично `IntSet`, но используйте `Elt.compare` вместо операторов `<` и `=`.
 
-    *Подсказка:* соберите ошибки из всех полей через конкатенацию списков.
-
-3. **(Среднее)** Реализуйте функцию `traverse_result`, которая применяет функцию к каждому элементу списка, собирая все успехи или все ошибки.
+3. **(Среднее)** Реализуйте функцию `max_element`, которая принимает модуль `Comparable` как значение первого класса и находит максимальный элемент в списке.
 
     ```ocaml
-    val traverse_result :
-      ('a -> ('b, 'e) result) -> 'a list -> ('b list, 'e list) result
+    val max_element :
+      (module Comparable with type t = 'a) -> 'a list -> 'a option
     ```
 
-    Если все вызовы вернули `Ok` --- возвращает `Ok` со списком результатов. Если хотя бы один вернул `Error` --- возвращает `Error` со списком всех ошибок.
+    *Подсказка:* используйте `(type a)` для введения локального абстрактного типа.
 
-    *Подсказка:* используйте `List.fold_left`, накапливая и успехи, и ошибки.
-
-4. **(Лёгкое)** Реализуйте функции конвертации между `option` и `result`.
+4. **(Среднее)** Реализуйте модуль `ExtendedIntSet`, который расширяет `IntSet` дополнительными операциями `size`, `union` и `inter`.
 
     ```ocaml
-    val option_to_result : error:'e -> 'a option -> ('a, 'e) result
-    val result_to_option : ('a, 'e) result -> 'a option
+    val extended_int_set_size : My_solutions.ExtendedIntSet.t -> int
+    val extended_int_set_union :
+      My_solutions.ExtendedIntSet.t -> My_solutions.ExtendedIntSet.t -> My_solutions.ExtendedIntSet.t
     ```
 
-5. **(Среднее)** ISBN Verifier --- проверить валидность ISBN-10. Формула: (d1 x 10 + d2 x 9 + ... + d10 x 1) mod 11 = 0. Символ 'X' на последней позиции означает 10. Дефисы в строке игнорируются.
+    *Подсказка:* используйте `include` для включения `IntSet`.
+
+5. **(Среднее)** Реализуйте полугруппу `First` --- `combine` всегда возвращает первый аргумент. Затем создайте `OptionMonoid(First)` и проверьте, что `concat_all` на списке `option` возвращает первый `Some`.
 
     ```ocaml
-    val isbn_verifier : string -> bool
+    module First : Semigroup with type t = string
     ```
 
-    *Подсказка:* отфильтруйте дефисы, проверьте длину = 10, преобразуйте символы в числа (с учётом 'X'), вычислите контрольную сумму.
+    *Подсказка:* `let combine a _b = a`.
 
-6. **(Среднее)** Luhn algorithm --- проверить номер по алгоритму Луна. Алгоритм: удалить пробелы; если осталась одна цифра или меньше --- невалидно; удвоить каждую вторую цифру справа; если результат > 9, вычесть 9; сумма всех цифр должна делиться на 10.
+6. **(Среднее)** Реализуйте `concat_all` --- функцию, которая принимает модуль `Monoid` как значение первого класса и сворачивает список.
 
     ```ocaml
-    val luhn : string -> bool
+    val concat_all : (module Monoid with type t = 'a) -> 'a list -> 'a
     ```
 
-    *Подсказка:* переверните список цифр, удваивайте элементы с нечётным индексом (1, 3, 5, ...).
+    *Подсказка:* используйте `(type a)` и `List.fold_left`.
 
-7. **(Среднее)** `validate_email` --- валидация email с полиморфными вариантами. Возвращает `(string, [> \`EmptyEmail | \`NoAtSign | \`InvalidDomain of string]) result`. Пустая строка --- `EmptyEmail`, нет '@' --- `NoAtSign`, домен без точки --- `InvalidDomain`.
+7. **(Сложное)** Custom Set --- реализуйте параметрический модуль множества `MakeCustomSet(Elt : ORDERED)` с операциями `empty`, `add`, `mem`, `remove`, `elements`, `size`, `union`, `inter`, `diff`, `is_empty`. Внутреннее представление --- отсортированный список.
 
     ```ocaml
-    val validate_email : string ->
-      (string, [> `EmptyEmail | `NoAtSign | `InvalidDomain of string]) result
+    module type ORDERED = sig
+      type t
+      val compare : t -> t -> int
+    end
+
+    module MakeCustomSet (Elt : ORDERED) : sig
+      type t
+      type elt = Elt.t
+      val empty : t
+      val add : elt -> t -> t
+      val mem : elt -> t -> bool
+      val remove : elt -> t -> t
+      val elements : t -> elt list
+      val size : t -> int
+      val union : t -> t -> t
+      val inter : t -> t -> t
+      val diff : t -> t -> t
+      val is_empty : t -> bool
+    end
     ```
 
-    *Подсказка:* используйте `String.contains` и `String.split_on_char`.
+    *Подсказка:* используйте отсортированный список как внутреннее представление. Операции `add`, `mem`, `remove` работают за O(n), `union`, `inter`, `diff` --- через свёртку.
 
 ## Заключение
 
 В этой главе мы:
 
-- Подробно изучили `option` и `result` как инструменты обработки ошибок.
-- Познакомились с let-операторами (`let*`, `let+`) --- синтаксическим сахаром для цепочек.
-- Реализовали накопление ошибок --- аналог аппликативной валидации Haskell, но проще.
-- Сравнили исключения и `result` --- когда использовать каждый подход.
-- Научились конвертировать между `option` и `result`.
-- Сравнили четыре подхода к обработке ошибок: от исключений до полиморфных вариантов.
-- Изучили полиморфные варианты для composable, различимых и exhaustive ошибок.
-- Познакомились с оператором `and*` для параллельного сбора ошибок.
-- Рассмотрели Outcome type для ситуаций, когда нужны предупреждения наряду с результатом.
+- Изучили модули --- основу организации кода в OCaml.
+- Познакомились с сигнатурами и абстрактными типами для инкапсуляции.
+- Разобрали функторы --- параметризованные модули, аналог generics на уровне модулей.
+- Узнали о модулях первого класса --- передаче модулей как значений.
+- Изучили полугруппы и моноиды --- алгебраические абстракции через модули.
+- Научились использовать `open` и `include` для композиции модулей.
+- Сравнили модульный подход OCaml с классами типов Haskell.
 
-В следующей главе мы изучим мутабельное состояние и прямые эффекты --- ввод-вывод, работу с файлами и ссылки `ref`.
+В следующей главе мы изучим обработку ошибок: типы `option` и `result`, let-операторы и паттерн накопления ошибок.

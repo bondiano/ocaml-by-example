@@ -1,126 +1,220 @@
-open Chapter11.Concurrent
-
-(* --- Утилита: запуск теста внутри Eio --- *)
-
-let run_eio f () =
-  Eio_main.run @@ fun _env -> f ()
+open Chapter11.Expr
 
 (* --- Тесты библиотеки --- *)
 
-let fib_tests =
+let variant_tests =
   let open Alcotest in
+  let open Variant in
   [
-    test_case "fib 0" `Quick (fun () ->
-      check int "fib 0" 0 (fib 0));
-    test_case "fib 1" `Quick (fun () ->
-      check int "fib 1" 1 (fib 1));
-    test_case "fib 10" `Quick (fun () ->
-      check int "fib 10" 55 (fib 10));
+    test_case "eval: целое число" `Quick (fun () ->
+      check int "eval Int" 42 (eval (Int 42)));
+    test_case "eval: сложение" `Quick (fun () ->
+      check int "eval Add" 6
+        (eval (Add (Int 1, Add (Int 2, Int 3)))));
+    test_case "show: целое число" `Quick (fun () ->
+      check string "show Int" "42" (show (Int 42)));
+    test_case "show: сложение" `Quick (fun () ->
+      check string "show Add" "(1 + (2 + 3))"
+        (show (Add (Int 1, Add (Int 2, Int 3)))));
   ]
 
-let parallel_map_tests =
+let tagless_final_tests =
   let open Alcotest in
   [
-    test_case "parallel_map double" `Quick (run_eio (fun () ->
-      check (list int) "double" [2; 4; 6]
-        (parallel_map (fun x -> x * 2) [1; 2; 3])));
-    test_case "parallel_map пустой список" `Quick (run_eio (fun () ->
-      check (list int) "empty" []
-        (parallel_map (fun x -> x * 2) [])));
+    test_case "TF_Eval: целое число" `Quick (fun () ->
+      check int "int_" 42 (TF_Eval.int_ 42));
+    test_case "TF_Eval: сложение" `Quick (fun () ->
+      check int "add" 6
+        (TF_Eval.add (TF_Eval.int_ 1) (TF_Eval.add (TF_Eval.int_ 2) (TF_Eval.int_ 3))));
+    test_case "TF_Show: целое число" `Quick (fun () ->
+      check string "int_" "42" (TF_Show.int_ 42));
+    test_case "TF_Show: сложение" `Quick (fun () ->
+      check string "add" "(1 + (2 + 3))"
+        (TF_Show.add (TF_Show.int_ 1) (TF_Show.add (TF_Show.int_ 2) (TF_Show.int_ 3))));
+    test_case "TF_EvalMul: умножение" `Quick (fun () ->
+      check int "mul" 14
+        (TF_EvalMul.mul (TF_EvalMul.int_ 2) (TF_EvalMul.add (TF_EvalMul.int_ 3) (TF_EvalMul.int_ 4))));
+    test_case "TF_ShowMul: умножение" `Quick (fun () ->
+      check string "mul" "(2 * (3 + 4))"
+        (TF_ShowMul.mul (TF_ShowMul.int_ 2) (TF_ShowMul.add (TF_ShowMul.int_ 3) (TF_ShowMul.int_ 4))));
   ]
 
-let parallel_sum_tests =
+let polyvar_tests =
   let open Alcotest in
   [
-    test_case "parallel_sum" `Quick (run_eio (fun () ->
-      check int "sum" 15 (parallel_sum [1; 2; 3; 4; 5])));
-    test_case "parallel_sum пустой" `Quick (run_eio (fun () ->
-      check int "empty" 0 (parallel_sum [])));
-  ]
-
-let produce_and_collect_tests =
-  let open Alcotest in
-  [
-    test_case "produce_and_collect" `Quick (run_eio (fun () ->
-      let result = produce_and_collect (fun stream ->
-        for i = 1 to 3 do
-          Eio.Stream.add stream (Some i)
-        done;
-        Eio.Stream.add stream None
-      ) in
-      check (list int) "collected" [1; 2; 3] result));
+    test_case "PolyVar.eval: целое число" `Quick (fun () ->
+      check int "Int" 42 (PolyVar.eval (`Int 42)));
+    test_case "PolyVar.eval: сложение" `Quick (fun () ->
+      check int "Add" 6
+        (PolyVar.eval (`Add (`Int 1, `Add (`Int 2, `Int 3)))));
+    test_case "PolyVar.show: целое число" `Quick (fun () ->
+      check string "Int" "42" (PolyVar.show (`Int 42)));
+    test_case "PolyVar.show: сложение" `Quick (fun () ->
+      check string "Add" "(1 + (2 + 3))"
+        (PolyVar.show (`Add (`Int 1, `Add (`Int 2, `Int 3)))));
+    test_case "PolyVar.eval_mul: умножение" `Quick (fun () ->
+      check int "Mul" 14
+        (PolyVar.eval_mul (`Mul (`Int 2, `Add (`Int 3, `Int 4)))));
+    test_case "PolyVar.show_mul: умножение" `Quick (fun () ->
+      check string "Mul" "(2 * (3 + 4))"
+        (PolyVar.show_mul (`Mul (`Int 2, `Add (`Int 3, `Int 4)))));
   ]
 
 (* --- Тесты упражнений --- *)
 
-let parallel_fib_tests =
+(* Упражнение 1: VariantMul *)
+let variant_mul_tests =
   let open Alcotest in
+  let open My_solutions.VariantMul in
   [
-    test_case "parallel_fib 10 10" `Quick (run_eio (fun () ->
-      check int "fib 10 + fib 10" 110
-        (My_solutions.parallel_fib 10 10)));
-    test_case "parallel_fib 5 7" `Quick (run_eio (fun () ->
-      check int "fib 5 + fib 7" 18
-        (My_solutions.parallel_fib 5 7)));
-    test_case "parallel_fib 0 1" `Quick (run_eio (fun () ->
-      check int "fib 0 + fib 1" 1
-        (My_solutions.parallel_fib 0 1)));
+    test_case "eval: Int" `Quick (fun () ->
+      check int "eval Int" 42 (eval (Int 42)));
+    test_case "eval: Add" `Quick (fun () ->
+      check int "eval Add" 3 (eval (Add (Int 1, Int 2))));
+    test_case "eval: Mul" `Quick (fun () ->
+      check int "eval Mul" 14
+        (eval (Mul (Int 2, Add (Int 3, Int 4)))));
+    test_case "eval: вложенные Mul" `Quick (fun () ->
+      check int "eval nested" 24
+        (eval (Mul (Mul (Int 2, Int 3), Int 4))));
+    test_case "show: Int" `Quick (fun () ->
+      check string "show Int" "42" (show (Int 42)));
+    test_case "show: Add" `Quick (fun () ->
+      check string "show Add" "(1 + 2)" (show (Add (Int 1, Int 2))));
+    test_case "show: Mul" `Quick (fun () ->
+      check string "show Mul" "(2 * (3 + 4))"
+        (show (Mul (Int 2, Add (Int 3, Int 4)))));
   ]
 
-let concurrent_map_tests =
+(* Упражнение 2: TF_Pretty *)
+let tf_pretty_tests =
   let open Alcotest in
+  let open My_solutions.TF_Pretty in
   [
-    test_case "concurrent_map square" `Quick (run_eio (fun () ->
-      check (list int) "squares" [1; 4; 9; 16]
-        (My_solutions.concurrent_map (fun x -> x * x) [1; 2; 3; 4])));
-    test_case "concurrent_map strings" `Quick (run_eio (fun () ->
-      check (list string) "upper"
-        ["HELLO"; "WORLD"]
-        (My_solutions.concurrent_map String.uppercase_ascii
-           ["hello"; "world"])));
-    test_case "concurrent_map пустой" `Quick (run_eio (fun () ->
-      check (list int) "empty" []
-        (My_solutions.concurrent_map (fun x -> x) [])));
+    test_case "int_" `Quick (fun () ->
+      check string "int_" "42" (int_ 42));
+    test_case "add двух чисел" `Quick (fun () ->
+      check string "add" "(1 + 2)" (add (int_ 1) (int_ 2)));
+    test_case "вложенный add" `Quick (fun () ->
+      check string "nested" "(1 + (2 + 3))"
+        (add (int_ 1) (add (int_ 2) (int_ 3))));
+    test_case "глубокая вложенность" `Quick (fun () ->
+      check string "deep" "((1 + 2) + (3 + 4))"
+        (add (add (int_ 1) (int_ 2)) (add (int_ 3) (int_ 4))));
   ]
 
-let produce_consume_tests =
+(* Упражнение 3: Полиморфные варианты с Neg *)
+let poly_neg_tests =
   let open Alcotest in
   [
-    test_case "produce_consume 5" `Quick (run_eio (fun () ->
-      check int "sum 1..5" 15
-        (My_solutions.produce_consume 5)));
-    test_case "produce_consume 10" `Quick (run_eio (fun () ->
-      check int "sum 1..10" 55
-        (My_solutions.produce_consume 10)));
-    test_case "produce_consume 0" `Quick (run_eio (fun () ->
-      check int "sum 0" 0
-        (My_solutions.produce_consume 0)));
+    test_case "eval_neg: Int" `Quick (fun () ->
+      check int "Int" 42 (My_solutions.eval_neg (`Int 42)));
+    test_case "eval_neg: Add" `Quick (fun () ->
+      check int "Add" 3
+        (My_solutions.eval_neg (`Add (`Int 1, `Int 2))));
+    test_case "eval_neg: Neg" `Quick (fun () ->
+      check int "Neg" (-5)
+        (My_solutions.eval_neg (`Neg (`Int 5))));
+    test_case "eval_neg: Neg Add" `Quick (fun () ->
+      check int "Neg Add" (-3)
+        (My_solutions.eval_neg (`Neg (`Add (`Int 1, `Int 2)))));
+    test_case "show_neg: Int" `Quick (fun () ->
+      check string "Int" "42"
+        (My_solutions.show_neg (`Int 42)));
+    test_case "show_neg: Neg" `Quick (fun () ->
+      check string "Neg" "(-5)"
+        (My_solutions.show_neg (`Neg (`Int 5))));
+    test_case "show_neg: Neg Add" `Quick (fun () ->
+      check string "Neg Add" "(-(1 + 2))"
+        (My_solutions.show_neg (`Neg (`Add (`Int 1, `Int 2)))));
   ]
 
-let race_tests =
+(* Упражнение 4: Tagless Final для булевых выражений *)
+let bool_eval_tests =
   let open Alcotest in
+  let open My_solutions.Bool_Eval in
   [
-    test_case "race возвращает результат" `Quick (run_eio (fun () ->
-      let result = My_solutions.race [
-        (fun () -> 42);
-        (fun () -> 99);
-      ] in
-      check bool "result is 42 or 99" true
-        (result = 42 || result = 99)));
-    test_case "race с одной задачей" `Quick (run_eio (fun () ->
-      check int "single" 7
-        (My_solutions.race [(fun () -> 7)])));
+    test_case "bool_ true" `Quick (fun () ->
+      check bool "true" true (bool_ true));
+    test_case "bool_ false" `Quick (fun () ->
+      check bool "false" false (bool_ false));
+    test_case "and_ true true" `Quick (fun () ->
+      check bool "and tt" true (and_ (bool_ true) (bool_ true)));
+    test_case "and_ true false" `Quick (fun () ->
+      check bool "and tf" false (and_ (bool_ true) (bool_ false)));
+    test_case "or_ false true" `Quick (fun () ->
+      check bool "or ft" true (or_ (bool_ false) (bool_ true)));
+    test_case "or_ false false" `Quick (fun () ->
+      check bool "or ff" false (or_ (bool_ false) (bool_ false)));
+    test_case "not_ true" `Quick (fun () ->
+      check bool "not t" false (not_ (bool_ true)));
+    test_case "not_ false" `Quick (fun () ->
+      check bool "not f" true (not_ (bool_ false)));
+    test_case "сложное выражение" `Quick (fun () ->
+      check bool "complex" true
+        (and_ (bool_ true) (or_ (bool_ false) (bool_ true))));
+  ]
+
+let bool_show_tests =
+  let open Alcotest in
+  let open My_solutions.Bool_Show in
+  [
+    test_case "bool_ true" `Quick (fun () ->
+      check string "true" "true" (bool_ true));
+    test_case "bool_ false" `Quick (fun () ->
+      check string "false" "false" (bool_ false));
+    test_case "and_" `Quick (fun () ->
+      check string "and" "(true && false)"
+        (and_ (bool_ true) (bool_ false)));
+    test_case "or_" `Quick (fun () ->
+      check string "or" "(false || true)"
+        (or_ (bool_ false) (bool_ true)));
+    test_case "not_" `Quick (fun () ->
+      check string "not" "(!true)"
+        (not_ (bool_ true)));
+    test_case "сложное выражение" `Quick (fun () ->
+      check string "complex" "(true && (false || true))"
+        (and_ (bool_ true) (or_ (bool_ false) (bool_ true))));
+  ]
+
+(* Упражнение 5: Объединённый DSL *)
+let combined_show_tests =
+  let open Alcotest in
+  let open My_solutions.Combined_Show in
+  [
+    test_case "int_" `Quick (fun () ->
+      check string "int_" "42" (int_ 42));
+    test_case "add" `Quick (fun () ->
+      check string "add" "(1 + 2)" (add (int_ 1) (int_ 2)));
+    test_case "bool_" `Quick (fun () ->
+      check string "bool_" "true" (bool_ true));
+    test_case "and_" `Quick (fun () ->
+      check string "and" "(true && false)"
+        (and_ (bool_ true) (bool_ false)));
+    test_case "eq int" `Quick (fun () ->
+      check string "eq int" "((1 + 2) == 3)"
+        (eq (add (int_ 1) (int_ 2)) (int_ 3)));
+    test_case "eq в and_" `Quick (fun () ->
+      check string "eq in and" "(true && (1 == 1))"
+        (and_ (bool_ true) (eq (int_ 1) (int_ 1))));
+    test_case "not_ с eq" `Quick (fun () ->
+      check string "not eq" "(!(1 == 2))"
+        (not_ (eq (int_ 1) (int_ 2))));
+    test_case "or_ с eq" `Quick (fun () ->
+      check string "or eq" "((1 == 1) || (2 == 3))"
+        (or_ (eq (int_ 1) (int_ 1)) (eq (int_ 2) (int_ 3))));
   ]
 
 let () =
-  Alcotest.run "Chapter 09"
+  Alcotest.run "Chapter 10"
     [
-      ("fib --- числа Фибоначчи", fib_tests);
-      ("parallel_map --- параллельный map", parallel_map_tests);
-      ("parallel_sum --- параллельная сумма", parallel_sum_tests);
-      ("produce_and_collect --- producer-consumer", produce_and_collect_tests);
-      ("parallel_fib --- параллельный Фибоначчи", parallel_fib_tests);
-      ("concurrent_map --- конкурентный map", concurrent_map_tests);
-      ("produce_consume --- producer-consumer сумма", produce_consume_tests);
-      ("race --- гонка задач", race_tests);
+      ("Variant --- вариантный калькулятор", variant_tests);
+      ("Tagless Final --- модульный калькулятор", tagless_final_tests);
+      ("PolyVar --- полиморфные варианты", polyvar_tests);
+      ("Упр. 1: VariantMul --- добавить Mul", variant_mul_tests);
+      ("Упр. 2: TF_Pretty --- pretty_print", tf_pretty_tests);
+      ("Упр. 3: PolyVar Neg --- унарное отрицание", poly_neg_tests);
+      ("Упр. 4: Bool_Eval --- булев DSL (eval)", bool_eval_tests);
+      ("Упр. 4: Bool_Show --- булев DSL (show)", bool_show_tests);
+      ("Упр. 5: Combined_Show --- объединённый DSL", combined_show_tests);
     ]

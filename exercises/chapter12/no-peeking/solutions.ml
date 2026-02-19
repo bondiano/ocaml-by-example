@@ -1,49 +1,44 @@
 (** Референсные решения --- не подсматривайте, пока не попробуете сами! *)
 
-type product = {
-  title : string;
-  price : float;
-  in_stock : bool;
-}
+(** Вычислить число Фибоначчи. *)
+let rec fib n =
+  if n <= 1 then n
+  else fib (n - 1) + fib (n - 2)
 
-(** Ручная конвертация product -> JSON. *)
-let product_to_json (p : product) : Yojson.Safe.t =
-  `Assoc [
-    ("title", `String p.title);
-    ("price", `Float p.price);
-    ("in_stock", `Bool p.in_stock);
-  ]
+(** Параллельное вычисление двух чисел Фибоначчи. *)
+let parallel_fib n m =
+  let result_n = ref 0 in
+  let result_m = ref 0 in
+  Eio.Fiber.both
+    (fun () -> result_n := fib n)
+    (fun () -> result_m := fib m);
+  !result_n + !result_m
 
-(** Ручная конвертация JSON -> product. *)
-let product_of_json (json : Yojson.Safe.t) : (product, string) result =
-  match json with
-  | `Assoc fields ->
-    (match
-       List.assoc_opt "title" fields,
-       List.assoc_opt "price" fields,
-       List.assoc_opt "in_stock" fields
-     with
-     | Some (`String title), Some (`Float price), Some (`Bool in_stock) ->
-       Ok { title; price; in_stock }
-     | _ -> Error "missing or invalid fields")
-  | _ -> Error "expected JSON object"
+(** Конкурентный map. *)
+let concurrent_map f lst =
+  Eio.Fiber.List.map f lst
 
-(** Извлечь имена из JSON-массива объектов. *)
-let extract_names (json : Yojson.Safe.t) : string list =
-  match json with
-  | `List items ->
-    List.filter_map (fun item ->
-      match item with
-      | `Assoc fields ->
-        (match List.assoc_opt "name" fields with
-         | Some (`String name) -> Some name
-         | _ -> None)
-      | _ -> None
-    ) items
-  | _ -> []
+(** Producer-consumer с суммированием. *)
+let produce_consume n =
+  let stream = Eio.Stream.create 10 in
+  let total = ref 0 in
+  Eio.Fiber.both
+    (fun () ->
+      for i = 1 to n do
+        Eio.Stream.add stream (Some i)
+      done;
+      Eio.Stream.add stream None)
+    (fun () ->
+      let rec loop () =
+        match Eio.Stream.take stream with
+        | None -> ()
+        | Some v ->
+          total := !total + v;
+          loop ()
+      in
+      loop ());
+  !total
 
-type config = {
-  host : string;
-  port : int;
-  debug : bool;
-} [@@deriving yojson]
+(** Гонка --- результат первой завершившейся функции. *)
+let race tasks =
+  Eio.Fiber.any tasks

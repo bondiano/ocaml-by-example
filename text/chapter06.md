@@ -1,776 +1,743 @@
-# Модули и функторы
+# Рекурсия, map и свёртки
 
 ## Цели главы
 
-В этой главе мы изучим **модульную систему** OCaml --- одну из самых мощных среди всех языков программирования. Вместо классов типов (type classes) Haskell, OCaml использует модули для абстракции, инкапсуляции и параметрического полиморфизма:
+В этой главе мы изучим рекурсию, функции высшего порядка и свёртки --- основные инструменты обработки данных в функциональном стиле:
 
-- Модули --- именованные коллекции типов и значений.
-- Сигнатуры (module types) --- интерфейсы модулей.
-- Абстрактные типы --- сокрытие реализации.
-- Функторы --- параметризованные модули.
-- Модули первого класса --- передача модулей как значений.
-- `include` и `open` --- композиция модулей.
-- Сравнение с классами типов Haskell.
+- Рекурсия (`let rec`) и хвостовая рекурсия (tail recursion).
+- Функции высшего порядка: `List.map`, `List.filter`, `List.filter_map`, `List.concat_map`.
+- Свёртки: `List.fold_left` и `List.fold_right`.
+- Оператор конвейера `|>` в цепочках обработки.
+- Ленивые последовательности `Seq`.
+- Проект: виртуальная файловая система.
 
 ## Подготовка проекта
 
-Код этой главы находится в `exercises/chapter06`. Соберите проект:
+Код этой главы находится в `exercises/chapter06`. Основной модуль --- `lib/path.ml`. Соберите проект:
 
 ```text
 $ cd exercises/chapter06
 $ dune build
 ```
 
-## Модули
+## Рекурсия
 
-В OCaml каждый `.ml`-файл автоматически является модулем. Но модули можно также определять **внутри** файла:
+В предыдущих главах мы уже встречали `let rec`. Теперь рассмотрим рекурсию подробнее.
+
+### Базовые примеры
+
+Факториал --- классический пример:
 
 ```ocaml
-module Counter = struct
-  type t = int
-  let zero = 0
-  let increment c = c + 1
-  let to_string c = string_of_int c
-end
+let rec factorial n =
+  if n = 0 then 1
+  else n * factorial (n - 1)
 ```
 
-Использование:
+Рекурсия на списках:
+
+```ocaml
+let rec sum = function
+  | [] -> 0
+  | x :: rest -> x + sum rest
+```
+
+Каждая рекурсивная функция должна иметь **базовый случай** (условие остановки) и **рекурсивный случай** (шаг, приближающий к базовому).
+
+### Взаимная рекурсия
+
+OCaml поддерживает взаимную рекурсию через `and`:
+
+```ocaml
+let rec is_even n =
+  if n = 0 then true
+  else is_odd (n - 1)
+and is_odd n =
+  if n = 0 then false
+  else is_even (n - 1)
+```
+
+Обе функции определяются одновременно через `let rec ... and ...`.
+
+## Хвостовая рекурсия
+
+### Проблема стека
+
+Рассмотрим функцию `sum`:
+
+```ocaml
+let rec sum = function
+  | [] -> 0
+  | x :: rest -> x + sum rest
+```
+
+При вызове `sum [1; 2; 3]` OCaml строит цепочку отложенных вычислений:
+
+```
+sum [1; 2; 3]
+= 1 + sum [2; 3]
+= 1 + (2 + sum [3])
+= 1 + (2 + (3 + sum []))
+= 1 + (2 + (3 + 0))
+= 6
+```
+
+Каждый рекурсивный вызов занимает место в стеке. Для длинных списков (миллионы элементов) стек переполнится --- `Stack_overflow`.
+
+Это принципиальное отличие от Haskell, где ленивость позволяет обрабатывать бесконечные списки без переполнения стека. В OCaml вычисления строгие (strict), поэтому о стеке нужно заботиться явно.
+
+### Решение: хвостовая рекурсия
+
+Функция **хвостово-рекурсивна** (tail-recursive), если рекурсивный вызов --- последняя операция в функции. Компилятор OCaml оптимизирует такие вызовы, превращая рекурсию в цикл:
+
+```ocaml
+let sum lst =
+  let rec go acc = function
+    | [] -> acc
+    | x :: rest -> go (acc + x) rest
+  in
+  go 0 lst
+```
+
+Здесь `go` --- хвостово-рекурсивная вспомогательная функция с аккумулятором `acc`. Вызов `go (acc + x) rest` --- последняя операция, ничего не нужно делать после возврата. Компилятор превращает это в цикл, и стек не растёт.
+
+### Паттерн «аккумулятор»
+
+Преобразование в хвостовую рекурсию обычно следует паттерну:
+
+1. Добавьте вспомогательную функцию с дополнительным параметром --- аккумулятором.
+2. Базовый случай возвращает аккумулятор вместо начального значения.
+3. Рекурсивный шаг обновляет аккумулятор и вызывает себя.
+
+Ещё примеры:
+
+```ocaml
+(* Длина списка --- хвостовая рекурсия *)
+let length lst =
+  let rec go acc = function
+    | [] -> acc
+    | _ :: rest -> go (acc + 1) rest
+  in
+  go 0 lst
+
+(* Реверс списка --- хвостовая рекурсия *)
+let rev lst =
+  let rec go acc = function
+    | [] -> acc
+    | x :: rest -> go (x :: acc) rest
+  in
+  go [] lst
+```
+
+### Когда нужна хвостовая рекурсия
+
+В OCaml хвостовая рекурсия важна для:
+
+- Обработки длинных списков (> 10 000 элементов).
+- Циклов с большим количеством итераций.
+- Любых функций, которые должны работать с произвольным объёмом данных.
+
+Для коротких списков и неглубокой рекурсии обычная рекурсия вполне допустима.
+
+## Функции высшего порядка для списков
+
+Функция высшего порядка (higher-order function) --- функция, принимающая или возвращающая другие функции. Стандартная библиотека OCaml предоставляет богатый набор таких функций для списков.
+
+### `List.map`
+
+`List.map f lst` применяет функцию `f` к каждому элементу списка:
 
 ```text
-# Counter.zero;;
-- : int = 0
+# List.map (fun x -> x * 2) [1; 2; 3; 4];;
+- : int list = [2; 4; 6; 8]
 
-# Counter.increment Counter.zero;;
-- : int = 1
+# List.map String.uppercase_ascii ["hello"; "world"];;
+- : string list = ["HELLO"; "WORLD"]
 
-# Counter.to_string 42;;
-- : string = "42"
+# List.map string_of_int [1; 2; 3];;
+- : string list = ["1"; "2"; "3"]
 ```
 
-Модуль --- это именованная коллекция **типов**, **значений** и **вложенных модулей**.
+Тип: `('a -> 'b) -> 'a list -> 'b list`. Функция может менять тип элементов --- это отражается в типе `'a -> 'b`.
 
-### Вложенные модули
-
-Модули могут быть вложенными:
-
-```ocaml
-module Geometry = struct
-  module Point = struct
-    type t = { x : float; y : float }
-    let origin = { x = 0.0; y = 0.0 }
-    let distance p1 p2 =
-      Float.sqrt ((p1.x -. p2.x) ** 2.0 +. (p1.y -. p2.y) ** 2.0)
-  end
-
-  module Circle = struct
-    type t = { center : Point.t; radius : float }
-    let area c = Float.pi *. c.radius *. c.radius
-  end
-end
+```admonish tip title="Для Python/TS-разработчиков"
+`List.map` --- это аналог `map()` в Python и `Array.prototype.map()` в TypeScript/JavaScript. Разница в том, что в OCaml `map` --- обычная функция, а не метод списка: `List.map f lst` вместо `lst.map(f)`. В сочетании с оператором конвейера `|>` запись становится похожей: `lst |> List.map f`. Ещё одно отличие: `List.map` в OCaml возвращает **новый** список (списки иммутабельны), а `Array.map` в JS тоже создаёт новый массив, но по соглашению, а не по гарантии типовой системы.
 ```
 
-Обращение: `Geometry.Point.origin`, `Geometry.Circle.area`.
+### `List.filter`
 
-## Сигнатуры
-
-Сигнатура (module type) --- это **интерфейс** модуля. Она описывает, какие типы и значения модуль предоставляет:
-
-```ocaml
-module type Printable = sig
-  type t
-  val to_string : t -> string
-end
-```
-
-Сигнатура `Printable` говорит: «модуль должен иметь тип `t` и функцию `to_string : t -> string`». Тип `t` --- **абстрактный** --- сигнатура не раскрывает его реализацию.
-
-### Ограничение модуля сигнатурой
-
-Сигнатуру можно применить к модулю:
-
-```ocaml
-module IntPrintable : Printable with type t = int = struct
-  type t = int
-  let to_string = string_of_int
-end
-```
-
-Конструкция `with type t = int` раскрывает абстрактный тип --- пользователи модуля видят, что `t = int`. Без неё тип `t` был бы непрозрачным.
-
-### Абстрактные типы
-
-Абстрактные типы --- мощный механизм инкапсуляции. Они скрывают реализацию, позволяя менять её без нарушения внешнего кода:
-
-```ocaml
-module type Stack = sig
-  type 'a t
-  val empty : 'a t
-  val push : 'a -> 'a t -> 'a t
-  val pop : 'a t -> ('a * 'a t) option
-  val is_empty : 'a t -> bool
-end
-
-module ListStack : Stack = struct
-  type 'a t = 'a list
-  let empty = []
-  let push x s = x :: s
-  let pop = function
-    | [] -> None
-    | x :: rest -> Some (x, rest)
-  let is_empty = function
-    | [] -> true
-    | _ :: _ -> false
-end
-```
-
-Пользователи `ListStack` работают с типом `'a ListStack.t`, не зная, что внутри это список. Мы можем заменить реализацию на массив --- внешний код не изменится.
+`List.filter pred lst` оставляет только элементы, для которых предикат `pred` возвращает `true`:
 
 ```text
-# let s = ListStack.push 1 (ListStack.push 2 ListStack.empty);;
-val s : int ListStack.t = <abstr>
+# List.filter (fun x -> x mod 2 = 0) [1; 2; 3; 4; 5; 6];;
+- : int list = [2; 4; 6]
 
-# ListStack.pop s;;
-- : (int * int ListStack.t) option = Some (1, <abstr>)
+# List.filter (fun s -> String.length s > 3) ["hi"; "hello"; "ok"; "world"];;
+- : string list = ["hello"; "world"]
 ```
 
-Обратите внимание: utop показывает `<abstr>` вместо конкретного значения --- тип абстрагирован.
+Тип: `('a -> bool) -> 'a list -> 'a list`.
 
-## Сравнение с классами типов Haskell
-
-В Haskell абстракция и полиморфизм достигаются через классы типов:
-
-```haskell
--- Haskell
-class Hashable a where
-  hash :: a -> Int
-
-instance Hashable Int where
-  hash = id
+```admonish tip title="Для Python/TS-разработчиков"
+`List.filter` --- аналог `filter()` в Python и `Array.prototype.filter()` в JS/TS. Python также поддерживает list comprehension: `[x for x in lst if x % 2 == 0]`. В OCaml list comprehension нет, но конвейер `|> List.filter ... |> List.map ...` даёт аналогичную выразительность.
 ```
 
-В OCaml ту же задачу решают **сигнатуры и модули**:
+### `List.filter_map`
 
-```ocaml
-(* OCaml *)
-module type Hashable = sig
-  type t
-  val hash : t -> int
-end
-
-module IntHashable : Hashable with type t = int = struct
-  type t = int
-  let hash x = x
-end
-```
-
-### Основные различия
-
-| Аспект | Haskell (классы типов) | OCaml (модули) |
-|--------|----------------------|----------------|
-| Диспетчеризация | Автоматическая (компилятор выбирает инстанс) | Явная (модуль передаётся как аргумент) |
-| Уникальность | Один инстанс на тип | Несколько модулей для одного типа |
-| Расширяемость | Инстансы добавляются где угодно | Модули создаются в одном месте |
-| Абстракция | Ограничения в типах (`Eq a =>`) | Параметры функторов |
-
-У каждого подхода свои плюсы. Автоматическая диспетчеризация Haskell удобнее для простых случаев. Явные модули OCaml дают больше контроля и позволяют иметь несколько реализаций для одного типа (например, разные порядки сортировки).
-
-## Функторы
-
-Функтор (functor) --- это **модуль, параметризованный другим модулем**. Функтор принимает модуль как аргумент и возвращает новый модуль. Это аналог параметрического полиморфизма на уровне модулей.
-
-### Пример: множество
-
-Стандартная библиотека OCaml предоставляет функтор `Set.Make`:
-
-```ocaml
-module IntSet = Set.Make(Int)
-```
-
-`Int` --- модуль с типом `t = int` и функцией `compare`. `Set.Make` --- функтор, принимающий модуль с `compare` и создающий модуль множества:
+`List.filter_map f lst` --- комбинация `filter` и `map`. Функция `f` возвращает `option`: `Some x` оставляет элемент, `None` отбрасывает:
 
 ```text
-# let s = IntSet.of_list [3; 1; 4; 1; 5; 9; 2; 6];;
-val s : IntSet.t = <abstr>
+# List.filter_map (fun x ->
+    if x > 0 then Some (x * 10) else None
+  ) [-1; 2; -3; 4; 5];;
+- : int list = [20; 40; 50]
+```
 
-# IntSet.elements s;;
-- : int list = [1; 2; 3; 4; 5; 6; 9]
+Тип: `('a -> 'b option) -> 'a list -> 'b list`. Это удобнее, чем отдельные `filter` + `map`, когда решение о включении и преобразование зависят друг от друга.
 
-# IntSet.mem 3 s;;
+### `List.concat_map`
+
+`List.concat_map f lst` применяет `f` к каждому элементу (каждый вызов возвращает список) и конкатенирует результаты:
+
+```text
+# List.concat_map (fun x -> [x; x * 10]) [1; 2; 3];;
+- : int list = [1; 10; 2; 20; 3; 30]
+
+# List.concat_map (fun s -> String.split_on_char ' ' s) ["hello world"; "foo bar baz"];;
+- : string list = ["hello"; "world"; "foo"; "bar"; "baz"]
+```
+
+Тип: `('a -> 'b list) -> 'a list -> 'b list`. Аналог `concatMap` из Haskell.
+
+### `List.find_opt` и `List.exists`
+
+```text
+# List.find_opt (fun x -> x > 3) [1; 2; 3; 4; 5];;
+- : int option = Some 4
+
+# List.exists (fun x -> x > 10) [1; 2; 3];;
+- : bool = false
+
+# List.for_all (fun x -> x > 0) [1; 2; 3];;
 - : bool = true
 ```
 
-### Создание функтора
+### Цепочки с `|>`
 
-Определим собственный функтор. Начнём с сигнатуры для сравнимых типов:
-
-```ocaml
-module type Comparable = sig
-  type t
-  val compare : t -> t -> int
-end
-```
-
-Теперь функтор, создающий модуль множества на основе сортированного списка:
+Функции высшего порядка раскрывают свою мощь в цепочках с оператором конвейера `|>`:
 
 ```ocaml
-module MakeSet (Elt : Comparable) : sig
-  type t
-  val empty : t
-  val add : Elt.t -> t -> t
-  val mem : Elt.t -> t -> bool
-  val elements : t -> Elt.t list
-  val of_list : Elt.t list -> t
-end = struct
-  type t = Elt.t list
-
-  let empty = []
-
-  let rec add x = function
-    | [] -> [x]
-    | (y :: _) as lst when Elt.compare x y < 0 -> x :: lst
-    | y :: rest when Elt.compare x y = 0 -> y :: rest
-    | y :: rest -> y :: add x rest
-
-  let rec mem x = function
-    | [] -> false
-    | y :: _ when Elt.compare x y = 0 -> true
-    | y :: rest when Elt.compare x y > 0 -> mem x rest
-    | _ -> false
-
-  let elements s = s
-
-  let of_list lst = List.fold_left (fun acc x -> add x acc) empty lst
-end
+let result =
+  [1; 2; 3; 4; 5; 6; 7; 8; 9; 10]
+  |> List.filter (fun x -> x mod 2 = 0)
+  |> List.map (fun x -> x * x)
+  |> List.fold_left ( + ) 0
 ```
 
-Использование:
+Читается слева направо: «взять числа от 1 до 10, отфильтровать чётные, возвести в квадрат, сложить». Результат: 4 + 16 + 36 + 64 + 100 = 220.
 
-```ocaml
-module StringSet = MakeSet(String)
+## Свёртки
 
-let s = StringSet.of_list ["banana"; "apple"; "cherry"]
-let _ = StringSet.mem "apple" s   (* true *)
-let _ = StringSet.elements s      (* ["apple"; "banana"; "cherry"] *)
+Свёртка (fold) --- самая мощная функция обработки списков. Любую функцию на списках можно выразить через свёртку.
+
+### `List.fold_left`
+
+`List.fold_left f init lst` обрабатывает список **слева направо**, накапливая результат:
+
+```
+fold_left f init [a; b; c] = f (f (f init a) b) c
 ```
 
-Функтор `MakeSet` принимает модуль с `Comparable` сигнатурой и создаёт специализированное множество.
-
-### Функторы стандартной библиотеки
-
-OCaml stdlib использует функторы повсеместно:
-
-```ocaml
-(* Множество *)
-module IntSet = Set.Make(Int)
-module StringSet = Set.Make(String)
-
-(* Словарь (Map) *)
-module IntMap = Map.Make(Int)
-module StringMap = Map.Make(String)
-
-(* Хэш-таблица *)
-module IntTable = Hashtbl.Make(struct
-  type t = int
-  let equal = Int.equal
-  let hash = Hashtbl.hash
-end)
-```
-
-## Полугруппы и моноиды
-
-Модульная система OCaml позволяет естественно выразить алгебраические абстракции. Две из самых полезных --- **полугруппа** (semigroup) и **моноид** (monoid).
-
-### Полугруппа: тип с ассоциативной операцией
-
-```ocaml
-module type Semigroup = sig
-  type t
-  val combine : t -> t -> t
-end
-```
-
-Полугруппа --- это тип `t` с операцией `combine`, которая ассоциативна: `combine (combine a b) c = combine a (combine b c)`. Примеры:
-
-```ocaml
-module IntSum : Semigroup with type t = int = struct
-  type t = int
-  let combine = ( + )
-end
-
-module IntProduct : Semigroup with type t = int = struct
-  type t = int
-  let combine = ( * )
-end
-
-module StringConcat : Semigroup with type t = string = struct
-  type t = string
-  let combine = ( ^ )
-end
-```
-
-Обратите внимание: для `int` мы определили **два** модуля-полугруппы --- суммирование и умножение. В Haskell для этого потребовались бы newtype-обёртки (`Sum`, `Product`). В OCaml модули позволяют иметь несколько реализаций для одного типа без каких-либо обёрток.
-
-### Моноид: полугруппа с нейтральным элементом
-
-```ocaml
-module type Monoid = sig
-  include Semigroup
-  val empty : t
-end
-```
-
-Моноид расширяет полугруппу нейтральным элементом `empty`: `combine empty x = x` и `combine x empty = x`.
-
-```ocaml
-module IntSumMonoid : Monoid with type t = int = struct
-  type t = int
-  let combine = ( + )
-  let empty = 0
-end
-
-module IntProductMonoid : Monoid with type t = int = struct
-  type t = int
-  let combine = ( * )
-  let empty = 1
-end
-
-module StringMonoid : Monoid with type t = string = struct
-  type t = string
-  let combine = ( ^ )
-  let empty = ""
-end
-
-module ListMonoid (A : sig type t end) : Monoid with type t = A.t list = struct
-  type t = A.t list
-  let combine = ( @ )
-  let empty = []
-end
-```
-
-### `concat_all` через first-class module
-
-Моноид позволяет свернуть **любой** список значений в одно:
-
-```ocaml
-let concat_all (type a) (module M : Monoid with type t = a) (lst : a list) : a =
-  List.fold_left M.combine M.empty lst
-```
+Примеры:
 
 ```text
-# concat_all (module IntSumMonoid) [1; 2; 3; 4];;
+# List.fold_left ( + ) 0 [1; 2; 3; 4];;
 - : int = 10
 
-# concat_all (module IntProductMonoid) [1; 2; 3; 4];;
+# List.fold_left ( * ) 1 [1; 2; 3; 4];;
 - : int = 24
 
-# concat_all (module StringMonoid) ["hello"; " "; "world"];;
-- : string = "hello world"
+# List.fold_left (fun acc x -> acc ^ ", " ^ x) "начало" ["а"; "б"; "в"];;
+- : string = "начало, а, б, в"
 ```
 
-Одна функция `concat_all` работает с любым моноидом. Модуль передаётся как значение первого класса.
+Тип: `('acc -> 'a -> 'acc) -> 'acc -> 'a list -> 'acc`.
 
-### `OptionMonoid` --- функтор: из Semigroup делаем Monoid
+- `f` --- функция, принимающая аккумулятор и текущий элемент, возвращающая новый аккумулятор.
+- `init` --- начальное значение аккумулятора.
+- `lst` --- список для обработки.
 
-Из любой полугруппы можно построить моноид, обернув тип в `option`: нейтральный элемент --- `None`, а `combine` объединяет значения внутри `Some`:
+`List.fold_left` **хвостово-рекурсивна** и безопасна для длинных списков.
 
-```ocaml
-module OptionMonoid (S : Semigroup) : Monoid with type t = S.t option = struct
-  type t = S.t option
-  let empty = None
-  let combine a b =
-    match a, b with
-    | None, x | x, None -> x
-    | Some x, Some y -> Some (S.combine x y)
-end
+```admonish tip title="Для Python/TS-разработчиков"
+`List.fold_left` --- аналог `functools.reduce()` в Python и `Array.prototype.reduce()` в JavaScript/TypeScript. Например, `List.fold_left (+) 0 [1; 2; 3; 4]` --- это `reduce(lambda acc, x: acc + x, [1, 2, 3, 4], 0)` в Python или `[1, 2, 3, 4].reduce((acc, x) => acc + x, 0)` в JS. Главное отличие: в OCaml `fold_left` --- основной паттерн обработки списков, в то время как в Python предпочитают `sum()`, `max()` и другие специализированные функции.
 ```
 
-```text
-# module OptIntMax = OptionMonoid(struct
-    type t = int
-    let combine = max
-  end);;
+### `List.fold_right`
 
-# OptIntMax.combine (Some 3) (Some 5);;
-- : int option = Some 5
+`List.fold_right f lst init` обрабатывает список **справа налево**:
 
-# OptIntMax.combine None (Some 5);;
-- : int option = Some 5
-
-# OptIntMax.empty;;
-- : int option = None
 ```
-
-Даже если `max` не имеет нейтрального элемента (наименьшего `int` не существует), `OptionMonoid` добавляет его через `None`.
-
-### Сравнение с Haskell
-
-В Haskell моноид --- это класс типов:
-
-```haskell
--- Haskell
-class Monoid a where
-  mempty  :: a
-  mappend :: a -> a -> a
-
--- Проблема: для int нужны newtype
-newtype Sum = Sum Int
-instance Monoid Sum where ...
-
-newtype Product = Product Int
-instance Monoid Product where ...
-```
-
-В OCaml модульный подход устраняет необходимость в newtype-обёртках. `IntSumMonoid` и `IntProductMonoid` --- это просто разные модули, оба с `type t = int`. Нет ограничения «один инстанс на тип».
-
-## `open` и `include`
-
-### `open`
-
-`open` делает содержимое модуля доступным без квалификации:
-
-```ocaml
-let f () =
-  let open List in
-  [1; 2; 3] |> filter (fun x -> x > 1) |> map (fun x -> x * 2)
-```
-
-Локальный `let open M in ...` ограничивает область видимости. Глобальный `open M` в начале файла открывает модуль для всего файла. Используйте глобальный `open` осторожно --- он может вызвать конфликты имён.
-
-### `include`
-
-`include` копирует содержимое одного модуля в другой:
-
-```ocaml
-module ExtendedList = struct
-  include List
-
-  let sum lst = fold_left ( + ) 0 lst
-
-  let mean lst =
-    let n = length lst in
-    if n = 0 then 0.0
-    else float_of_int (sum lst) /. float_of_int n
-end
-```
-
-`ExtendedList` содержит все функции `List` плюс `sum` и `mean`. Это удобно для расширения существующих модулей.
-
-`include` работает и с сигнатурами:
-
-```ocaml
-module type Extended_comparable = sig
-  include Comparable
-  val equal : t -> t -> bool
-  val min : t -> t -> t
-end
-```
-
-## Модули первого класса
-
-В OCaml модули можно использовать как **обычные значения** --- передавать в функции, возвращать из функций, хранить в структурах данных. Такие модули называются модулями первого класса (first-class modules).
-
-### Упаковка и распаковка
-
-```ocaml
-(* Упаковка модуля в значение *)
-let int_printable = (module IntPrintable : Printable with type t = int)
-
-(* Распаковка значения обратно в модуль *)
-let print_value (type a) (module P : Printable with type t = a) (x : a) =
-  P.to_string x
+fold_right f [a; b; c] init = f a (f b (f c init))
 ```
 
 ```text
-# print_value (module IntPrintable) 42;;
-- : string = "42"
+# List.fold_right (fun x acc -> x :: acc) [1; 2; 3] [];;
+- : int list = [1; 2; 3]
+
+# List.fold_right (fun x acc -> acc ^ string_of_int x) [1; 2; 3] "";;
+- : string = "321"
 ```
 
-### Пример: полиморфная функция с модулем
+Тип: `('a -> 'acc -> 'acc) -> 'a list -> 'acc -> 'a list`.
+
+Обратите внимание: порядок аргументов отличается от `fold_left` --- список идёт вторым аргументом, а начальное значение --- третьим.
+
+`List.fold_right` **не хвостово-рекурсивна** и может вызвать `Stack_overflow` на длинных списках.
+
+### Когда что использовать
+
+| Функция | Направление | Хвостовая рекурсия | Типичное применение |
+|---------|------------|--------------------|--------------------|
+| `fold_left` | Слева направо | Да | Суммы, подсчёты, аккумуляция |
+| `fold_right` | Справа налево | Нет | Построение списков, сохранение порядка |
+
+Предпочитайте `fold_left`, если порядок не важен. Используйте `fold_right` для построения списков, когда нужно сохранить исходный порядок элементов.
+
+### Выражение через свёртки
+
+Многие стандартные функции можно выразить через свёртки:
 
 ```ocaml
-module type Comparable = sig
-  type t
-  val compare : t -> t -> int
-end
+(* map через fold_right *)
+let map f lst =
+  List.fold_right (fun x acc -> f x :: acc) lst []
 
-let max_element (type a) (module C : Comparable with type t = a) (lst : a list) =
-  match lst with
-  | [] -> None
-  | x :: rest ->
-    Some (List.fold_left (fun acc y ->
-      if C.compare y acc > 0 then y else acc
-    ) x rest)
+(* filter через fold_right *)
+let filter pred lst =
+  List.fold_right (fun x acc -> if pred x then x :: acc else acc) lst []
+
+(* length через fold_left *)
+let length lst =
+  List.fold_left (fun acc _ -> acc + 1) 0 lst
+
+(* rev через fold_left *)
+let rev lst =
+  List.fold_left (fun acc x -> x :: acc) [] lst
+
+(* flatten через fold_right *)
+let flatten lst =
+  List.fold_right (fun x acc -> x @ acc) lst []
+```
+
+## Traverse: обработка списков с эффектами
+
+Рассмотрим частую задачу: у нас есть список значений, каждое из которых нужно обработать функцией, возвращающей `option` или `result`. Если **все** обработки успешны, мы хотим получить список результатов. Если хотя бы одна неуспешна, вся операция должна провалиться.
+
+### Проблема: `'a option list` → `'a list option`
+
+Допустим, мы парсим список строк в числа:
+
+```text
+# List.map int_of_string_opt ["1"; "2"; "3"];;
+- : int option list = [Some 1; Some 2; Some 3]
+
+# List.map int_of_string_opt ["1"; "abc"; "3"];;
+- : int option list = [Some 1; None; Some 3]
+```
+
+Мы получаем `int option list` --- список, где каждый элемент может быть `Some` или `None`. Но нам нужен `int list option` --- либо весь список целиком, либо `None`.
+
+### `sequence_option`: сборка списка из option
+
+```ocaml
+let sequence_option lst =
+  List.fold_right
+    (fun x acc ->
+      match x, acc with
+      | Some v, Some vs -> Some (v :: vs)
+      | _ -> None)
+    lst (Some [])
 ```
 
 ```text
-# max_element (module Int) [3; 1; 4; 1; 5];;
-- : int option = Some 5
+# sequence_option [Some 1; Some 2; Some 3];;
+- : int list option = Some [1; 2; 3]
 
-# max_element (module String) ["banana"; "apple"; "cherry"];;
-- : string option = Some "cherry"
+# sequence_option [Some 1; None; Some 3];;
+- : int list option = None
 ```
 
-Функция `max_element` принимает модуль `Comparable` как значение и использует его для сравнения. Это аналог передачи словаря type class в Haskell, но явный.
+`fold_right` обходит список справа налево. Если аккумулятор и текущий элемент оба `Some`, добавляем значение в список. Иначе --- всё `None`.
 
-### Когда использовать модули первого класса
+### `traverse_option`: map + sequence за один проход
 
-- Когда нужно выбрать реализацию **в рантайме**.
-- Для хранения разных модулей в коллекции.
-- Для конфигурируемых алгоритмов (выбор стратегии сортировки, хэширования и т.д.).
-
-## Проект: библиотека хэширования
-
-Модуль `lib/hashable.ml` демонстрирует функторный подход к хэшированию.
-
-### Сигнатура
+`sequence_option` требует сначала `List.map`, а потом сборку. Можно совместить оба шага:
 
 ```ocaml
-module type Hashable = sig
-  type t
-  val hash : t -> int
-end
+let traverse_option f lst =
+  List.fold_right
+    (fun x acc ->
+      match f x, acc with
+      | Some v, Some vs -> Some (v :: vs)
+      | _ -> None)
+    lst (Some [])
 ```
 
-### Реализации
+```text
+# traverse_option int_of_string_opt ["1"; "2"; "3"];;
+- : int list option = Some [1; 2; 3]
+
+# traverse_option int_of_string_opt ["1"; "abc"; "3"];;
+- : int list option = None
+```
+
+`traverse_option f` = `sequence_option ∘ List.map f`, но за один проход.
+
+### `traverse_result`: аналог для `Result`
+
+Для `result` логика аналогична, но при ошибке мы сохраняем информацию о причине:
 
 ```ocaml
-let combine h1 h2 = h1 * 31 + h2
-
-module IntHash : Hashable with type t = int = struct
-  type t = int
-  let hash x = x
-end
-
-module StringHash : Hashable with type t = string = struct
-  type t = string
-  let hash s =
-    String.fold_left (fun acc c -> combine acc (Char.code c)) 0 s
-end
-
-module PairHash (H1 : Hashable) (H2 : Hashable)
-  : Hashable with type t = H1.t * H2.t = struct
-  type t = H1.t * H2.t
-  let hash (a, b) = combine (H1.hash a) (H2.hash b)
-end
+let traverse_result f lst =
+  List.fold_right
+    (fun x acc ->
+      match f x, acc with
+      | Ok v, Ok vs -> Ok (v :: vs)
+      | Error e, _ -> Error e
+      | _, Error e -> Error e)
+    lst (Ok [])
 ```
 
-`PairHash` --- функтор с **двумя** параметрами. Он принимает два модуля `Hashable` и создаёт хэшируемый тип-пару.
+```text
+# let parse s =
+    match int_of_string_opt s with
+    | Some n -> Ok n
+    | None -> Error (Printf.sprintf "не число: %s" s);;
 
-### Функтор для HashSet
+# traverse_result parse ["1"; "2"; "3"];;
+- : (int list, string) result = Ok [1; 2; 3]
+
+# traverse_result parse ["1"; "abc"; "3"];;
+- : (int list, string) result = Error "не число: abc"
+```
+
+### Связь с `List.filter_map`
+
+`List.filter_map` --- похожая функция, но с другой семантикой: она **молча отбрасывает** неуспешные элементы вместо того, чтобы провалить всю операцию:
+
+```text
+# List.filter_map int_of_string_opt ["1"; "abc"; "3"];;
+- : int list = [1; 3]
+```
+
+Выбирайте по ситуации:
+
+| Функция | При ошибке | Результат |
+|---------|-----------|-----------|
+| `filter_map` | Пропускает элемент | Всегда `'b list` |
+| `traverse_option` | Провал всей операции | `'b list option` |
+| `traverse_result` | Провал с сообщением | `('b list, 'e) result` |
+
+### Практический пример: парсинг CSV-строки
 
 ```ocaml
-module MakeHashSet (H : Hashable) : sig
-  type t
-  val empty : t
-  val add : H.t -> t -> t
-  val mem : H.t -> t -> bool
-  val to_list : t -> H.t list
-end = struct
-  let num_buckets = 16
-  type t = H.t list array
+type person = { name : string; age : int }
 
-  let empty = Array.make num_buckets []
+let parse_csv_line line =
+  match String.split_on_char ',' line with
+  | [name; age_str] ->
+    (match int_of_string_opt (String.trim age_str) with
+     | Some age -> Ok { name = String.trim name; age }
+     | None -> Error (Printf.sprintf "некорректный возраст: %s" age_str))
+  | _ -> Error (Printf.sprintf "неверный формат строки: %s" line)
 
-  let bucket_index x = abs (H.hash x) mod num_buckets
-
-  let add x s =
-    let s' = Array.copy s in
-    let i = bucket_index x in
-    if not (List.mem x s'.(i)) then
-      s'.(i) <- x :: s'.(i);
-    s'
-
-  let mem x s =
-    List.mem x s.(bucket_index x)
-
-  let to_list s =
-    Array.to_list s |> List.concat
-end
+let parse_csv lines = traverse_result parse_csv_line lines
 ```
 
-## Паттерн modules-as-types
+```text
+# parse_csv ["Alice, 30"; "Bob, 25"];;
+- : (person list, string) result = Ok [{name = "Alice"; age = 30}; ...]
 
-В OCaml-сообществе существует устоявшаяся конвенция: основной тип модуля называется `t`. Это позволяет обращаться к типу как `Module.t`, что читается естественно и единообразно.
+# parse_csv ["Alice, 30"; "Bob, xyz"];;
+- : (person list, string) result = Error "некорректный возраст:  xyz"
+```
 
-### Конвенция `type t`
+Если хотя бы одна строка невалидна, весь парсинг провалится с понятным сообщением об ошибке.
+
+## Ленивые последовательности: `Seq`
+
+В Haskell все списки ленивые, что позволяет работать с бесконечными структурами. В OCaml списки строгие (strict) --- все элементы вычисляются сразу. Для ленивых вычислений OCaml предоставляет модуль `Seq`.
+
+### Что такое `Seq`
+
+`Seq.t` --- ленивая последовательность. Элементы вычисляются **по требованию** --- только когда к ним обращаются:
+
+```text
+# let nats = Seq.ints 0;;
+val nats : int Seq.t = <fun>
+
+# Seq.take 5 nats |> List.of_seq;;
+- : int list = [0; 1; 2; 3; 4]
+
+# Seq.take 10 nats |> List.of_seq;;
+- : int list = [0; 1; 2; 3; 4; 5; 6; 7; 8; 9]
+```
+
+`Seq.ints 0` создаёт **бесконечную** последовательность 0, 1, 2, ... --- но она не вычисляется вся сразу, а генерирует элементы по мере необходимости.
+
+```admonish tip title="Для Python-разработчиков"
+`Seq` в OCaml --- аналог генераторов (`yield`) в Python. `Seq.ints 0` похож на `itertools.count(0)`. Как и Python-генераторы, `Seq` вычисляет элементы лениво. Разница в том, что `Seq` в OCaml --- неизменяемая структура, которую можно обойти несколько раз, а Python-генератор исчерпывается после одного обхода.
+```
+
+```admonish info title="Подробнее"
+Подробнее о списках, свёртках и рекурсии: [Real World OCaml, глава «Lists and Patterns»](https://dev.realworldocaml.org/lists-and-patterns.html)
+```
+
+### Создание последовательностей
+
+```text
+(* Из списка *)
+# List.to_seq [1; 2; 3] |> List.of_seq;;
+- : int list = [1; 2; 3]
+
+(* Бесконечная последовательность *)
+# Seq.ints 0 |> Seq.take 5 |> List.of_seq;;
+- : int list = [0; 1; 2; 3; 4]
+
+(* Генерация через unfold *)
+# Seq.unfold (fun n -> if n > 5 then None else Some (n * n, n + 1)) 1
+  |> List.of_seq;;
+- : int list = [1; 4; 9; 16; 25]
+```
+
+`Seq.unfold f seed` --- генерация последовательности: `f` принимает текущее состояние и возвращает `Some (element, next_state)` для продолжения или `None` для остановки.
+
+### Операции над `Seq`
+
+Модуль `Seq` предоставляет функции, аналогичные `List`:
 
 ```ocaml
-(* Было *)
-type entry = { name: string; address: string }
-let make_entry ~name ~address = { name; address }
-
-(* Стало *)
-type t = { name: string; address: string }
-let make ~name ~address = { name; address }
+(* Фильтрация + преобразование бесконечной последовательности *)
+let even_squares =
+  Seq.ints 0
+  |> Seq.filter (fun x -> x mod 2 = 0)
+  |> Seq.map (fun x -> x * x)
+  |> Seq.take 5
+  |> List.of_seq
+(* = [0; 4; 16; 36; 64] *)
 ```
 
-Функции тоже именуются без суффикса типа: `make` вместо `make_entry`, `pp` вместо `pp_entry`, `to_string` вместо `entry_to_string`. Поскольку функции находятся внутри модуля, квалификация `Entry.make`, `Entry.to_string` делает суффикс избыточным.
+### Пример: числа Фибоначчи
 
-### `.mli` файлы и `private`
-
-Для контроля конструирования значений используют `.mli`-файлы (интерфейсы модулей) с ключевым словом `private`:
+Бесконечная последовательность Фибоначчи через `Seq.unfold`:
 
 ```ocaml
-(* user.ml *)
-type t = { name: string; age: int }
-let make ~name ~age =
-  assert (age > 0);
-  { name; age }
-
-(* user.mli *)
-type t = private { name: string; age: int }
-val make : name:string -> age:int -> t
+let fibs =
+  Seq.unfold (fun (a, b) -> Some (a, (b, a + b))) (0, 1)
 ```
 
-`private` позволяет читать поля (`user.name`), но запрещает конструирование напрямую --- только через `make`. Это обеспечивает инварианты (в данном случае `age > 0`) без потери удобства чтения полей.
+```text
+# fibs |> Seq.take 10 |> List.of_seq;;
+- : int list = [0; 1; 1; 2; 3; 5; 8; 13; 21; 34]
+```
 
-## IO-агностичные библиотеки через функторы
+Состояние `(a, b)` хранит два последних числа. На каждом шаге выдаём `a` и переходим к `(b, a + b)`.
 
-### Проблема
+## Проект: виртуальная файловая система
 
-Библиотека может зависеть от конкретной реализации IO: Lwt (асинхронный), Eio (эффект-ориентированный), синхронный stdlib. Привязка к одной реализации ограничивает переиспользование.
+Модуль `lib/path.ml` моделирует файловую систему как рекурсивный тип данных.
 
-### Решение: абстрагировать IO через сигнатуру
+### Тип `path`
 
 ```ocaml
-module type IO = sig
-  type +'a t
-  val return : 'a -> 'a t
-  val bind : 'a t -> ('a -> 'b t) -> 'b t
-end
+type path =
+  | File of string * int
+  | Directory of string * path list
 ```
 
-### Функтор, параметризованный IO
+`File (name, size)` --- файл с именем и размером. `Directory (name, children)` --- директория с именем и списком вложенных элементов. Тип рекурсивный --- директория может содержать другие директории.
+
+### Базовые функции
 
 ```ocaml
-module Make_service (IO : IO) = struct
-  open IO
-  let process data =
-    bind (return (String.uppercase_ascii data)) (fun upper ->
-    return ("processed: " ^ upper))
-end
+let filename = function
+  | File (name, _) -> name
+  | Directory (name, _) -> name
+
+let is_directory = function
+  | Directory _ -> true
+  | File _ -> false
+
+let file_size = function
+  | File (_, size) -> Some size
+  | Directory _ -> None
+
+let children = function
+  | Directory (_, cs) -> cs
+  | File _ -> []
 ```
 
-Модуль `Make_service` не знает, какой IO используется --- синхронный, Lwt или Eio. Он работает с любой реализацией, удовлетворяющей сигнатуре `IO`.
-
-### Инстанцирование для синхронного IO
+### Обход дерева
 
 ```ocaml
-module Sync_IO : IO with type 'a t = 'a = struct
-  type 'a t = 'a
-  let return x = x
-  let bind x f = f x
-end
-
-module Sync_service = Make_service(Sync_IO)
-let result = Sync_service.process "hello"
-(* result = "processed: HELLO" *)
+let rec all_paths p =
+  p :: List.concat_map all_paths (children p)
 ```
 
-Синхронная реализация `Sync_IO` --- это тождественная монада: `type 'a t = 'a`, `return` --- это `id`, `bind` --- это применение функции. При подстановке `Sync_IO` весь монадический код сводится к обычным синхронным вызовам.
+`all_paths` --- обход в глубину (DFS). Для каждого узла: добавляем сам узел, затем рекурсивно обходим всех потомков. `List.concat_map` применяет `all_paths` к каждому потомку и конкатенирует результаты.
 
-Этот паттерн широко используется в экосистеме OCaml для создания библиотек, совместимых с разными рантаймами.
+### Тестовое дерево
+
+```ocaml
+let root =
+  Directory ("root", [
+    File ("readme.txt", 100);
+    Directory ("src", [
+      File ("main.ml", 500);
+      File ("utils.ml", 300);
+      Directory ("lib", [
+        File ("parser.ml", 800);
+        File ("lexer.ml", 600);
+      ]);
+    ]);
+    Directory ("test", [
+      File ("test_main.ml", 400);
+    ]);
+    File (".gitignore", 50);
+  ])
+```
 
 ## Упражнения
 
 Решения пишите в `test/my_solutions.ml`. Проверяйте: `dune runtest`.
 
-1. **(Среднее)** Создайте модуль `IntSet` с сигнатурой `Set_intf`, реализующий множество целых чисел на основе сортированного списка.
+1. **(Среднее)** Реализуйте функцию `all_files`, которая извлекает из дерева только файлы (не директории).
 
     ```ocaml
-    val int_set_empty : My_solutions.IntSet.t
-    val int_set_add : int -> My_solutions.IntSet.t -> My_solutions.IntSet.t
-    val int_set_mem : int -> My_solutions.IntSet.t -> bool
-    val int_set_elements : My_solutions.IntSet.t -> int list
+    val all_files : path -> path list
     ```
 
-    *Подсказка:* добавление в сортированный список --- вставка на правильную позицию с помощью рекурсии.
+    *Подсказка:* используйте `all_paths` из библиотеки и `List.filter`.
 
-2. **(Сложное)** Реализуйте функтор `MakeSet`, параметризованный модулем с сигнатурой `Comparable`, который создаёт множество.
+2. **(Среднее)** Реализуйте функцию `largest_file`, которая находит файл с наибольшим размером и возвращает пару `(path, size)`. Для пустого дерева (директория без файлов) возвращает `None`.
 
     ```ocaml
-    module MakeSet (Elt : Comparable) : sig
-      type t
-      val empty : t
-      val add : Elt.t -> t -> t
-      val mem : Elt.t -> t -> bool
-      val elements : t -> Elt.t list
+    val largest_file : path -> (path * int) option
+    ```
+
+    *Подсказка:* используйте `all_files` и `List.fold_left`.
+
+3. **(Среднее)** Реализуйте функцию `where_is`, которая ищет файл по имени и возвращает директорию, в которой он находится.
+
+    ```ocaml
+    val where_is : path -> string -> path option
+    ```
+
+    *Подсказка:* используйте рекурсию. Проверяйте `children` текущей директории --- если среди них есть файл с нужным именем, возвращайте текущую директорию.
+
+4. **(Среднее)** Реализуйте функцию `total_size`, которая вычисляет суммарный размер всех файлов в дереве.
+
+    ```ocaml
+    val total_size : path -> int
+    ```
+
+    *Подсказка:* используйте `all_files`, `List.filter_map` и `List.fold_left`.
+
+5. **(Сложное)** Реализуйте бесконечную последовательность чисел Фибоначчи через `Seq.unfold`.
+
+    ```ocaml
+    val fibs : int Seq.t
+    ```
+
+    `Seq.take 7 fibs |> List.of_seq` = `[0; 1; 1; 2; 3; 5; 8]`.
+
+    *Подсказка:* используйте `Seq.unfold` с состоянием-парой `(a, b)`, где `a` --- текущее число, `b` --- следующее.
+
+6. **(Среднее)** Pangram --- проверить, содержит ли строка все буквы английского алфавита (регистронезависимо).
+
+    ```ocaml
+    val is_pangram : string -> bool
+    ```
+
+    `is_pangram "The quick brown fox jumps over the lazy dog"` = `true`.
+
+7. **(Среднее)** Isogram --- проверить, что в слове нет повторяющихся букв (пробелы и дефисы не считаются).
+
+    ```ocaml
+    val is_isogram : string -> bool
+    ```
+
+8. **(Среднее)** Anagram --- найти анаграммы заданного слова из списка кандидатов. Само слово не является своей анаграммой.
+
+    ```ocaml
+    val anagrams : string -> string list -> string list
+    ```
+
+    *Подсказка:* отсортируйте буквы слова и сравните.
+
+9. **(Лёгкое)** Reverse String --- перевернуть строку.
+
+    ```ocaml
+    val reverse_string : string -> string
+    ```
+
+10. **(Среднее)** Nucleotide Count --- подсчитать количество каждого нуклеотида (A, C, G, T) в строке ДНК.
+
+    ```ocaml
+    val nucleotide_count : string -> (char * int) list
+    ```
+
+11. **(Среднее)** Hamming Distance --- подсчитать количество различий между двумя строками одинаковой длины. Вернуть `Error`, если строки разной длины.
+
+    ```ocaml
+    val hamming_distance : string -> string -> (int, string) result
+    ```
+
+12. **(Среднее)** Run-Length Encoding --- сжать строку методом RLE и декодировать обратно.
+
+    ```ocaml
+    val rle_encode : string -> string
+    val rle_decode : string -> string
+    ```
+
+    `rle_encode "AABBBC"` = `"2A3B1C"`. `rle_decode "2A3B1C"` = `"AABBBC"`.
+
+13. **(Среднее)** Реализуйте `traverse_option` и `traverse_result` --- функции, которые применяют функцию к каждому элементу списка и собирают результат в `option`/`result`. Если хотя бы один вызов неуспешен, вся операция проваливается.
+
+    ```ocaml
+    val traverse_option : ('a -> 'b option) -> 'a list -> 'b list option
+    val traverse_result : ('a -> ('b, 'e) result) -> 'a list -> ('b list, 'e) result
+    ```
+
+    *Подсказка:* используйте `List.fold_right`.
+
+14. **(Сложное)** List Ops --- реализуйте стандартные операции над списками **без использования функций модуля `List`**.
+
+    ```ocaml
+    module List_ops : sig
+      val length : 'a list -> int
+      val reverse : 'a list -> 'a list
+      val map : ('a -> 'b) -> 'a list -> 'b list
+      val filter : ('a -> bool) -> 'a list -> 'a list
+      val fold_left : ('b -> 'a -> 'b) -> 'b -> 'a list -> 'b
+      val fold_right : ('a -> 'b -> 'b) -> 'a list -> 'b -> 'b
+      val append : 'a list -> 'a list -> 'a list
+      val concat : 'a list list -> 'a list
     end
     ```
 
-    *Подсказка:* аналогично `IntSet`, но используйте `Elt.compare` вместо операторов `<` и `=`.
-
-3. **(Среднее)** Реализуйте функцию `max_element`, которая принимает модуль `Comparable` как значение первого класса и находит максимальный элемент в списке.
-
-    ```ocaml
-    val max_element :
-      (module Comparable with type t = 'a) -> 'a list -> 'a option
-    ```
-
-    *Подсказка:* используйте `(type a)` для введения локального абстрактного типа.
-
-4. **(Среднее)** Реализуйте модуль `ExtendedIntSet`, который расширяет `IntSet` дополнительными операциями `size`, `union` и `inter`.
-
-    ```ocaml
-    val extended_int_set_size : My_solutions.ExtendedIntSet.t -> int
-    val extended_int_set_union :
-      My_solutions.ExtendedIntSet.t -> My_solutions.ExtendedIntSet.t -> My_solutions.ExtendedIntSet.t
-    ```
-
-    *Подсказка:* используйте `include` для включения `IntSet`.
-
-5. **(Среднее)** Реализуйте полугруппу `First` --- `combine` всегда возвращает первый аргумент. Затем создайте `OptionMonoid(First)` и проверьте, что `concat_all` на списке `option` возвращает первый `Some`.
-
-    ```ocaml
-    module First : Semigroup with type t = string
-    ```
-
-    *Подсказка:* `let combine a _b = a`.
-
-6. **(Среднее)** Реализуйте `concat_all` --- функцию, которая принимает модуль `Monoid` как значение первого класса и сворачивает список.
-
-    ```ocaml
-    val concat_all : (module Monoid with type t = 'a) -> 'a list -> 'a
-    ```
-
-    *Подсказка:* используйте `(type a)` и `List.fold_left`.
-
-7. **(Сложное)** Custom Set --- реализуйте параметрический модуль множества `MakeCustomSet(Elt : ORDERED)` с операциями `empty`, `add`, `mem`, `remove`, `elements`, `size`, `union`, `inter`, `diff`, `is_empty`. Внутреннее представление --- отсортированный список.
-
-    ```ocaml
-    module type ORDERED = sig
-      type t
-      val compare : t -> t -> int
-    end
-
-    module MakeCustomSet (Elt : ORDERED) : sig
-      type t
-      type elt = Elt.t
-      val empty : t
-      val add : elt -> t -> t
-      val mem : elt -> t -> bool
-      val remove : elt -> t -> t
-      val elements : t -> elt list
-      val size : t -> int
-      val union : t -> t -> t
-      val inter : t -> t -> t
-      val diff : t -> t -> t
-      val is_empty : t -> bool
-    end
-    ```
-
-    *Подсказка:* используйте отсортированный список как внутреннее представление. Операции `add`, `mem`, `remove` работают за O(n), `union`, `inter`, `diff` --- через свёртку.
+    *Подсказка:* `reverse` и `map` реализуйте через хвостовую рекурсию с аккумулятором. `append` и `concat` --- через `fold_right`.
 
 ## Заключение
 
 В этой главе мы:
 
-- Изучили модули --- основу организации кода в OCaml.
-- Познакомились с сигнатурами и абстрактными типами для инкапсуляции.
-- Разобрали функторы --- параметризованные модули, аналог generics на уровне модулей.
-- Узнали о модулях первого класса --- передаче модулей как значений.
-- Изучили полугруппы и моноиды --- алгебраические абстракции через модули.
-- Научились использовать `open` и `include` для композиции модулей.
-- Сравнили модульный подход OCaml с классами типов Haskell.
+- Изучили рекурсию и хвостовую рекурсию с аккумулятором.
+- Познакомились с функциями высшего порядка: `List.map`, `List.filter`, `List.filter_map`, `List.concat_map`.
+- Разобрали свёртки `List.fold_left` (хвостовая, слева направо) и `List.fold_right` (не хвостовая, справа налево).
+- Изучили паттерн traverse --- обработку списков с эффектами (`option`, `result`).
+- Научились строить цепочки обработки данных с оператором `|>`.
+- Познакомились с ленивыми последовательностями `Seq` --- аналогом бесконечных списков Haskell.
 
-В следующей главе мы изучим обработку ошибок: типы `option` и `result`, let-операторы и паттерн накопления ошибок.
+В следующей главе мы изучим модульную систему OCaml --- модули, сигнатуры, функторы и модули первого класса.

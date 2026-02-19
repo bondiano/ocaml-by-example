@@ -1,507 +1,583 @@
-# Промисы и Lwt
+# ppx и метапрограммирование
 
 ## Цели главы
 
-В этой главе мы изучим **Lwt** --- библиотеку конкурентности на основе промисов, и сравним её с Eio из главы 9:
+В этой главе мы изучим **метапрограммирование** в OCaml --- написание программ, которые генерируют другие программы на этапе компиляции:
 
-- **Промисы** (`'a Lwt.t`) --- отложенные вычисления, которые завершатся в будущем.
-- **Монадический стиль** --- `bind`, `>>=`, `let*` для цепочек асинхронных операций.
-- **Конкурентные примитивы** --- `Lwt.both`, `Lwt.all`, `Lwt.pick`, `Lwt.choose`.
-- **Lwt_io и Lwt_unix** --- асинхронный ввод-вывод и системные вызовы.
-- **Lwt_stream** --- асинхронные потоки данных.
-- **Сравнение Eio и Lwt** --- когда использовать какую библиотеку.
+- **Метапрограммирование** --- что это, зачем, три подхода (Lisp, Rust, OCaml).
+- **Конвейер компиляции** --- где работает ppx, extension points и derivers.
+- **ppx_deriving** --- автоматическая генерация `show`, `eq`, `ord`.
+- **Написание своего ppx** --- знакомство с ppxlib.
+- **Сравнение с Haskell** --- Template Haskell, GHC Generics.
 
 ## Подготовка проекта
 
-Код этой главы находится в `exercises/chapter19`. Для работы с Lwt нужно установить библиотеку:
+Код этой главы находится в `exercises/chapter19`. Для этой главы потребуются библиотеки ppxlib и ppx_deriving:
 
 ```text
-$ opam install lwt
+$ opam install ppxlib ppx_deriving
 $ cd exercises/chapter19
 $ dune build
 ```
 
-В файле `dune` проекта укажите зависимости:
+Убедитесь, что в файле `dune` вашей библиотеки указан препроцессор:
 
 ```text
 (library
- (name chapter19)
- (libraries lwt lwt.unix))
+ (name chapter18)
+ (preprocess (pps ppx_deriving.show ppx_deriving.eq ppx_deriving.ord)))
 ```
 
-Пакет `lwt.unix` предоставляет привязки к системным вызовам: работу с файлами, сетью, таймерами и процессами.
+## Что такое метапрограммирование?
 
-## Зачем Lwt, если есть Eio?
+**Метапрограммирование** --- написание кода, который генерирует другой код. Вместо того чтобы вручную писать повторяющиеся функции для каждого типа, мы просим компилятор сгенерировать их автоматически. Это сокращает шаблонный код, гарантирует согласованность и безопасность --- при изменении типа сгенерированные функции обновляются автоматически.
 
-В главе 11 мы изучили Eio --- библиотеку прямого стиля, основанную на effect handlers OCaml 5. Eio лучше спроектирована, но зачем тогда изучать Lwt?
-
-Ответ --- **экосистема**. Lwt существует с 2008 года и стала основой огромного количества OCaml-проектов:
-
-- **Dream** --- самый популярный веб-фреймворк OCaml.
-- **Cohttp** --- HTTP-библиотека.
-- **Irmin** --- распределённая база данных (Git-like).
-- **Tezos** --- блокчейн-платформа.
-
-Eio --- будущее конкурентности в OCaml, но Lwt --- настоящее экосистемы. Чтобы использовать Dream или Cohttp, нужно понимать Lwt.
-
-## Промисы: отложенные вычисления
-
-Центральный тип Lwt --- `'a Lwt.t`. Это **промис**: значение типа `'a`, которое, возможно, ещё не вычислено. Промис может быть в одном из трёх состояний: **resolved** (готов), **pending** (ожидает) или **rejected** (ошибка).
-
-### Создание промисов
+Рассмотрим типичную ситуацию. У нас есть тип:
 
 ```ocaml
-(* Lwt.return : 'a -> 'a Lwt.t --- уже завершённый промис *)
-let x : int Lwt.t = Lwt.return 42
-
-(* Lwt.fail : exn -> 'a Lwt.t --- промис с ошибкой *)
-let err : int Lwt.t = Lwt.fail (Failure "что-то пошло не так")
+type color = Red | Green | Blue
 ```
 
-### Привязка: `Lwt.bind` и `>>=`
+Нам нужна функция `show_color : color -> string`. Можно написать её вручную:
 
 ```ocaml
-(* Lwt.bind : 'a Lwt.t -> ('a -> 'b Lwt.t) -> 'b Lwt.t *)
-let y : string Lwt.t =
-  Lwt.bind x (fun n -> Lwt.return (string_of_int n))
+let show_color = function
+  | Red -> "Red"
+  | Green -> "Green"
+  | Blue -> "Blue"
 ```
 
-`Lwt.bind p f` --- когда промис `p` завершится со значением `v`, вызвать `f v`. Если `p` завершился ошибкой --- `f` не вызывается, ошибка пробрасывается дальше.
+Но если типов много, или они часто меняются, ручное поддержание таких функций становится утомительным и подверженным ошибкам. Метапрограммирование решает эту проблему --- компилятор генерирует `show_color` автоматически из определения типа.
 
-Оператор `>>=` --- инфиксный синоним `Lwt.bind`:
+## Три подхода к метапрограммированию
 
-```ocaml
-open Lwt.Infix
+Разные языки предлагают разные подходы к метапрограммированию. Рассмотрим три наиболее характерных: Lisp, Rust и OCaml.
 
-let z : int Lwt.t = x >>= fun n -> Lwt.return (n + 1)
+### Lisp: код как данные
 
-(* Цепочка вычислений *)
-let pipeline =
-  Lwt.return "42"
-  >>= fun s -> Lwt.return (int_of_string s)
-  >>= fun n -> Lwt.return (n * 2)
-  >>= fun n -> Lwt.return (string_of_int n)
-(* pipeline : string Lwt.t, результат --- "84" *)
+Lisp занимает уникальное место в истории метапрограммирования. Благодаря свойству **гомоиконичности** (homoiconicity) --- код и данные имеют одинаковое представление (S-выражения) --- макросы в Lisp работают с кодом как с обычными списками.
+
+```lisp
+;; Определяем макрос when --- условие без else
+(defmacro when (condition &body body)
+  `(if ,condition (progn ,@body)))
+
+;; Использование:
+(when (> x 0)
+  (print "positive")
+  (inc counter))
+
+;; Раскрывается в:
+(if (> x 0) (progn (print "positive") (inc counter)))
 ```
 
-### Отображение: `Lwt.map` и `>|=`
+Здесь обратная кавычка `` ` `` создаёт шаблон, запятая `,` подставляет значение, а `,@` --- сплайсит список. Макросы Lisp --- это обычные функции, которые получают код в виде списков и возвращают новый код.
 
-```ocaml
-(* Lwt.map : ('a -> 'b) -> 'a Lwt.t -> 'b Lwt.t *)
-let w : string Lwt.t = Lwt.map string_of_int x
+Преимущества Lisp-макросов --- максимальная гибкость: любая трансформация кода возможна. Недостаток --- отсутствие типизации: макрос может сгенерировать синтаксически некорректный код, и ошибка обнаружится только при раскрытии.
 
-(* >|= --- инфиксный map *)
-let w2 = x >|= fun n -> string_of_int n
-let doubled = x >|= fun n -> n * 2
+### Rust: макросы на токенах
+
+Rust предлагает два вида макросов: **декларативные** (`macro_rules!`) и **процедурные** (proc macros).
+
+Декларативные макросы работают через сопоставление с образцом на токенах:
+
+```rust
+macro_rules! vec_of {
+    ($($x:expr),*) => { vec![$($x),*] };
+}
+// vec_of![1, 2, 3] раскрывается в vec![1, 2, 3]
 ```
 
-Разница: в `>>=` функция возвращает `'b Lwt.t`, а в `>|=` --- просто `'b`. Используйте `>|=` для чистых преобразований.
+Процедурные макросы --- полноценные Rust-программы, которые трансформируют поток токенов. Самый распространённый вид --- `#[derive(...)]`:
 
-## Let-операторы
+```rust
+use serde::{Serialize, Deserialize};
 
-Цепочки `>>=` быстро становятся нечитаемыми. **Let-операторы**, знакомые из главы 7, делают код линейным:
-
-```ocaml
-open Lwt.Syntax
-
-(* let* = Lwt.bind *)
-let example1 () =
-  let* a = Lwt.return 10 in
-  let* b = Lwt.return 20 in
-  Lwt.return (a + b)
-
-(* let+ = Lwt.map --- для последнего шага *)
-let example2 () =
-  let+ n = Lwt.return 42 in
-  n * 2
-(* example2 () : int Lwt.t, результат --- 84 *)
-
-(* and* = Lwt.both --- конкурентное выполнение *)
-let example3 () =
-  let* a = Lwt.return 10
-  and* b = Lwt.return 20 in
-  Lwt.return (a + b)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Point {
+    x: f64,
+    y: f64,
+}
 ```
 
-Обратите внимание на `and*`: в отличие от последовательного `let*`, конструкция `let* ... and* ...` запускает оба вычисления **конкурентно**.
+Под капотом `#[derive(Debug)]` вызывает процедурный макрос, который получает `TokenStream` и возвращает новый `TokenStream`. Крейты `syn` и `quote` предоставляют инструменты для парсинга и генерации. Модель Rust: **токены -> токены** --- менее гибко, чем Lisp, но безопаснее.
 
-Let-операторы --- рекомендуемый современный стиль. Они делают код похожим на обычный последовательный, что упрощает чтение и отладку.
+### OCaml ppx: трансформация AST
 
-## Запуск Lwt
-
-Для выполнения промисов нужен **event loop**. Функция `Lwt_main.run` запускает его и блокируется до завершения:
+OCaml использует подход **AST -> AST**. Вместо работы с текстом или токенами ppx-расширения оперируют **абстрактным синтаксическим деревом** --- типизированным представлением программы после парсинга.
 
 ```ocaml
+type point = { x : float; y : float }
+[@@deriving show, eq]
+
+(* Генерирует:
+   val pp_point : Format.formatter -> point -> unit
+   val show_point : point -> string
+   val equal_point : point -> point -> bool
+*)
+```
+
+Ключевое отличие от Rust: ppx работает с **типизированным AST**, а не с потоком токенов. Каждый узел дерева имеет определённый тип (`expression`, `pattern`, `structure_item`), что гарантирует синтаксическую корректность сгенерированного кода.
+
+```admonish tip title="Для Python/TS-разработчиков"
+В Python метапрограммирование реализовано через декораторы, метаклассы и `ast`-модуль. В TypeScript --- через декораторы (experimental) и трансформеры компилятора. Подход OCaml (ppx) ближе всего к TypeScript-трансформерам: это плагин, который модифицирует AST на этапе компиляции. Но в отличие от TypeScript, ppx в OCaml --- стабильная и широко используемая технология: `[@@deriving yojson]` автоматически генерирует функции сериализации, как `@dataclass` + `dataclasses_json` в Python, но на этапе компиляции и с полной типобезопасностью.
+```
+
+### Сравнительная таблица
+
+| Аспект | Lisp | Rust | OCaml ppx |
+|--------|------|------|-----------|
+| Модель | Код = данные (S-expr) | Токены -> Токены | AST -> AST |
+| Типизация входа | Нет | Частичная (TokenStream) | Полная (Parsetree) |
+| Типизация выхода | Нет | Частичная | Полная |
+| Гигиена | Нет (ручная) | Частичная | Полная (через ppxlib) |
+| Гибкость | Максимальная | Высокая | Средняя |
+| Безопасность | Минимальная | Средняя | Максимальная |
+| Отладка | `macroexpand` | `cargo expand` | `dune describe pp` |
+| Экосистема | defmacro | syn/quote | ppxlib |
+
+Каждый подход --- компромисс между гибкостью и безопасностью. Lisp даёт максимальную свободу, Rust балансирует удобство и типобезопасность, OCaml выбирает максимальную структурированность.
+
+## Конвейер компиляции OCaml
+
+Чтобы понять, где работает ppx, рассмотрим конвейер компиляции OCaml:
+
+```text
+исходный код (.ml)
+      |
+      v
+  [Парсинг] ---> нетипизированный AST (Parsetree)
+      |
+      v
+  [ppx rewrite] ---> трансформированный AST     <-- ppx работает здесь
+      |
+      v
+  [Типизация] ---> типизированный AST (Typedtree)
+      |
+      v
+  [Lambda] ---> промежуточное представление
+      |
+      v
+  [Кодогенерация] ---> байткод (.cmo) или нативный код (.cmx)
+```
+
+Важный момент: ppx работает **после** парсинга, но **до** типизации. ppx видит структуру кода (выражения, типы, модули), но **не видит** информацию о типах. Сгенерированные определения проверяются типизатором как обычный код.
+
+## Два вида ppx
+
+В OCaml существуют два основных вида ppx-трансформаций: **extension points** и **derivers**.
+
+### Extension points (точки расширения)
+
+Extension points --- это места в коде, помеченные специальным синтаксисом `[%name ...]` или `let%name`, куда ppx вставляет сгенерированный код:
+
+```ocaml
+(* Выражение: [%name payload] *)
+let greeting = [%string "Hello, %{name}!"]
+
+(* let-привязка: let%name *)
+let%lwt data = Lwt_io.read_line stdin in
+Lwt_io.printl data
+
+(* Атрибут модульного уровня: [%%name] *)
+[%%import "config.h"]
+```
+
+Extension points --- это «дырки» в коде, которые ppx заполняет сгенерированным выражением. Популярные примеры: `ppx_expect` (`let%expect_test`), `ppx_lwt` (`let%lwt`), `ppx_string` (`[%string ...]`).
+
+### Derivers (деривации)
+
+Derivers генерируют **новые функции** на основе определения типа. Они активируются аннотацией `[@@deriving name]`:
+
+```ocaml
+type color = Red | Green | Blue
+[@@deriving show, eq, ord]
+
+(* Генерирует:
+   val pp_color : Format.formatter -> color -> unit
+   val show_color : color -> string
+   val equal_color : color -> color -> bool
+   val compare_color : color -> color -> int
+*)
+```
+
+Derivers --- самый распространённый вид ppx. Аннотация `[@@deriving ...]` применяется к **определению типа**. PPX-расширение получает AST типа, анализирует его структуру (variant, record, alias) и генерирует соответствующие функции.
+
+```admonish tip title="Для Python/TS-разработчиков"
+`[@@deriving show, eq]` похож на `@dataclass` в Python, который автоматически генерирует `__repr__`, `__eq__`, `__hash__`. В TypeScript ближайший аналог --- библиотеки вроде `class-transformer` / `class-validator`, которые генерируют код через декораторы. Разница: в Python/TypeScript генерация происходит в рантайме (через метаклассы или рефлексию), а в OCaml --- на этапе компиляции. Это означает нулевой runtime overhead и гарантированную корректность сгенерированного кода.
+```
+
+## Использование ppx_deriving
+
+Библиотека **ppx_deriving** предоставляет набор стандартных дериваций. Рассмотрим каждую подробно.
+
+### [@@deriving show]
+
+Генерирует функции для преобразования значений в строку:
+
+```ocaml
+type direction = North | South | East | West
+[@@deriving show]
+
+(* Генерирует:
+   val pp_direction : Format.formatter -> direction -> unit
+   val show_direction : direction -> string
+*)
+```
+
+Использование:
+
+```text
+# show_direction North;;
+- : string = "Direction.North"
+
+# show_direction South;;
+- : string = "Direction.South"
+```
+
+Для записей:
+
+```ocaml
+type person = {
+  name : string;
+  age : int;
+  active : bool;
+} [@@deriving show]
+
+(* val show_person : person -> string *)
+```
+
+```text
+# show_person { name = "Alice"; age = 30; active = true };;
+- : string = "{ name = \"Alice\"; age = 30; active = true }"
+```
+
+Для параметризованных типов `show_tree` принимает дополнительный аргумент --- функцию для отображения элемента типа `'a`.
+
+### [@@deriving eq]
+
+Генерирует структурное равенство:
+
+```ocaml
+type color = Red | Green | Blue
+[@@deriving eq]
+
+(* val equal_color : color -> color -> bool *)
+```
+
+```text
+# equal_color Red Red;;
+- : bool = true
+
+# equal_color Red Blue;;
+- : bool = false
+```
+
+Для записей сравниваются все поля. Важно: `equal` использует **структурное** равенство, а не физическое (`==`). Для `float` используется `Float.equal`, что корректно обрабатывает `nan` (в отличие от `=`).
+
+### [@@deriving ord]
+
+Генерирует функцию сравнения, совместимую с `compare`:
+
+```ocaml
+type priority = Low | Medium | High | Critical
+[@@deriving ord]
+
+(* val compare_priority : priority -> priority -> int *)
+```
+
+```text
+# compare_priority Low High;;
+- : int = -1
+
+# compare_priority High Low;;
+- : int = 1
+
+# compare_priority Medium Medium;;
+- : int = 0
+```
+
+Для вариантных типов порядок определяется **порядком объявления** конструкторов. `Low` < `Medium` < `High` < `Critical`, потому что именно в таком порядке они объявлены.
+
+Для записей поля сравниваются **лексикографически** --- сначала первое поле, при равенстве --- второе и т.д.
+
+### Комбинирование дериваций
+
+Деривации можно комбинировать в одной аннотации:
+
+```ocaml
+type suit = Spades | Hearts | Diamonds | Clubs
+[@@deriving show, eq, ord]
+
+(* Генерирует все три набора функций:
+   val show_suit : suit -> string
+   val equal_suit : suit -> suit -> bool
+   val compare_suit : suit -> suit -> int
+*)
+```
+
+### Припоминание: [@@deriving yojson]
+
+В главе 14 мы уже использовали ppx для автоматической JSON-сериализации --- `[@@deriving yojson]` генерирует `t_to_yojson` и `t_of_yojson`. Это тот же механизм, только вместо `show` или `eq` генерируются функции сериализации.
+
+### Настройка dune
+
+Для каждого ppx-плагина нужно указать его в секции `preprocess` файла `dune`:
+
+```text
+(library
+ (name mylib)
+ (libraries yojson)
+ (preprocess (pps ppx_deriving.show ppx_deriving.eq ppx_deriving.ord
+                  ppx_deriving_yojson)))
+```
+
+Каждый плагин указывается отдельно. `ppx_deriving.show`, `ppx_deriving.eq`, `ppx_deriving.ord` --- модули библиотеки ppx_deriving. `ppx_deriving_yojson` --- отдельный пакет.
+
+## Исследование AST
+
+Иногда полезно увидеть, что именно ppx сгенерировал. Команда `dune describe pp lib/mymodule.ml` выводит файл **после** всех ppx-трансформаций. Например, для кода:
+
+```ocaml
+type color = Red | Green | Blue
+[@@deriving show, eq]
+```
+
+Команда `dune describe pp` покажет примерно следующее:
+
+```ocaml
+type color = Red | Green | Blue
+
+let pp_color fmt = function
+  | Red -> Format.fprintf fmt "Red"
+  | Green -> Format.fprintf fmt "Green"
+  | Blue -> Format.fprintf fmt "Blue"
+
+let show_color x = Format.asprintf "%a" pp_color x
+
+let equal_color a b =
+  match a, b with
+  | Red, Red -> true
+  | Green, Green -> true
+  | Blue, Blue -> true
+  | _ -> false
+```
+
+Это помогает понять, какой код генерируется, и отладить проблемы с ppx.
+
+## Пишем свой ppx с ppxlib
+
+Рассмотрим, как создать свой ppx-деривер. Мы напишем `[@@deriving describe]`, который для вариантного типа генерирует функцию `describe : t -> string`, возвращающую имя конструктора в нижнем регистре.
+
+### Цель
+
+```ocaml
+type http_method = Get | Post | Put | Delete
+[@@deriving describe]
+
+(* Должно сгенерировать:
+   val describe_http_method : http_method -> string
+   describe_http_method Get = "get"
+   describe_http_method Post = "post"
+   describe_http_method Put = "put"
+   describe_http_method Delete = "delete"
+*)
+```
+
+### Структура ppx-плагина
+
+PPX-плагин --- это отдельная библиотека, которая регистрируется через `ppxlib`:
+
+```ocaml
+open Ppxlib
+
+let generate_case ~loc constructor_name =
+  let pattern = Ast_builder.Default.ppat_construct ~loc
+    (Located.mk ~loc (Lident constructor_name)) None in
+  let description = String.lowercase_ascii constructor_name in
+  let expression = Ast_builder.Default.estring ~loc description in
+  Ast_builder.Default.case ~lhs:pattern ~guard:None ~rhs:expression
+
+let impl_generator ~ctxt:_ ((_rec_flag, type_decls) : rec_flag * type_declaration list)
+  : structure =
+  List.concat_map (fun (td : type_declaration) ->
+    match td.ptype_kind with
+    | Ptype_variant constructors ->
+      let loc = td.ptype_loc in
+      let func_name = "describe_" ^ td.ptype_name.txt in
+      let cases = List.map (fun (c : constructor_declaration) ->
+        generate_case ~loc c.pcd_name.txt) constructors in
+      let body = Ast_builder.Default.pexp_function ~loc cases in
+      let binding = Ast_builder.Default.value_binding ~loc
+        ~pat:(Ast_builder.Default.ppat_var ~loc (Located.mk ~loc func_name))
+        ~expr:body in
+      [Ast_builder.Default.pstr_value ~loc Nonrecursive [binding]]
+    | _ ->
+      Location.raise_errorf ~loc:td.ptype_loc
+        "deriving describe: only variant types are supported"
+  ) type_decls
+
 let () =
-  Lwt_main.run (
-    let open Lwt.Syntax in
-    let* () = Lwt_io.printl "Привет из Lwt!" in
-    let* () = Lwt_io.printl "Event loop запущен." in
-    Lwt.return ()
-  )
+  ignore (Deriving.add "describe"
+    ~str_type_decl:(Deriving.Generator.V2.make_noarg impl_generator))
 ```
 
-`Lwt_main.run` вызывается ровно один раз, на верхнем уровне программы. В отличие от Eio, где `Eio_main.run` передаёт окружение `env`, в Lwt модули `Lwt_io` и `Lwt_unix` доступны глобально --- удобнее для старта, но хуже для тестирования.
+Ключевые элементы: `Ast_builder.Default` строит AST-узлы безопасно (каждый требует `~loc`), `ppat_construct` создаёт паттерн конструктора, `estring` --- строковый литерал, `pexp_function` --- match-выражение. `Deriving.add` регистрирует имя деривера, генератор анализирует `Ptype_variant` и возвращает новые определения.
 
-## Конкурентные примитивы
+### Настройка dune для ppx
 
-### `Lwt.both`
+PPX-библиотека требует особой настройки:
 
-Запустить два промиса конкурентно и дождаться обоих:
-
-```ocaml
-let* (a, b) = Lwt.both
-  (Lwt_unix.sleep 1.0 >|= fun () -> "результат A")
-  (Lwt_unix.sleep 1.5 >|= fun () -> "результат B")
-(* Общее время --- ~1.5 секунды, а не 2.5 *)
+```text
+(library
+ (name ppx_describe)
+ (kind ppx_rewriter)
+ (libraries ppxlib))
 ```
 
-### `Lwt.all`
+Ключевой момент --- `(kind ppx_rewriter)`, который говорит dune, что это не обычная библиотека, а ppx-расширение.
 
-Запустить список промисов конкурентно и дождаться всех:
+Написание своего ppx --- продвинутая тема. На практике большинство задач решается стандартными деривациями из ppx_deriving. Но понимание механизма помогает разобраться, что происходит «под капотом».
 
-```ocaml
-let* results = Lwt.all [task1; task2; task3]
-(* results : 'a list --- в том же порядке *)
+## Сравнение с Haskell
+
+В Haskell метапрограммирование реализовано через несколько механизмов.
+
+### Template Haskell
+
+**Template Haskell (TH)** --- макросистема Haskell, аналогичная ppx. TH работает с типизированным AST Haskell и может генерировать произвольный код:
+
+```haskell
+-- Haskell: Template Haskell
+{-# LANGUAGE TemplateHaskell #-}
+
+-- Генерация экземпляра Show вручную через TH
+$(deriveShow ''MyType)
+
+-- Квазицитирование
+myExpr = [| 1 + 2 |]   -- -> Exp
+myType = [t| Int -> Bool |]  -- -> Type
 ```
 
-### `Lwt.pick`
+### GHC Generics и deriving via
 
-Вернуть результат первого завершившегося и **отменить** остальные:
+**GHC Generics** --- другой подход: вместо генерации кода создаётся обобщённое представление типа. Библиотеки (aeson, binary) работают с этим представлением через `deriving Generic`. **DerivingVia** позволяет заимствовать реализации через newtype-обёртки: `deriving (Show, Eq) via String`.
 
-```ocaml
-let with_timeout seconds task =
-  Lwt.pick [
-    (task >|= fun r -> Some r);
-    (Lwt_unix.sleep seconds >|= fun () -> None);
-  ]
+### Сравнительная таблица
+
+| Аспект | OCaml ppx | Haskell TH | GHC Generics | Haskell deriving |
+|--------|-----------|------------|--------------|------------------|
+| Когда работает | Компиляция (после парсинга) | Компиляция (splice) | Рантайм (обобщение) | Компиляция |
+| Модель | AST -> AST | AST -> AST | Тип -> Generic Rep | Встроен в GHC |
+| Видит типы | Нет | Да | Да | Да |
+| Произвольный код | Да | Да | Нет (ограничен Generic) | Нет |
+| Простота использования | `[@@deriving ...]` | `$(...)` или `deriving` | `deriving Generic` | `deriving (Show)` |
+| Отладка | `dune describe pp` | `-ddump-splices` | Нет (обычный код) | `-ddump-deriv` |
+| Расширяемость | Любой может написать ppx | Любой может написать TH | Любой (класс Default) | Только встроенные + TH |
+
+Главное отличие: ppx OCaml работает **до** типизации, а Template Haskell --- **после**. Это делает TH более мощным, но и более сложным. На практике оба подхода решают одни и те же задачи --- большинство разработчиков используют `deriving` для стандартных функций.
+
+```admonish info title="Real World OCaml"
+Подробнее о ppx и метапрограммировании --- в главе [Data Serialization with S-Expressions](https://dev.realworldocaml.org/data-serialization.html) книги Real World OCaml, где подробно рассматривается `ppx_sexp_conv` от Jane Street и принципы работы ppx-расширений.
 ```
 
-Отменённые промисы получают исключение `Lwt.Canceled`.
+## Популярные ppx-расширения
 
-### `Lwt.choose`
+Помимо ppx_deriving, экосистема предоставляет множество полезных ppx: `ppx_sexp_conv` (S-expression от Jane Street), `ppx_compare` и `ppx_hash` (сравнение и хеширование), `ppx_expect` и `ppx_inline_test` (тестирование), `ppx_let` (монадический синтаксис `let%bind`, `let%map`), `ppx_string` (интерполяция строк). Jane Street активно использует ppx в своей кодовой базе и является одним из крупнейших контрибьюторов в экосистему ppxlib.
 
-Как `Lwt.pick`, но **не отменяет** остальные промисы. Используйте, когда побочные эффекты остальных важны.
+## Ограничения ppx
 
-### Сводная таблица
+PPX --- мощный инструмент, но у него есть ограничения:
 
-| Функция | Ожидает | Отмена остальных |
-|---------|---------|------------------|
-| `Lwt.both` | Оба | Нет |
-| `Lwt.all` | Все | Нет |
-| `Lwt.pick` | Первый | Да |
-| `Lwt.choose` | Первый | Нет |
+- **Нет доступа к типам** --- ppx работает до типизации и не знает, какой тип имеет выражение.
+- **Усложнение отладки** --- ошибки указывают на сгенерированный код, а не на аннотацию. Используйте `dune describe pp`.
+- **Время компиляции** --- каждое ppx-расширение добавляет проход по AST.
+- **Непрозрачность** --- без `dune describe pp` непонятно, какой код генерируется.
+- **Привязка к версии AST** --- при обновлении компилятора может измениться AST (ppxlib абстрагирует эту проблему).
 
-## Lwt_io
-
-Модуль `Lwt_io` предоставляет асинхронный буферизированный ввод-вывод:
-
-```ocaml
-open Lwt.Syntax
-
-(* Вывод *)
-let* () = Lwt_io.printl "с переводом строки" in
-let* () = Lwt_io.printlf "форматированный: %d + %d = %d" 2 3 5 in
-
-(* Ввод *)
-let* line = Lwt_io.read_line Lwt_io.stdin in
-Lwt_io.printlf "Вы ввели: %s" line
-```
-
-### Работа с файлами
-
-```ocaml
-(* Чтение файла целиком *)
-let read_file path =
-  Lwt_io.with_file ~mode:Input path (fun ic -> Lwt_io.read ic)
-
-(* Запись в файл *)
-let write_file path content =
-  Lwt_io.with_file ~mode:Output path (fun oc -> Lwt_io.write oc content)
-
-(* Построчное чтение *)
-let read_lines path =
-  Lwt_io.with_file ~mode:Input path (fun ic ->
-    let rec loop acc =
-      Lwt.catch
-        (fun () ->
-          let* line = Lwt_io.read_line ic in
-          loop (line :: acc))
-        (function
-          | End_of_file -> Lwt.return (List.rev acc)
-          | exn -> Lwt.fail exn)
-    in
-    loop []
-  )
-```
-
-`Lwt_io.with_file` автоматически закрывает файл после завершения, даже при ошибках.
-
-## Lwt_unix
-
-Модуль `Lwt_unix` предоставляет асинхронные обёртки над системными вызовами:
-
-```ocaml
-(* Таймер --- уступает управление event loop *)
-let* () = Lwt_unix.sleep 1.0 in
-Lwt_io.printl "Прошла секунда!"
-
-(* Запуск внешней команды *)
-let* status = Lwt_unix.system "echo hello" in
-match status with
-| Unix.WEXITED 0 -> Lwt.return_ok ()
-| Unix.WEXITED n -> Lwt.return_error (Printf.sprintf "exit code: %d" n)
-| _ -> Lwt.return_error "сигнал"
-```
-
-**Важно:** `Unix.sleep` блокирует весь поток (и event loop), а `Lwt_unix.sleep` уступает управление, позволяя другим промисам выполняться. Никогда не используйте блокирующие вызовы внутри Lwt.
-
-## Lwt_stream
-
-`Lwt_stream` --- асинхронные потоки данных с поддержкой конкурентности:
-
-```ocaml
-(* Создание из push-функции *)
-let stream, push = Lwt_stream.create ()
-(* push : 'a option -> unit *)
-(* Some x --- отправить значение, None --- закрыть поток *)
-
-let () =
-  push (Some 1);
-  push (Some 2);
-  push (Some 3);
-  push None
-```
-
-### Потребление и преобразование
-
-```ocaml
-open Lwt.Syntax
-
-let* items = Lwt_stream.to_list stream        (* все элементы *)
-let* sum = Lwt_stream.fold ( + ) stream 0     (* свёртка *)
-let* () = Lwt_stream.iter_s                    (* итерация с Lwt *)
-  (fun x -> Lwt_io.printlf "Элемент: %d" x) stream
-
-(* Преобразование *)
-let doubled = Lwt_stream.map (fun x -> x * 2) stream
-let evens = Lwt_stream.filter (fun x -> x mod 2 = 0) stream
-```
-
-### Паттерн Producer-Consumer
-
-```ocaml
-let producer_consumer () =
-  let open Lwt.Syntax in
-  let stream, push = Lwt_stream.create () in
-  let producer =
-    let* () = Lwt_list.iter_s (fun i ->
-      let* () = Lwt_unix.sleep 0.1 in
-      push (Some i); Lwt.return ()
-    ) [1; 2; 3; 4; 5] in
-    push None; Lwt.return ()
-  in
-  let consumer = Lwt_stream.fold ( + ) stream 0 in
-  let* ((), sum) = Lwt.both producer consumer in
-  Lwt_io.printlf "Сумма: %d" sum
-```
-
-## Сравнение Eio и Lwt
-
-### Таблица различий
-
-| Аспект | Eio | Lwt |
-|--------|-----|-----|
-| Стиль | Прямой (direct-style) | Монадический (promise) |
-| Синтаксис | Обычный OCaml-код | `let*`, `>>=`, `>|=` |
-| Конкурентность | `Fiber.both`, `Fiber.all` | `Lwt.both`, `Lwt.all` |
-| Отмена | Структурированная (Switch) | `Lwt.cancel` (неструктурированная) |
-| Параллелизм | Домены (многоядерность) | Нет (один поток) |
-| Производительность | Выше (без аллокаций промисов) | Ниже (каждая операция аллоцирует) |
-| Экосистема | Растущая | Зрелая (Dream, Cohttp, Irmin) |
-
-### Код бок о бок
-
-Конкурентное чтение двух файлов:
-
-```ocaml
-(* === Eio === *)
-let read_both_eio env =
-  let fs = Eio.Stdenv.fs env in
-  let (a, b) = Eio.Fiber.pair
-    (fun () -> Eio.Path.(load (fs / "a.txt")))
-    (fun () -> Eio.Path.(load (fs / "b.txt")))
-  in
-  a ^ "\n" ^ b
-
-(* === Lwt === *)
-let read_both_lwt () =
-  let open Lwt.Syntax in
-  let read p = Lwt_io.with_file ~mode:Input p Lwt_io.read in
-  let* (a, b) = Lwt.both (read "a.txt") (read "b.txt") in
-  Lwt.return (a ^ "\n" ^ b)
-```
-
-В Eio код выглядит как обычный синхронный, а в Lwt каждая операция обёрнута в промис.
-
-### Когда что выбирать
-
-Используйте **Lwt**, когда работаете с Dream, Cohttp или существующей Lwt-кодовой базой, либо нужна поддержка OCaml < 5.
-
-Используйте **Eio**, когда начинаете новый проект на OCaml 5+, нужен параллелизм или структурированная конкурентность.
-
-Библиотека `lwt_eio` позволяет запускать Lwt-промисы внутри Eio и наоборот, упрощая постепенную миграцию.
-
-## Проект: конкурентный обработчик
-
-Модуль `lib/concurrent_processor.ml` демонстрирует конкурентную обработку задач с ограничением параллелизма:
-
-```ocaml
-let process_with_limit ~max_concurrent tasks =
-  let open Lwt.Syntax in
-  let sem = Lwt_mutex.create () in
-  let count = ref 0 in
-  let wait_slot () =
-    let rec try_acquire () =
-      if !count < max_concurrent then begin
-        incr count; Lwt.return ()
-      end else
-        Lwt.pause () >>= fun () -> try_acquire ()
-    in
-    Lwt_mutex.with_lock sem try_acquire
-  in
-  let release_slot () =
-    Lwt_mutex.with_lock sem (fun () -> decr count; Lwt.return ())
-  in
-  Lwt_list.map_p (fun task ->
-    let* () = wait_slot () in
-    Lwt.finalize (fun () -> task ()) release_slot
-  ) tasks
-```
-
-Этот паттерн используется для ограничения числа одновременных HTTP-запросов, обращений к базе данных или файловых операций.
-
-## Продвинутые паттерны Lwt
-
-Рассмотрим несколько продвинутых паттернов, которые часто встречаются в реальных Lwt-приложениях.
-
-### `Lwt_switch` --- управление ресурсами
-
-`Lwt_switch` предоставляет RAII-подобный механизм для автоматического освобождения ресурсов при выходе из scope:
-
-```ocaml
-let with_resource () =
-  Lwt_switch.with_switch @@ fun switch ->
-  let* conn = connect ~switch uri in
-  (* conn автоматически закрывается при выходе из scope *)
-  use conn
-```
-
-При создании ресурса (соединения, файла, подписки) вы регистрируете его в `switch`. Когда `Lwt_switch.with_switch` завершается (нормально или с ошибкой), все зарегистрированные ресурсы освобождаются в обратном порядке.
-
-### TCP client/server
-
-Lwt предоставляет модуль `Lwt_io` для работы с TCP-соединениями. Вот пример TCP-клиента:
-
-```ocaml
-(* TCP-клиент *)
-let tcp_client host port =
-  let open Lwt.Syntax in
-  let addr = Unix.(ADDR_INET (inet_addr_of_string host, port)) in
-  Lwt_io.with_connection addr (fun (ic, oc) ->
-    let* () = Lwt_io.write_line oc "Hello" in
-    Lwt_io.read_line ic)
-```
-
-`Lwt_io.with_connection` устанавливает TCP-соединение и передаёт пару каналов `(ic, oc)` --- input channel и output channel. Соединение автоматически закрывается при выходе.
-
-### Timeout через `Lwt.pick` (race pattern)
-
-Распространённый паттерн --- ограничение времени выполнения операции:
-
-```ocaml
-let with_timeout seconds task =
-  Lwt.pick [
-    task;
-    (let* () = Lwt_unix.sleep seconds in
-     Lwt.fail_with "timeout");
-  ]
-```
-
-`Lwt.pick` запускает оба промиса конкурентно. Если `task` завершается первой --- возвращает её результат. Если первым завершается таймер --- бросает исключение `Failure "timeout"`, а `task` отменяется.
-
-### Never-promise
-
-Промис, который никогда не разрешится:
-
-```ocaml
-let never : _ Lwt.t = fst (Lwt.wait ())
-(* Полезно для серверов: Lwt_main.run never *)
-```
-
-`Lwt.wait ()` возвращает пару `(promise, resolver)`. Если не использовать `resolver`, промис остаётся в состоянии `pending` навсегда. Это полезно для серверов, которые должны работать бесконечно: `Lwt_main.run never` запускает event loop и никогда не возвращается.
-
-### Direct-style (Lwt 6+ с OCaml 5)
-
-С появлением OCaml 5 и effect handlers, Lwt движется к прямому стилю. В экспериментальных версиях Lwt 6 появляется поддержка `spawn`/`await`:
-
-```ocaml
-(* Будущее Lwt: direct-style через spawn/await *)
-(* spawn @@ fun () ->
-     let line = await @@ Lwt_io.read_line Lwt_io.stdin in
-     await @@ Lwt_io.write_line Lwt_io.stdout line *)
-```
-
-Пока что это экспериментальная фича в Lwt 6. Для нового кода без привязки к Lwt-экосистеме лучше использовать Eio (глава 9). Но для постепенной миграции существующих Lwt-проектов direct-style API может стать мостом между двумя мирами.
+Рекомендация: используйте стандартные деривации (`show`, `eq`, `ord`, `yojson`), пишите собственные ppx только при реальной необходимости.
 
 ## Упражнения
 
 Решения пишите в `test/my_solutions.ml`. Проверяйте: `dune runtest`.
 
-Все упражнения работают внутри `Lwt_main.run`. Тесты оборачивают ваши функции в Lwt-окружение.
-
-1. **(Лёгкое)** Реализуйте функцию `sequential_map`, которая применяет асинхронную функцию к каждому элементу списка **последовательно** и возвращает список результатов.
+1. **(Лёгкое)** Определите тип `color` с конструкторами `Red`, `Green`, `Blue`, `Yellow` и аннотацией `[@@deriving show, eq, ord]`. Реализуйте функцию `all_colors`, которая возвращает список всех цветов, и функцию `color_to_hex`, которая возвращает hex-код цвета:
 
     ```ocaml
-    val sequential_map : ('a -> 'b Lwt.t) -> 'a list -> 'b list Lwt.t
+    type color = Red | Green | Blue | Yellow
+    [@@deriving show, eq, ord]
+
+    val all_colors : color list
+    (* [Red; Green; Blue; Yellow] *)
+
+    val color_to_hex : color -> string
+    (* Red -> "#FF0000", Green -> "#00FF00", Blue -> "#0000FF", Yellow -> "#FFFF00" *)
     ```
 
-    *Подсказка:* используйте `List.fold_left` с `Lwt.bind`, накапливая результаты в обратном порядке, а затем `List.rev`.
+    Используйте `show_color` (сгенерированную ppx) для проверки: `show_color Red` должна вернуть строку с именем конструктора.
 
-2. **(Среднее)** Реализуйте функцию `concurrent_map`, которая применяет асинхронную функцию к каждому элементу списка **конкурентно** и возвращает список результатов в том же порядке.
+2. **(Среднее)** Определите тип записи `student` с полями `name : string`, `grade : int`, `active : bool` и аннотацией `[@@deriving eq]`. Реализуйте функцию `dedup_students`, которая удаляет дубликаты из списка студентов, используя сгенерированную `equal_student`:
 
     ```ocaml
-    val concurrent_map : ('a -> 'b Lwt.t) -> 'a list -> 'b list Lwt.t
+    type student = { name : string; grade : int; active : bool }
+    [@@deriving eq]
+
+    val dedup_students : student list -> student list
     ```
 
-    *Подсказка:* используйте `List.map` для создания списка промисов, а затем `Lwt.all`.
+    *Подсказка:* используйте `List.fold_left` и `List.exists` с `equal_student`.
 
-3. **(Среднее)** Реализуйте функцию `timeout`, которая оборачивает промис таймаутом. Если промис не завершается за указанное время --- возвращает `None`.
+3. **(Среднее)** Определите типы `suit` (Spades, Hearts, Diamonds, Clubs) и `rank` (Two ... Ace) с `[@@deriving show]`. Реализуйте функцию `make_card_name`, которая принимает `suit` и `rank` и возвращает строку вида `"Ace of Spades"`, используя сгенерированные `show_suit` и `show_rank`:
 
     ```ocaml
-    val timeout : float -> 'a Lwt.t -> 'a option Lwt.t
+    type suit = Spades | Hearts | Diamonds | Clubs
+    [@@deriving show]
+
+    type rank = Two | Three | Four | Five | Six | Seven
+              | Eight | Nine | Ten | Jack | Queen | King | Ace
+    [@@deriving show]
+
+    val make_card_name : suit -> rank -> string
+    (* make_card_name Spades Ace = "Ace of Spades" *)
     ```
 
-    *Подсказка:* используйте `Lwt.pick` с двумя промисами --- основным и таймером.
+    *Подсказка:* `show_suit` и `show_rank` могут содержать префикс модуля. Используйте функции для извлечения нужной части строки, или определите свои вспомогательные функции.
 
-4. **(Сложное)** Реализуйте функцию `rate_limit`, которая запускает список асинхронных задач, но не более `n` одновременно. Когда одна задача завершается --- запускается следующая.
+4. **(Сложное)** Определите тип `suit` (Spades, Hearts, Diamonds, Clubs) с `[@@deriving eq, ord]`. Вручную (без ppx) реализуйте функции `all_suits` и `next_suit`, имитируя то, что мог бы сгенерировать ppx-деривер:
 
     ```ocaml
-    val rate_limit : int -> (unit -> 'a Lwt.t) list -> 'a list Lwt.t
+    val all_suits : suit list
+    (* [Spades; Hearts; Diamonds; Clubs] *)
+
+    val next_suit : suit -> suit option
+    (* next_suit Spades = Some Hearts,
+       next_suit Hearts = Some Diamonds,
+       next_suit Diamonds = Some Clubs,
+       next_suit Clubs = None *)
     ```
 
-    *Подсказка:* реализуйте семафор через `Lwt_mutex` и счётчик. Запустите все задачи через `Lwt_list.map_p`, но каждая ожидает свободного слота перед выполнением.
+    Реализуйте также `suit_to_symbol`:
+
+    ```ocaml
+    val suit_to_symbol : suit -> string
+    (* Spades -> "\xe2\x99\xa0", Hearts -> "\xe2\x99\xa5",
+       Diamonds -> "\xe2\x99\xa6", Clubs -> "\xe2\x99\xa3" *)
+    ```
+
+    Используйте `equal_suit` (сгенерированную ppx) для проверки: убедитесь, что `next_suit` корректно «оборачивается» --- `next_suit Clubs = None`.
 
 ## Заключение
 
 В этой главе мы:
 
-- Изучили промисы `'a Lwt.t` --- основу конкурентности в Lwt.
-- Освоили монадический стиль: `>>=`, `>|=`, `let*`, `let+`, `and*`.
-- Познакомились с конкурентными примитивами: `Lwt.both`, `Lwt.all`, `Lwt.pick`, `Lwt.choose`.
-- Научились работать с асинхронным I/O через `Lwt_io`, `Lwt_unix` и `Lwt_stream`.
-- Детально сравнили Eio и Lwt --- их сильные стороны и области применения.
+- Разобрали три подхода к метапрограммированию: макросы Lisp (код = данные), макросы Rust (токены -> токены), ppx OCaml (AST -> AST).
+- Изучили конвейер компиляции OCaml и место ppx в нём --- после парсинга, но до типизации.
+- Познакомились с двумя видами ppx: extension points (`[%name ...]`) и derivers (`[@@deriving ...]`).
+- Освоили ppx_deriving: `show` для строкового представления, `eq` для равенства, `ord` для сравнения.
+- Научились исследовать сгенерированный код через `dune describe pp`.
+- Рассмотрели архитектуру собственного ppx-деривера на основе ppxlib.
+- Сравнили ppx с Template Haskell и GHC Generics.
 
-Lwt --- зрелая и проверенная библиотека, на которой построена значительная часть OCaml-экосистемы. Понимание Lwt открывает доступ к Dream, Cohttp и десяткам других библиотек.
+Метапрограммирование --- мощный инструмент для борьбы с шаблонным кодом. PPX-система OCaml предлагает безопасный подход: трансформации работают с типизированным AST, что исключает генерацию синтаксически некорректного кода. На практике `[@@deriving ...]` покрывает подавляющее большинство потребностей --- от отладочного вывода до JSON-сериализации.
 
-В следующей главе мы используем Lwt на практике, построив веб-сервер с Dream.
+В следующей главе мы изучим оптимизации --- как сделать OCaml-код максимально быстрым.

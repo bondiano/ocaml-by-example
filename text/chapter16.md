@@ -1,478 +1,512 @@
-# Парсер-комбинаторы и GADT
+# Генеративное тестирование
 
 ## Цели главы
 
-В этой главе мы изучим два мощных инструмента OCaml:
+В этой главе мы изучим **генеративное тестирование** (property-based testing) --- подход, при котором тесты проверяют не конкретные примеры, а свойства, которым должен удовлетворять код. Мы познакомимся с библиотекой QCheck --- OCaml-аналогом Haskell-овского QuickCheck.
 
-- **Парсер-комбинаторы** --- подход к построению парсеров из маленьких, композируемых частей с помощью библиотеки **Angstrom**.
-- **GADT (Generalized Algebraic Data Types)** --- обобщённые алгебраические типы данных, позволяющие создавать типобезопасные DSL.
+## Юнит-тесты vs генеративное тестирование
 
-Мы соединим эти два инструмента: напишем парсер, который строит типобезопасное AST, а затем вычислим результат.
+В предыдущих главах мы писали тесты с Alcotest в классическом стиле: задаём конкретный вход и проверяем конкретный ожидаемый выход. Такие тесты называются **юнит-тестами** (unit tests):
 
-## Подготовка проекта
+```ocaml
+(* Юнит-тест: конкретный вход -> конкретный выход *)
+let () =
+  Alcotest.(check int) "rev [1;2;3]" [3;2;1] (List.rev [1;2;3])
+```
 
-Код этой главы находится в `exercises/chapter16`. Для этой главы потребуется библиотека Angstrom:
+Юнит-тесты полезны, но у них есть ограничение: мы проверяем только те случаи, о которых подумали заранее. Если граничный случай не пришёл нам в голову, он останется непроверенным.
+
+**Генеративное тестирование** (property-based testing, PBT) переворачивает подход: вместо конкретных примеров мы описываем *свойства*, которые должны выполняться для *любых* входных данных. Фреймворк генерирует сотни случайных входов и проверяет свойство для каждого из них:
+
+```ocaml
+(* Свойство: rev (rev xs) = xs для любого списка xs *)
+let prop_rev_involution =
+  QCheck.Test.make ~name:"rev involution" ~count:100
+    QCheck.(list small_int)
+    (fun xs -> List.rev (List.rev xs) = xs)
+```
+
+Генеративные тесты особенно хороши для нахождения граничных случаев, о которых вы не подумали: пустые списки, отрицательные числа, строки с управляющими символами и так далее.
+
+```admonish tip title="Для Python/TS-разработчиков"
+В Python аналог QCheck --- библиотека [Hypothesis](https://hypothesis.readthedocs.io/), а в TypeScript --- [fast-check](https://github.com/dubzzz/fast-check). Подход идентичен: вместо конкретных тестовых данных вы описываете *свойства* и *генераторы*, а фреймворк автоматически генерирует сотни случайных входов. Если свойство нарушается, фреймворк находит и минимизирует (shrink) контрпример. Главное отличие OCaml --- строгая типизация генераторов: `QCheck.(list small_int)` имеет тип `int list QCheck.arbitrary`, и компилятор гарантирует согласованность типов.
+```
+
+## Библиотека QCheck
+
+[QCheck](https://github.com/c-cube/qcheck) --- основная библиотека для генеративного тестирования в OCaml. Она вдохновлена Haskell-овским QuickCheck и предоставляет:
+
+- **Генераторы** случайных данных для всех стандартных типов.
+- **Механизм shrinking** --- автоматическое уменьшение контрпримера до минимального.
+- **Интеграцию с Alcotest** через пакет `qcheck-alcotest`.
+
+Для работы нужны пакеты `qcheck-core` и `qcheck-alcotest`. В `dune`-файлах:
 
 ```text
-$ opam install angstrom
-$ cd exercises/chapter16
-$ dune build
+; lib/dune
+(library
+ (name chapter15)
+ (libraries qcheck-core))
+
+; test/dune
+(test
+ (name test_chapter15)
+ (libraries chapter15 qcheck-core qcheck-alcotest alcotest))
 ```
 
-## Что такое парсер-комбинаторы?
+## Генераторы
 
-**Парсер** --- функция, которая принимает входную строку и возвращает структурированный результат (или ошибку). **Комбинатор** --- функция, которая объединяет парсеры в более сложные парсеры.
+Генератор --- это значение типа `'a QCheck.arbitrary`, которое описывает, как создавать случайные значения типа `'a`. QCheck предоставляет генераторы для всех стандартных типов.
 
-Вместо того чтобы писать парсер целиком (как в yacc/bison), мы **собираем** его из маленьких кирпичиков:
-
-```
-парсер_числа + парсер_оператора + парсер_числа = парсер_выражения
-```
-
-Преимущества:
-
-- **Композируемость** --- маленькие парсеры легко объединять.
-- **Типобезопасность** --- каждый парсер возвращает конкретный тип.
-- **Тестируемость** --- каждый парсер можно тестировать отдельно.
-- **Читаемость** --- код парсера похож на грамматику.
-
-## Библиотека Angstrom
-
-[Angstrom](https://github.com/inhabitedtype/angstrom) --- быстрая библиотека парсер-комбинаторов для OCaml, оптимизированная для работы с потоками данных. Она аналогична `attoparsec` в Haskell.
-
-Основной тип: `'a Angstrom.t` --- парсер, возвращающий значение типа `'a`.
-
-### Базовые парсеры
+### Встроенные генераторы
 
 ```ocaml
-open Angstrom
+(* Целые числа (малые, для удобства shrinking) *)
+QCheck.small_int          (* 'a = int, значения от 0 до ~100 *)
 
-(* Парсер одного символа *)
-let _ = char 'a'         (* char Angstrom.t --- ожидает ровно 'a' *)
+(* Целые числа из полного диапазона *)
+QCheck.int                (* 'a = int *)
 
-(* Парсер строки *)
-let _ = string "hello"   (* string Angstrom.t --- ожидает "hello" *)
+(* Строки *)
+QCheck.string             (* 'a = string *)
 
-(* Парсер символов по предикату *)
-let _ = take_while (fun c -> c >= '0' && c <= '9')   (* string t --- 0+ символов *)
-let _ = take_while1 (fun c -> c >= '0' && c <= '9')  (* string t --- 1+ символов *)
+(* Строки фиксированной длины *)
+QCheck.(string_of_size (Gen.return 5))   (* строки длины 5 *)
 
-(* Пропустить символы по предикату *)
-let _ = skip_while (fun c -> c = ' ')  (* unit t --- пропускает пробелы *)
+(* Списки *)
+QCheck.(list small_int)   (* 'a = int list *)
+
+(* Пары *)
+QCheck.(pair small_int string)   (* 'a = int * string *)
+
+(* Тройки *)
+QCheck.(triple small_int small_int string)
 ```
 
-### Запуск парсера
+Обратите внимание на различие: `QCheck.Gen.int` --- это *низкоуровневый* генератор типа `int QCheck.Gen.t`, а `QCheck.int` --- это *arbitrary* (генератор + printer + shrinker) типа `int QCheck.arbitrary`. Для `QCheck.Test.make` нужен именно `arbitrary`.
+
+### Генераторы из модуля Gen
+
+Модуль `QCheck.Gen` содержит комбинаторы для создания новых генераторов:
 
 ```ocaml
-let result = Angstrom.parse_string ~consume:All (string "hello") "hello"
-(* result : (string, string) result = Ok "hello" *)
+(* Генератор из диапазона *)
+QCheck.Gen.int_range 1 100
 
-let error = Angstrom.parse_string ~consume:All (string "hello") "world"
-(* error : (string, string) result = Error ": string" *)
+(* Преобразование *)
+QCheck.Gen.map (fun n -> n * 2) QCheck.Gen.small_int
+
+(* Генератор списков *)
+QCheck.Gen.list QCheck.Gen.small_int
+
+(* Генератор пар *)
+QCheck.Gen.pair QCheck.Gen.int QCheck.Gen.string
+
+(* Выбор из вариантов *)
+QCheck.Gen.oneof [
+  QCheck.Gen.return 0;
+  QCheck.Gen.int_range 1 100;
+]
+
+(* Частотный выбор *)
+QCheck.Gen.frequency [
+  (3, QCheck.Gen.return 0);      (* 0 с вероятностью 3/4 *)
+  (1, QCheck.Gen.int_range 1 10); (* 1..10 с вероятностью 1/4 *)
+]
+
+(* Связывание генераторов *)
+QCheck.Gen.bind (QCheck.Gen.int_range 1 10) (fun n ->
+  QCheck.Gen.list_size (QCheck.Gen.return n) QCheck.Gen.small_int)
 ```
 
-Параметр `~consume:All` требует, чтобы парсер прочитал всю строку. Если останутся непрочитанные символы --- это ошибка.
+## Создание тестов
 
-## Комбинаторы
-
-### Последовательность: `*>` и `<*`
+Тест создаётся функцией `QCheck.Test.make`:
 
 ```ocaml
-(* *> --- выполнить оба парсера, вернуть результат правого *)
-let p1 = string "hello" *> string " world"
-(* parse_string ~consume:All p1 "hello world" = Ok " world" *)
-
-(* <* --- выполнить оба парсера, вернуть результат левого *)
-let p2 = string "hello" <* string " world"
-(* parse_string ~consume:All p2 "hello world" = Ok "hello" *)
+QCheck.Test.make
+  ~name:"описание"     (* имя теста *)
+  ~count:100           (* сколько раз запустить, по умолчанию 100 *)
+  arbitrary            (* генератор входных данных *)
+  (fun input -> bool)  (* свойство: true = прошёл, false = провалился *)
 ```
 
-Это позволяет удобно пропускать незначимые части (пробелы, скобки, разделители).
+Результат имеет тип `'a QCheck.Test.t`.
 
-### Привязка: `>>=` (bind)
+### Свойства List.rev
+
+Рассмотрим классические свойства функции `List.rev`:
 
 ```ocaml
-(* >>= --- передать результат первого парсера во второй *)
-let digit_then_letter =
-  take_while1 (fun c -> c >= '0' && c <= '9') >>= fun digits ->
-  take_while1 (fun c -> c >= 'a' && c <= 'z') >>= fun letters ->
-  return (digits, letters)
-(* parse_string ~consume:All digit_then_letter "123abc" = Ok ("123", "abc") *)
+(* Инволюция: rev (rev xs) = xs *)
+let prop_rev_involution =
+  QCheck.Test.make ~name:"rev is involution" ~count:200
+    QCheck.(list small_int)
+    (fun xs -> List.rev (List.rev xs) = xs)
+
+(* Сохранение длины: length (rev xs) = length xs *)
+let prop_rev_length =
+  QCheck.Test.make ~name:"rev preserves length" ~count:200
+    QCheck.(list small_int)
+    (fun xs -> List.length (List.rev xs) = List.length xs)
+
+(* rev переворачивает порядок: первый элемент становится последним *)
+let prop_rev_head_last =
+  QCheck.Test.make ~name:"rev head = last" ~count:200
+    QCheck.(list_of_size (Gen.int_range 1 20) small_int)
+    (fun xs ->
+       let rev_xs = List.rev xs in
+       List.hd xs = List.nth rev_xs (List.length rev_xs - 1))
 ```
 
-`return v` --- парсер, который ничего не потребляет и возвращает `v`.
-
-### Отображение: `>>|` (map)
+### Свойства List.sort
 
 ```ocaml
-(* >>| --- преобразовать результат парсера *)
-let integer =
-  take_while1 (fun c -> c >= '0' && c <= '9') >>| int_of_string
-(* int Angstrom.t *)
+(* Идемпотентность: sort (sort xs) = sort xs *)
+let prop_sort_idempotent =
+  QCheck.Test.make ~name:"sort is idempotent" ~count:200
+    QCheck.(list small_int)
+    (fun xs ->
+       let sorted = List.sort compare xs in
+       List.sort compare sorted = sorted)
+
+(* Сохранение длины *)
+let prop_sort_length =
+  QCheck.Test.make ~name:"sort preserves length" ~count:200
+    QCheck.(list small_int)
+    (fun xs -> List.length (List.sort compare xs) = List.length xs)
+
+(* Результат отсортирован *)
+let rec is_sorted = function
+  | [] | [_] -> true
+  | x :: y :: rest -> x <= y && is_sorted (y :: rest)
+
+let prop_sort_sorted =
+  QCheck.Test.make ~name:"sort result is sorted" ~count:200
+    QCheck.(list small_int)
+    (fun xs -> is_sorted (List.sort compare xs))
 ```
 
-### Альтернатива: `<|>`
+## Интеграция с Alcotest
+
+Для запуска QCheck-тестов через Alcotest используем `QCheck_alcotest.to_alcotest`, который преобразует `QCheck.Test.t` в `Alcotest.test_case`:
 
 ```ocaml
-(* <|> --- попробовать первый парсер, при неудаче --- второй *)
-let bool_parser =
-  string "true" *> return true
-  <|> string "false" *> return false
+let () =
+  Alcotest.run "My tests"
+    [
+      ("unit tests", [
+        Alcotest.test_case "basic" `Quick (fun () ->
+          Alcotest.(check int) "1+1" 2 (1 + 1));
+      ]);
+      ("properties", [
+        QCheck_alcotest.to_alcotest prop_rev_involution;
+        QCheck_alcotest.to_alcotest prop_sort_sorted;
+      ]);
+    ]
 ```
 
-**Важно:** `<|>` откатывается (backtrack) только если первый парсер не потребил ни одного символа. Для полного отката используйте `Angstrom.option` или планируйте грамматику без неоднозначностей.
-
-### Повторение: `many`, `many1`, `sep_by`
-
-```ocaml
-(* many --- 0 или более повторений *)
-let digits = many (satisfy (fun c -> c >= '0' && c <= '9'))
-(* char list Angstrom.t *)
-
-(* many1 --- 1 или более повторений *)
-let digits1 = many1 (satisfy (fun c -> c >= '0' && c <= '9'))
-
-(* sep_by --- элементы, разделённые разделителем *)
-let csv_ints = sep_by (char ',') integer
-(* int list Angstrom.t *)
-
-(* sep_by1 --- как sep_by, но минимум 1 элемент *)
-let csv_ints1 = sep_by1 (char ',') integer
-```
-
-### Комбинирование: `lift2`
-
-```ocaml
-(* lift2 --- применить функцию к результатам двух парсеров *)
-let pair = lift2 (fun a b -> (a, b)) integer (char ',' *> integer)
-(* (int * int) Angstrom.t *)
-(* parse_string ~consume:All pair "42,17" = Ok (42, 17) *)
-```
-
-### Рекурсивные парсеры: `fix`
-
-Для рекурсивных грамматик (вложенные скобки, деревья) нужен `fix`:
-
-```ocaml
-(* fix --- создать рекурсивный парсер *)
-let nested_parens =
-  fix (fun self ->
-    char '(' *> self <* char ')'   (* вложенные скобки *)
-    <|> string ""                   (* или пустая строка *)
-  )
-```
-
-`fix` передаёт парсеру ссылку на самого себя, позволяя определять рекурсивные грамматики без `let rec` (который не работает с типом `'a t`).
-
-## Пример: JSON-подобный парсер
-
-Соберём всё вместе и построим парсер для подмножества JSON:
-
-```ocaml
-type json_value =
-  | JNull
-  | JBool of bool
-  | JInt of int
-  | JString of string
-  | JArray of json_value list
-  | JObject of (string * json_value) list
-```
-
-### Вспомогательные парсеры
-
-```ocaml
-let ws = skip_while (fun c -> c = ' ' || c = '\t' || c = '\n' || c = '\r')
-
-let integer =
-  ws *> take_while1 (fun c -> c >= '0' && c <= '9') >>| int_of_string
-
-let quoted_string =
-  ws *> char '"' *> take_while (fun c -> c <> '"') <* char '"'
-
-let boolean =
-  ws *> (string "true" *> return true <|> string "false" *> return false)
-```
-
-### Рекурсивный парсер
-
-```ocaml
-let json_value =
-  fix (fun json_value ->
-    let jnull = ws *> string "null" *> return JNull in
-    let jbool = boolean >>| fun b -> JBool b in
-    let jint = integer >>| fun n -> JInt n in
-    let jstring = quoted_string >>| fun s -> JString s in
-    let jarray =
-      ws *> char '[' *>
-      sep_by (ws *> char ',') json_value
-      <* ws <* char ']' >>| fun items -> JArray items
-    in
-    let key_value =
-      lift2 (fun k v -> (k, v))
-        (quoted_string <* ws <* char ':')
-        json_value
-    in
-    let jobject =
-      ws *> char '{' *>
-      sep_by (ws *> char ',') key_value
-      <* ws <* char '}' >>| fun pairs -> JObject pairs
-    in
-    jnull <|> jbool <|> jint <|> jstring <|> jarray <|> jobject
-  )
-
-let parse_json str =
-  parse_string ~consume:All (ws *> json_value <* ws) str
-```
-
-Обратите внимание на использование `fix`: `json_value` ссылается на самого себя внутри `jarray` и `jobject`, что позволяет парсить вложенные структуры.
+При провале теста QCheck покажет контрпример --- минимальное значение, нарушающее свойство:
 
 ```text
-# parse_json "{\"name\": \"OCaml\", \"version\": 5}";;
-- : ... = Ok (JObject [("name", JString "OCaml"); ("version", JInt 5)])
+[FAIL] properties  0  rev is involution.
 
-# parse_json "[1, 2, [3, 4]]";;
-- : ... = Ok (JArray [JInt 1; JInt 2; JArray [JInt 3; JInt 4]])
+--- Failure ---
+
+Test rev is involution failed (0 shrink steps):
+
+[42; -7; 0]
 ```
 
-## GADT: обобщённые алгебраические типы данных
+## Shrinking
 
-### Обычные ADT: проблема
+**Shrinking** --- одна из самых полезных возможностей QCheck. Когда генератор находит контрпример, QCheck автоматически пытается его *уменьшить* (shrink), сохраняя нарушение свойства.
 
-Представим, что мы хотим описать арифметические и логические выражения одним типом:
+Например, если свойство нарушается для списка `[738; -12; 0; 441; 99; -3]`, QCheck попытается убрать элементы и уменьшить числа, пока не найдёт минимальный контрпример вроде `[1; 0]`.
+
+Встроенные arbitrary (`QCheck.int`, `QCheck.list`, `QCheck.string` и другие) уже умеют делать shrinking. Для пользовательских типов нужно определять shrinker самостоятельно.
+
+### Как работает shrinking
+
+1. QCheck находит значение `x`, нарушающее свойство.
+2. Генерирует набор "уменьшённых" вариантов `x` (shrinked candidates).
+3. Для каждого варианта проверяет, нарушает ли он свойство.
+4. Если да --- повторяет процесс с уменьшённым вариантом.
+5. Продолжает, пока ни один уменьшённый вариант не нарушает свойство.
+
+Результат --- минимальный контрпример, который легко анализировать и отлаживать.
+
+```admonish tip title="Для Python/TS-разработчиков"
+Shrinking --- это то, что делает property-based testing по-настоящему полезным. В Hypothesis (Python) shrinking встроен и работает автоматически для большинства типов. В fast-check (TypeScript) --- аналогично. QCheck тоже предоставляет автоматический shrinking для встроенных типов (`int`, `string`, `list`), но для пользовательских типов его нужно определять вручную через `QCheck.make ~shrink:...`. Это немного больше работы, чем в Hypothesis, но даёт полный контроль над процессом минимизации.
+```
+
+## Пользовательские генераторы
+
+### Создание arbitrary с QCheck.make
+
+Для пользовательских типов нужно создать `arbitrary` с помощью `QCheck.make`:
 
 ```ocaml
-(* Обычный variant --- НЕ типобезопасный *)
+type color = Red | Green | Blue
+
+let color_gen : color QCheck.Gen.t =
+  QCheck.Gen.oneofl [Red; Green; Blue]
+
+let color_arb : color QCheck.arbitrary =
+  QCheck.make
+    ~print:(fun c -> match c with
+      | Red -> "Red" | Green -> "Green" | Blue -> "Blue")
+    color_gen
+```
+
+Функция `QCheck.make` принимает:
+
+- Обязательный аргумент: `'a QCheck.Gen.t` --- низкоуровневый генератор.
+- `~print` (опционально): `'a -> string` --- как напечатать значение для отладки.
+- `~shrink` (опционально): `'a QCheck.Shrink.t` --- как уменьшать значение.
+
+### Генерация деревьев
+
+Создадим генератор для бинарного дерева:
+
+```ocaml
+type 'a tree =
+  | Leaf
+  | Node of 'a tree * 'a * 'a tree
+
+let tree_gen (elem_gen : int QCheck.Gen.t) : int tree QCheck.Gen.t =
+  QCheck.Gen.sized (fun n ->
+    QCheck.Gen.fix (fun self n ->
+      if n = 0 then QCheck.Gen.return Leaf
+      else
+        QCheck.Gen.frequency [
+          (1, QCheck.Gen.return Leaf);
+          (3, QCheck.Gen.map3
+                (fun l v r -> Node (l, v, r))
+                (self (n / 2))
+                elem_gen
+                (self (n / 2)));
+        ]
+    ) n)
+```
+
+Ключевые комбинаторы:
+
+- `QCheck.Gen.sized` --- даёт доступ к текущему "размеру" (контролирует глубину).
+- `QCheck.Gen.fix` --- рекурсивный генератор.
+- `QCheck.Gen.frequency` --- выбор с весами (листья реже, узлы чаще).
+- `QCheck.Gen.map3` --- применяет функцию к трём сгенерированным значениям.
+
+### Генерация выражений
+
+Аналогичный подход для арифметических выражений:
+
+```ocaml
 type expr =
-  | Int of int
-  | Bool of bool
+  | Lit of int
   | Add of expr * expr
-  | Eq of expr * expr
-  | If of expr * expr * expr
+  | Mul of expr * expr
+
+let expr_gen : expr QCheck.Gen.t =
+  QCheck.Gen.sized (fun n ->
+    QCheck.Gen.fix (fun self n ->
+      if n = 0 then
+        QCheck.Gen.map (fun x -> Lit x) QCheck.Gen.small_int
+      else
+        QCheck.Gen.frequency [
+          (3, QCheck.Gen.map (fun x -> Lit x) QCheck.Gen.small_int);
+          (2, QCheck.Gen.map2 (fun a b -> Add (a, b))
+                (self (n / 2)) (self (n / 2)));
+          (1, QCheck.Gen.map2 (fun a b -> Mul (a, b))
+                (self (n / 2)) (self (n / 2)));
+        ]
+    ) n)
 ```
 
-Проблема: ничего не мешает написать `Add (Bool true, Int 3)` --- это скомпилируется, но не имеет смысла. Функция `eval` вынуждена обрабатывать ошибки в рантайме:
+## Roundtrip-тестирование
+
+Один из самых мощных паттернов PBT --- **roundtrip-тестирование**: если у вас есть пара encode/decode, то для любого входа `decode (encode x) = Some x`.
 
 ```ocaml
-let rec eval = function
-  | Int n -> `Int n
-  | Bool b -> `Bool b
-  | Add (a, b) ->
-    (match eval a, eval b with
-     | `Int x, `Int y -> `Int (x + y)
-     | _ -> failwith "type error")  (* ошибка в рантайме! *)
-  | ...
+let encode_pair (n, s) = Printf.sprintf "%d:%s" n s
+
+let decode_pair str =
+  match String.split_on_char ':' str with
+  | [n_str; s] ->
+    (match int_of_string_opt n_str with
+     | Some n -> Some (n, s)
+     | None -> None)
+  | _ -> None
+
+(* Roundtrip-свойство *)
+let prop_roundtrip =
+  QCheck.Test.make ~name:"encode/decode roundtrip" ~count:200
+    QCheck.(pair small_int small_printable_string)
+    (fun (n, s) ->
+       (* Убираем ':' из строки, чтобы кодек работал корректно *)
+       let s_clean = String.map (fun c -> if c = ':' then '_' else c) s in
+       decode_pair (encode_pair (n, s_clean)) = Some (n, s_clean))
 ```
 
-### GADT: решение
+Roundtrip-тесты прекрасно подходят для:
 
-GADT позволяют конструкторам **уточнять** тип возвращаемого значения:
+- Сериализации/десериализации (JSON, binary, CSV).
+- Парсеров и pretty-printers.
+- Кодировки/декодировки (Base64, URL encoding).
+- Миграций данных.
+
+## Стратегии написания свойств
+
+Формулировать свойства --- это навык, который приходит с практикой. Вот несколько полезных паттернов:
+
+### 1. Инволюция
+
+Если `f (f x) = x` для всех `x`:
 
 ```ocaml
-type _ expr =
-  | Int : int -> int expr
-  | Bool : bool -> bool expr
-  | Add : int expr * int expr -> int expr
-  | Mul : int expr * int expr -> int expr
-  | Eq : int expr * int expr -> bool expr
-  | If : bool expr * 'a expr * 'a expr -> 'a expr
+(* List.rev, битовое NOT, кодирование/декодирование *)
+fun x -> f (f x) = x
 ```
 
-Обратите внимание на синтаксис:
+### 2. Идемпотентность
 
-- `type _ expr` --- параметр типа не именован, он определяется конструкторами.
-- `Int : int -> int expr` --- конструктор `Int` принимает `int` и возвращает `int expr`.
-- `Bool : bool -> bool expr` --- конструктор `Bool` возвращает `bool expr`.
-- `Add : int expr * int expr -> int expr` --- складывать можно **только** `int expr`.
-- `Eq : int expr * int expr -> bool expr` --- сравнение возвращает `bool expr`.
-- `If : bool expr * 'a expr * 'a expr -> 'a expr` --- условие должно быть `bool`, ветки --- одного типа.
-
-Теперь `Add (Bool true, Int 3)` --- **ошибка компиляции**, а не рантайма!
-
-```text
-# Add (Bool true, Int 3);;
-Error: This expression has type bool expr but an expression of type int expr was expected
-```
-
-### Типобезопасное вычисление
+Если `f (f x) = f x` для всех `x`:
 
 ```ocaml
-let rec eval : type a. a expr -> a = function
-  | Int n -> n
-  | Bool b -> b
-  | Add (a, b) -> eval a + eval b
-  | Mul (a, b) -> eval a * eval b
-  | Eq (a, b) -> eval a = eval b
-  | If (cond, then_, else_) ->
-    if eval cond then eval then_ else eval else_
+(* List.sort, String.trim, Set.of_list *)
+fun x -> f (f x) = f x
 ```
 
-Аннотация `type a. a expr -> a` --- это **локально абстрактный тип**. Она говорит компилятору, что `a` --- параметр типа, который определяется при сопоставлении:
+### 3. Инвариант
 
-- Если `expr` --- это `Int n`, то `a = int`, и мы возвращаем `int`.
-- Если `expr` --- это `Bool b`, то `a = bool`, и мы возвращаем `bool`.
-
-Без `type a.` компилятор не сможет вывести тип: ведь `eval` возвращает разные типы в разных ветках!
-
-### Показать выражение
+После операции выполняется некоторое условие:
 
 ```ocaml
-let rec show_expr : type a. a expr -> string = function
-  | Int n -> string_of_int n
-  | Bool b -> string_of_bool b
-  | Add (a, b) -> Printf.sprintf "(%s + %s)" (show_expr a) (show_expr b)
-  | Mul (a, b) -> Printf.sprintf "(%s * %s)" (show_expr a) (show_expr b)
-  | Eq (a, b) -> Printf.sprintf "(%s = %s)" (show_expr a) (show_expr b)
-  | If (c, t, e) ->
-    Printf.sprintf "(if %s then %s else %s)" (show_expr c) (show_expr t) (show_expr e)
+(* Результат sort всегда отсортирован *)
+fun xs -> is_sorted (List.sort compare xs)
 ```
 
-### Пример использования
+### 4. Эквивалентность с эталоном
 
-```text
-# eval (Add (Int 3, Mul (Int 4, Int 5)));;
-- : int = 23
-
-# eval (If (Eq (Int 1, Int 1), Int 42, Int 0));;
-- : int = 42
-
-# eval (If (Bool true, Add (Int 1, Int 2), Int 0));;
-- : int = 3
-
-# show_expr (Add (Int 3, Int 4));;
-- : string = "(3 + 4)"
-```
-
-### Сложный пример: типобезопасная формула
+Оптимизированная функция ведёт себя как простая эталонная:
 
 ```ocaml
-(* если (2 + 3) = 5 то 6 * 7 иначе 0 *)
-let formula = If (Eq (Add (Int 2, Int 3), Int 5), Mul (Int 6, Int 7), Int 0)
-(* formula : int expr *)
-
-let _ = eval formula
-(* - : int = 42 *)
+fun x -> fast_function x = naive_function x
 ```
 
-Этот GADT гарантирует на этапе компиляции:
+### 5. Roundtrip
 
-- Нельзя сложить `Bool` и `Int`.
-- Условие в `If` всегда `bool expr`.
-- Обе ветки `If` имеют одинаковый тип.
-- `eval` не может упасть с ошибкой типа.
-
-## Комбинирование: парсер + GADT
-
-Можно распарсить строку в `json_value`, а затем преобразовать в GADT-выражение:
+Кодирование и декодирование --- взаимно обратные операции:
 
 ```ocaml
-(* Простой пример: парсим арифметическое выражение *)
-(* "2 + 3 * 4" -> Add (Int 2, Mul (Int 3, Int 4)) *)
-(* Результат вычисления: 14 *)
+fun x -> decode (encode x) = Some x
 ```
 
-Для полноценного парсера арифметики нужно учитывать приоритет операторов. Angstrom позволяет это сделать через рекурсивные парсеры с `fix`:
+## Бинарное дерево поиска: полный пример
+
+Соберём всё вместе на примере BST (binary search tree). Определим структуру и операции:
 
 ```ocaml
-let arith_parser =
-  let integer = ws *> take_while1 (fun c -> c >= '0' && c <= '9') >>| int_of_string in
-  let parens p = ws *> char '(' *> p <* ws <* char ')' in
-  fix (fun expr ->
-    let atom = integer <|> parens expr in
-    let rec chain_mul acc =
-      (ws *> char '*' *> atom >>= fun r -> chain_mul (acc * r))
-      <|> return acc
-    in
-    let mul_expr = atom >>= chain_mul in
-    let rec chain_add acc =
-      (ws *> char '+' *> mul_expr >>= fun r -> chain_add (acc + r))
-      <|> return acc
-    in
-    mul_expr >>= chain_add
-  )
+type 'a bst =
+  | Leaf
+  | Node of 'a bst * 'a * 'a bst
+
+let rec bst_insert x = function
+  | Leaf -> Node (Leaf, x, Leaf)
+  | Node (left, v, right) ->
+    if x < v then Node (bst_insert x left, v, right)
+    else if x > v then Node (left, v, bst_insert x right)
+    else Node (left, v, right)
+
+let bst_of_list lst =
+  List.fold_left (fun acc x -> bst_insert x acc) Leaf lst
+
+let rec bst_to_sorted_list = function
+  | Leaf -> []
+  | Node (left, v, right) ->
+    bst_to_sorted_list left @ [v] @ bst_to_sorted_list right
+
+let rec bst_mem x = function
+  | Leaf -> false
+  | Node (left, v, right) ->
+    if x = v then true
+    else if x < v then bst_mem x left
+    else bst_mem x right
 ```
 
-Этот парсер правильно обрабатывает приоритет: `2 + 3 * 4` вычисляется как `2 + (3 * 4) = 14`.
+Теперь напишем свойства:
 
-## Сравнение с Haskell
+```ocaml
+(* In-order обход даёт отсортированный список *)
+let prop_bst_sorted =
+  QCheck.Test.make ~name:"bst inorder sorted" ~count:200
+    QCheck.(list small_int)
+    (fun lst ->
+       let tree = bst_of_list lst in
+       is_sorted (bst_to_sorted_list tree))
 
-| Аспект | OCaml | Haskell |
-|--------|-------|---------|
-| Парсер-комбинаторы | Angstrom | Parsec, Megaparsec, Attoparsec |
-| GADT синтаксис | `type _ t = C : int -> int t` | `data T a where C :: Int -> T Int` |
-| Локальные типы | `type a. a t -> a` | Неявно через `GADTs` расширение |
-| Free-монады | Не идиоматичны | Популярны для DSL |
-| Effect handlers | Встроены в OCaml 5 | Через библиотеки (polysemy, fused-effects) |
+(* Вставленный элемент можно найти *)
+let prop_bst_membership =
+  QCheck.Test.make ~name:"bst membership" ~count:200
+    QCheck.(pair small_int (list small_int))
+    (fun (x, xs) ->
+       let tree = bst_of_list (x :: xs) in
+       bst_mem x tree)
 
-В Haskell для типобезопасных DSL часто используют **Free-монады** --- обобщённый способ построить интерпретируемое AST. В OCaml GADT + обработчики эффектов (effect handlers) решают аналогичные задачи более прямолинейно.
+(* Размер BST <= размер входного списка (дубликаты удаляются) *)
+let prop_bst_size =
+  QCheck.Test.make ~name:"bst size <= input" ~count:200
+    QCheck.(list small_int)
+    (fun lst ->
+       let tree = bst_of_list lst in
+       let sorted = bst_to_sorted_list tree in
+       List.length sorted <= List.length lst)
+```
 
-Angstrom по API очень похож на `attoparsec` из Haskell --- те же комбинаторы (`*>`, `<*`, `<|>`, `>>=`, `>>|`), тот же подход. Если вы знакомы с Haskell-парсерами, Angstrom покажется знакомым.
+## Сравнение с Haskell QuickCheck
+
+Если вы знакомы с Haskell-овским QuickCheck, вот основные соответствия:
+
+| Haskell (QuickCheck) | OCaml (QCheck) |
+|---|---|
+| `Arbitrary a` (тайпкласс) | `'a QCheck.arbitrary` (значение) |
+| `Gen a` | `'a QCheck.Gen.t` |
+| `property` | `QCheck.Test.t` |
+| `forAll gen prop` | `QCheck.Test.make gen prop` |
+| `arbitrary` | `QCheck.int`, `QCheck.string` и т.д. |
+| `shrink` | Встроен в `arbitrary` |
+| `oneof [gen1, gen2]` | `QCheck.Gen.oneof [gen1; gen2]` |
+| `frequency [(3, g1), (1, g2)]` | `QCheck.Gen.frequency [(3, g1); (1, g2)]` |
+| `sized $ \n -> ...` | `QCheck.Gen.sized (fun n -> ...)` |
+
+Главное отличие: в Haskell `Arbitrary` --- это тайпкласс, и генератор для типа определяется один раз глобально. В OCaml генераторы --- это обычные значения, которые передаются явно. Это более гибко (можно иметь несколько генераторов для одного типа), но требует чуть больше кода.
+
+```admonish info title="Real World OCaml"
+Подробнее о тестировании в OCaml --- в главе [Testing](https://dev.realworldocaml.org/testing.html) книги Real World OCaml. Там рассматриваются `ppx_expect`, `ppx_inline_test` и подходы Jane Street к тестированию.
+```
 
 ## Упражнения
 
-Решения пишите в `test/my_solutions.ml`. Проверяйте: `dune runtest`.
+Решения пишите в файле `test/my_solutions.ml`. Запускайте `dune test` для проверки.
 
-1. **(Лёгкое)** Напишите парсер списка целых чисел в формате `[1, 2, 3]`.
+1. **(Лёгкое)** Реализуйте свойство `prop_rev_involution`: для любого списка целых чисел `List.rev (List.rev xs) = xs`.
 
-    ```ocaml
-    val int_list_parser : int list Angstrom.t
-    ```
+2. **(Лёгкое)** Реализуйте свойство `prop_sort_sorted`: для любого списка целых чисел результат `List.sort compare xs` отсортирован. Используйте функцию `is_sorted` из библиотеки.
 
-    Парсер должен обрабатывать пробелы между элементами и пустой список `[]`.
+3. **(Среднее)** Реализуйте свойство `prop_bst_membership`: если вставить элемент `x` в BST (построенный из списка `xs`), то `bst_mem x tree` вернёт `true`. Используйте функции `bst_of_list` и `bst_mem` из библиотеки.
 
-    *Подсказка:* используйте `sep_by`, `char`, `take_while1` и `>>|`.
-
-2. **(Лёгкое)** Напишите парсер пар ключ-значение в формате `key=value`.
-
-    ```ocaml
-    val key_value_parser : (string * string) Angstrom.t
-    ```
-
-    Ключ --- последовательность символов до `=`, значение --- до конца строки (или пробела).
-
-    *Подсказка:* используйте `take_while1` и `lift2`.
-
-3. **(Среднее)** Расширьте GADT выражений операторами `Not` (логическое отрицание) и `Gt` (больше).
-
-    ```ocaml
-    type _ extended_expr =
-      | Int : int -> int extended_expr
-      | Bool : bool -> bool extended_expr
-      | Add : int extended_expr * int extended_expr -> int extended_expr
-      | Not : bool extended_expr -> bool extended_expr
-      | Gt : int extended_expr * int extended_expr -> bool extended_expr
-
-    val eval_extended : 'a extended_expr -> 'a
-    ```
-
-    *Подсказка:* используйте `type a.` аннотацию для полиморфной рекурсии.
-
-4. **(Сложное)** Напишите парсер арифметических выражений с операторами `+` и `*` и скобками, учитывающий приоритет операторов (`*` связывает сильнее `+`).
-
-    ```ocaml
-    val arith_parser : int Angstrom.t
-    ```
-
-    Примеры:
-    - `"42"` -> `42`
-    - `"1 + 2"` -> `3`
-    - `"3 * 4"` -> `12`
-    - `"2 + 3 * 4"` -> `14` (не `20`)
-    - `"(2 + 3) * 4"` -> `20`
-
-    *Подсказка:* используйте `fix` для рекурсии, разделите на уровни: `atom` (число или скобки), `mul_expr` (умножения), `add_expr` (сложения).
+4. **(Среднее)** Реализуйте свойство `prop_codec_roundtrip`: для любой пары `(n, s)` выполняется `decode_pair (encode_pair (n, s_clean)) = Some (n, s_clean)`, где `s_clean` --- строка `s` с заменой символа `':'` на `'_'`. Используйте функции `encode_pair` и `decode_pair` из библиотеки.
 
 ## Заключение
 
 В этой главе мы:
 
-- Познакомились с парсер-комбинаторами и библиотекой Angstrom.
-- Изучили базовые парсеры: `char`, `string`, `take_while`, `take_while1`.
-- Освоили комбинаторы: `*>`, `<*`, `>>=`, `>>|`, `<|>`, `many`, `sep_by`, `fix`, `lift2`.
-- Построили JSON-подобный парсер из маленьких кирпичиков.
-- Изучили GADT --- типы, где конструкторы уточняют возвращаемый тип.
-- Написали типобезопасный вычислитель выражений, где ошибки типов невозможны.
-- Сравнили подходы OCaml (GADT + Angstrom) и Haskell (Free-монады + Parsec).
+- Познакомились с генеративным (property-based) тестированием и его отличиями от юнит-тестов.
+- Изучили библиотеку QCheck: генераторы, свойства, запуск тестов.
+- Написали свойства для стандартных функций (`List.rev`, `List.sort`).
+- Научились создавать пользовательские генераторы для деревьев и выражений.
+- Разобрали механизм shrinking --- автоматическое уменьшение контрпримеров.
+- Освоили паттерны: инволюция, идемпотентность, инвариант, roundtrip, эквивалентность с эталоном.
+- Применили всё это к тестированию BST.
 
-Парсер-комбинаторы и GADT --- мощные инструменты для создания надёжных DSL. Они показывают, как система типов OCaml может гарантировать корректность на этапе компиляции, избавляя от целого класса ошибок времени выполнения.
-
-В следующей главе мы научимся создавать полноценные CLI-приложения с библиотекой Cmdliner и построим проект «Brain Games» --- набор математических мини-игр.
+Генеративное тестирование --- мощный инструмент, который дополняет юнит-тесты. Оно особенно эффективно для алгоритмов, структур данных и любого кода с чётко формулируемыми инвариантами. Попробуйте добавить QCheck-тесты к коду из предыдущих глав --- вы можете обнаружить баги, о которых даже не подозревали.

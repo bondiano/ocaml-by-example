@@ -1,4 +1,2 @@
 (library
- (name chapter20)
- (libraries dream yojson)
- (preprocess (pps ppx_deriving_yojson)))
+ (name chapter20))

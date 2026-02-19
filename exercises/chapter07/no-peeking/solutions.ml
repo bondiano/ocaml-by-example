@@ -1,109 +1,129 @@
 (** Референсные решения --- не подсматривайте, пока не попробуете сами! *)
 
-open Chapter07.Validation
+open Chapter07.Hashable
 
-(** Валидация телефонного номера с накоплением ошибок. *)
-let validate_phone phone =
-  validate_all [
-    non_empty "Телефон";
-    digits_only "Телефон";
-    min_length "Телефон" 7;
-  ] phone
+(** Множество целых чисел на сортированном списке. *)
+module IntSet : Set_intf with type elt = int = struct
+  type elt = int
+  type t = int list
 
-(** Валидация персоны с накоплением ошибок по всем полям. *)
-let validate_person first last street city state =
-  let errors =
-    (match validate_all [non_empty "Имя"] first with
-     | Ok _ -> [] | Error es -> es)
-    @ (match validate_all [non_empty "Фамилия"] last with
-       | Ok _ -> [] | Error es -> es)
-    @ (match validate_address street city state with
-       | Ok _ -> [] | Error es -> es)
-  in
-  match errors with
-  | [] -> Ok { first_name = first; last_name = last;
-               address = { street; city; state } }
-  | es -> Error es
+  let empty = []
 
-(** Применить функцию к каждому элементу, собрав все ошибки. *)
-let traverse_result f lst =
-  let oks, errs =
-    List.fold_left (fun (oks, errs) x ->
-      match f x with
-      | Ok v -> (v :: oks, errs)
-      | Error e -> (oks, e :: errs)
-    ) ([], []) lst
-  in
-  match errs with
-  | [] -> Ok (List.rev oks)
-  | es -> Error (List.rev es)
+  let rec add x = function
+    | [] -> [x]
+    | (y :: _) as lst when x < y -> x :: lst
+    | y :: rest when x = y -> y :: rest
+    | y :: rest -> y :: add x rest
 
-(** Конвертация option -> result. *)
-let option_to_result ~error = function
-  | Some x -> Ok x
-  | None -> Error error
+  let rec mem x = function
+    | [] -> false
+    | y :: _ when x = y -> true
+    | y :: rest when x > y -> mem x rest
+    | _ -> false
 
-(** Конвертация result -> option. *)
-let result_to_option = function
-  | Ok x -> Some x
-  | Error _ -> None
+  let elements s = s
 
-(** ISBN-10 Verifier. *)
-let isbn_verifier isbn =
-  let digits =
-    isbn
-    |> String.to_seq
-    |> Seq.filter (fun c -> c <> '-')
-    |> List.of_seq
-  in
-  if List.length digits <> 10 then false
-  else
-    let values =
-      List.mapi (fun i c ->
-        if i = 9 && c = 'X' then Some 10
-        else if c >= '0' && c <= '9' then Some (Char.code c - Char.code '0')
-        else None
-      ) digits
-    in
-    if List.exists (fun v -> v = None) values then false
-    else
-      let sum =
-        List.mapi (fun i v -> Option.get v * (10 - i)) values
-        |> List.fold_left ( + ) 0
-      in
-      sum mod 11 = 0
+  let size s = List.length s
+end
 
-(** Luhn algorithm. *)
-let luhn number =
-  let digits =
-    number
-    |> String.to_seq
-    |> Seq.filter (fun c -> c <> ' ')
-    |> List.of_seq
-  in
-  if List.length digits <= 1 then false
-  else if List.exists (fun c -> c < '0' || c > '9') digits then false
-  else
-    let nums = List.rev_map (fun c -> Char.code c - Char.code '0') digits in
-    let sum =
-      List.mapi (fun i d ->
-        if i mod 2 = 1 then
-          let doubled = d * 2 in
-          if doubled > 9 then doubled - 9 else doubled
-        else d
-      ) nums
-      |> List.fold_left ( + ) 0
-    in
-    sum mod 10 = 0
+(** Функтор MakeSet параметризованный по Comparable. *)
+module MakeSet (Elt : Comparable) : Set_intf with type elt = Elt.t = struct
+  type elt = Elt.t
+  type t = Elt.t list
 
-(** Валидация email с полиморфными вариантами. *)
-let validate_email email =
-  if String.length email = 0 then Error (`EmptyEmail)
-  else if not (String.contains email '@') then Error (`NoAtSign)
-  else
-    let parts = String.split_on_char '@' email in
-    match parts with
-    | [_; domain] when String.length domain > 0 && String.contains domain '.' ->
-      Ok email
-    | [_; domain] -> Error (`InvalidDomain domain)
-    | _ -> Error (`NoAtSign)
+  let empty = []
+
+  let rec add x = function
+    | [] -> [x]
+    | (y :: _) as lst when Elt.compare x y < 0 -> x :: lst
+    | y :: rest when Elt.compare x y = 0 -> y :: rest
+    | y :: rest -> y :: add x rest
+
+  let rec mem x = function
+    | [] -> false
+    | y :: _ when Elt.compare x y = 0 -> true
+    | y :: rest when Elt.compare x y > 0 -> mem x rest
+    | _ -> false
+
+  let elements s = s
+
+  let size s = List.length s
+end
+
+(** max_element через модуль первого класса. *)
+let max_element (type a) (module C : Comparable with type t = a) (lst : a list)
+    : a option =
+  match lst with
+  | [] -> None
+  | x :: rest ->
+    Some (List.fold_left (fun acc y ->
+      if C.compare y acc > 0 then y else acc
+    ) x rest)
+
+(** ExtendedIntSet --- IntSet с дополнительными операциями. *)
+module ExtendedIntSet : sig
+  include Set_intf with type elt = int
+  val union : t -> t -> t
+  val inter : t -> t -> t
+end = struct
+  include IntSet
+
+  let union s1 s2 =
+    List.fold_left (fun acc x -> add x acc) s1 (elements s2)
+
+  let inter s1 s2 =
+    elements s1 |> List.filter (fun x -> mem x s2)
+    |> List.fold_left (fun acc x -> add x acc) empty
+end
+
+(** First semigroup. *)
+module First : Chapter07.Monoid.Semigroup with type t = string = struct
+  type t = string
+  let combine a _b = a
+end
+
+(** concat_all через first-class module. *)
+let concat_all (type a) (module M : Chapter07.Monoid.Monoid with type t = a)
+    (lst : a list) : a =
+  List.fold_left M.combine M.empty lst
+
+(** Custom Set — Exercism Hard. *)
+module type ORDERED = sig
+  type t
+  val compare : t -> t -> int
+end
+
+module MakeCustomSet (Elt : ORDERED) = struct
+  type elt = Elt.t
+  type t = elt list  (* sorted list *)
+
+  let empty = []
+  let is_empty = function [] -> true | _ -> false
+
+  let rec add x = function
+    | [] -> [x]
+    | (y :: _) as lst when Elt.compare x y < 0 -> x :: lst
+    | y :: rest when Elt.compare x y = 0 -> y :: rest
+    | y :: rest -> y :: add x rest
+
+  let rec mem x = function
+    | [] -> false
+    | y :: _ when Elt.compare x y = 0 -> true
+    | y :: rest when Elt.compare x y > 0 -> mem x rest
+    | _ -> false
+
+  let rec remove x = function
+    | [] -> []
+    | y :: rest when Elt.compare x y = 0 -> rest
+    | y :: rest when Elt.compare x y > 0 -> y :: remove x rest
+    | lst -> lst
+
+  let elements s = s
+  let size s = List.length s
+
+  let union s1 s2 = List.fold_left (fun acc x -> add x acc) s1 s2
+
+  let inter s1 s2 = List.filter (fun x -> mem x s2) s1
+
+  let diff s1 s2 = List.filter (fun x -> not (mem x s2)) s1
+end

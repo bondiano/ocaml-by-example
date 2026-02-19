@@ -1,3 +1,4 @@
 (test
  (name test_chapter14)
- (libraries chapter14 alcotest))
+ (libraries chapter14 yojson alcotest)
+ (preprocess (pps ppx_deriving_yojson)))

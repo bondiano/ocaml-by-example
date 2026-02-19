@@ -1,411 +1,743 @@
-# Конкурентность с Eio
+# Expression Problem
 
 ## Цели главы
 
-В этой главе мы изучим конкурентное и параллельное программирование в OCaml 5 с использованием библиотеки **Eio** --- прямой стиль (direct-style) вместо промисов и колбэков:
+В этой главе мы изучим **Expression Problem** --- классическую задачу проектирования расширяемых программ. Вы узнаете, как различные механизмы OCaml решают эту задачу, и научитесь выбирать подходящий инструмент:
 
-- **Домены** (domains) --- настоящий параллелизм на нескольких ядрах.
-- **Файберы** (fibers) --- легковесная конкурентность внутри домена.
-- **Eio** --- библиотека прямого стиля для конкурентного ввода-вывода.
-- **Структурированная конкурентность** --- все задачи завершаются до выхода из scope.
-- **Каналы** (`Eio.Stream`) --- безопасная коммуникация между файберами.
-- **Таймауты** и отмена операций.
-- Сравнение с Lwt и Async.
+- Формулировка Expression Problem (Wadler, 1998).
+- Два измерения расширяемости: новые случаи и новые операции.
+- Решение через алгебраические типы (варианты).
+- Решение через объекты.
+- Решение через модули и Tagless Final.
+- Решение через полиморфные варианты и открытую рекурсию.
+- Сравнение подходов.
+- Проект: расширяемый калькулятор тремя способами.
 
 ## Подготовка проекта
 
-Код этой главы находится в `exercises/chapter11`. Этой главе нужны дополнительные библиотеки:
+Код этой главы находится в `exercises/chapter11`. Соберите проект:
 
 ```text
-$ opam install eio eio_main
 $ cd exercises/chapter11
 $ dune build
 ```
 
-## OCaml 5 и многоядерность
+## Что такое Expression Problem
 
-OCaml 5 --- историческое обновление языка, добавившее поддержку параллелизма. До OCaml 5 существовал глобальный мьютекс (GIL), не позволявший выполнять OCaml-код на нескольких ядрах одновременно.
+Expression Problem --- термин, введённый Филиппом Вадлером (Philip Wadler) в 1998 году. Задача звучит так:
 
-OCaml 5 предлагает два уровня конкурентности:
+> Определить тип данных, к которому можно добавлять **новые случаи** (cases) и **новые операции** (operations) **без перекомпиляции существующего кода** и **с сохранением статической типобезопасности**.
 
-1. **Домены** (domains) --- потоки уровня ОС для настоящего параллелизма.
-2. **Effect handlers** --- механизм для реализации легковесной конкурентности (файберов).
+Рассмотрим конкретный пример. Допустим, у нас есть язык арифметических выражений:
 
-## Домены
+- Выражения: `Int` (целое число) и `Add` (сложение).
+- Операции: `eval` (вычисление) и `show` (отображение).
 
-Домен (domain) --- единица параллелизма. Каждый домен выполняется на отдельном ядре процессора:
-
-```ocaml
-let () =
-  let d = Domain.spawn (fun () ->
-    Printf.printf "Домен: %d\n" (Domain.self () :> int)
-  ) in
-  Printf.printf "Основной домен\n";
-  Domain.join d
+```
+            | eval      | show      |
+  ----------+-----------+-----------+
+  Int       | eval_int  | show_int  |
+  Add       | eval_add  | show_add  |
 ```
 
-`Domain.spawn f` запускает функцию `f` в новом домене. `Domain.join d` ожидает завершения домена и возвращает результат.
+Таблица имеет два измерения. **Расширение** означает добавление:
 
-### Параллельное вычисление
+- Нового столбца --- новой операции (например, `pretty_print`).
+- Новой строки --- нового случая (например, `Mul`).
 
-```ocaml
-let parallel_sum arr =
-  let n = Array.length arr in
-  let mid = n / 2 in
-  let d = Domain.spawn (fun () ->
-    let sum = ref 0 in
-    for i = 0 to mid - 1 do sum := !sum + arr.(i) done;
-    !sum
-  ) in
-  let sum2 = ref 0 in
-  for i = mid to n - 1 do sum2 := !sum2 + arr.(i) done;
-  Domain.join d + !sum2
+### Два измерения расширения
+
+В большинстве языков одно измерение расширяется легко, а другое --- трудно.
+
+**Функциональные языки** (Haskell, OCaml с вариантами): легко добавить новую операцию (новая функция по существующему типу), но добавление нового случая требует изменения **всех** существующих функций.
+
+**Объектно-ориентированные языки** (Java, C#): легко добавить новый случай (новый класс, реализующий интерфейс), но добавление новой операции требует изменения **всех** существующих классов.
+
+Expression Problem --- это вызов: можно ли добиться расширяемости в обоих измерениях одновременно?
+
+````admonish tip title="Для Python/TypeScript-разработчиков"
+Если вы работали с Python или TypeScript, вы неосознанно уже сталкивались с Expression Problem. Представьте, что у вас есть иерархия фигур:
+
+```python
+# Python --- ОО-стиль: легко добавить новую фигуру
+class Shape: ...
+class Circle(Shape): ...
+class Square(Shape): ...
+# Добавить Triangle --- легко (новый класс)
+# Добавить area() ко всем фигурам --- трудно (менять все классы)
 ```
 
-Массив делится пополам, каждая половина суммируется в своём домене параллельно.
+В функциональном стиле (например, с `match` в Python 3.10+ или discriminated unions в TypeScript) ситуация обратная:
 
-### Ограничения доменов
+```typescript
+// TypeScript --- FP-стиль: легко добавить новую операцию
+type Shape = { kind: "circle"; r: number } | { kind: "square"; s: number }
 
-- Доменов должно быть **мало** (по числу ядер). Создание домена --- дорогая операция.
-- Для тысяч конкурентных задач используйте **файберы**.
-
-## Eio: конкурентность прямого стиля
-
-**Eio** --- библиотека для конкурентного ввода-вывода, использующая effect handlers OCaml 5. Её главное преимущество --- **прямой стиль**: код выглядит как обычный последовательный, без промисов, монад или колбэков.
-
-### Сравнение подходов
-
-```ocaml
-(* Lwt (промисы, старый стиль) *)
-let fetch_lwt url =
-  let open Lwt.Syntax in
-  let* response = Http.get url in
-  let* body = Http.read_body response in
-  Lwt.return (String.length body)
-
-(* Eio (прямой стиль, новый стиль) *)
-let fetch_eio url =
-  let response = Http.get url in
-  let body = Http.read_body response in
-  String.length body
+function area(s: Shape): number { /* новая функция --- легко */ }
+// Добавить Triangle --- трудно (менять тип Shape и ВСЕ функции)
 ```
 
-В Eio нет `let*`, `>>=`, `Lwt.return` --- код читается как обычный последовательный код, но при этом файберы корректно переключаются при ожидании I/O.
+Expression Problem --- это формализация этого компромисса.
+````
 
-### Запуск Eio
+## Решение 1: Варианты (алгебраические типы)
 
-Любая Eio-программа начинается с `Eio_main.run`:
+Начнём с привычного подхода --- определим выражения как вариантный тип:
 
 ```ocaml
-let () =
-  Eio_main.run @@ fun env ->
-  let stdout = Eio.Stdenv.stdout env in
-  Eio.Flow.copy_string "Привет, Eio!\n" stdout
+type expr =
+  | Int of int
+  | Add of expr * expr
 ```
 
-`Eio_main.run` инициализирует event loop и передаёт `env` --- окружение с доступом к файловой системе, сети, стандартному вводу-выводу и часам.
+### Операции
 
-### Окружение `env`
-
-| Функция | Описание |
-|---------|----------|
-| `Eio.Stdenv.stdout env` | Стандартный вывод |
-| `Eio.Stdenv.stdin env` | Стандартный ввод |
-| `Eio.Stdenv.stderr env` | Стандартный вывод ошибок |
-| `Eio.Stdenv.clock env` | Часы (для таймаутов и sleep) |
-| `Eio.Stdenv.fs env` | Файловая система |
-| `Eio.Stdenv.net env` | Сетевой стек |
-
-Передача `env` через аргументы вместо глобальных функций --- это **dependency injection**: тесты могут подставить моковое окружение.
-
-## Файберы
-
-Файбер (fiber) --- легковесный «зелёный поток», работающий внутри домена. В отличие от доменов, файберы дёшевы --- можно запустить тысячи.
-
-### `Eio.Fiber.both`
-
-`Eio.Fiber.both` запускает две функции конкурентно и ждёт завершения обеих:
+Каждая операция --- отдельная функция с сопоставлением по образцу:
 
 ```ocaml
-let () =
-  Eio_main.run @@ fun _env ->
-  Eio.Fiber.both
-    (fun () -> traceln "Файбер A: начал"; traceln "Файбер A: закончил")
-    (fun () -> traceln "Файбер B: начал"; traceln "Файбер B: закончил")
+let rec eval = function
+  | Int n -> n
+  | Add (a, b) -> eval a + eval b
+
+let rec show = function
+  | Int n -> string_of_int n
+  | Add (a, b) -> "(" ^ show a ^ " + " ^ show b ^ ")"
 ```
 
-`traceln` --- отладочный вывод Eio (потокобезопасный, в отличие от `Printf.printf`).
+```text
+# eval (Add (Int 1, Add (Int 2, Int 3)));;
+- : int = 6
 
-### `Eio.Fiber.all` и `Eio.Fiber.any`
-
-```ocaml
-(* Запустить все задачи конкурентно, дождаться завершения всех *)
-Eio.Fiber.all [
-  (fun () -> task1 ());
-  (fun () -> task2 ());
-  (fun () -> task3 ());
-]
-
-(* Запустить все, вернуть результат первой завершившейся *)
-Eio.Fiber.any [
-  (fun () -> task1 ());
-  (fun () -> task2 ());
-]
+# show (Add (Int 1, Add (Int 2, Int 3)));;
+- : string = "(1 + (2 + 3))"
 ```
 
-`Fiber.all` ждёт **все** задачи. `Fiber.any` возвращает результат **первой** завершившейся и отменяет остальные.
+### Добавить операцию --- легко
 
-### `Eio.Fiber.fork`
-
-Для запуска файбера в фоне используется `Fiber.fork` внутри `Switch`:
+Хотим добавить `double` --- удвоение всех чисел в выражении:
 
 ```ocaml
-let () =
-  Eio_main.run @@ fun _env ->
-  Eio.Switch.run @@ fun sw ->
-  Eio.Fiber.fork ~sw (fun () ->
-    traceln "Фоновый файбер"
-  );
-  traceln "Основной файбер"
+let rec double = function
+  | Int n -> Int (n * 2)
+  | Add (a, b) -> Add (double a, double b)
 ```
 
-## Структурированная конкурентность
+Мы написали **новую функцию**, не трогая существующий код. Все старые функции (`eval`, `show`) продолжают работать.
 
-**Switch** --- ключевая абстракция Eio для управления временем жизни файберов:
+### Добавить вариант --- трудно
+
+Хотим добавить `Mul` (умножение). Нужно изменить определение типа:
 
 ```ocaml
-Eio.Switch.run @@ fun sw ->
-  Eio.Fiber.fork ~sw (fun () -> task1 ());
-  Eio.Fiber.fork ~sw (fun () -> task2 ());
-  (* Switch.run не вернётся, пока оба файбера не завершатся *)
+type expr =
+  | Int of int
+  | Add of expr * expr
+  | Mul of expr * expr   (* новый случай *)
 ```
 
-Правила:
-
-1. Все файберы, созданные внутри `Switch.run`, **должны завершиться** до выхода.
-2. Если один файбер бросает исключение --- остальные **отменяются**.
-3. Нельзя «забыть» файбер --- нет утечек горутин/промисов.
-
-Это называется **структурированная конкурентность** --- время жизни конкурентных задач привязано к лексической области видимости.
-
-## Каналы: `Eio.Stream`
-
-`Eio.Stream` --- потокобезопасная очередь для коммуникации между файберами:
+Теперь компилятор выдаст предупреждения во **всех** функциях (`eval`, `show`, `double`) --- каждую нужно дополнить веткой для `Mul`. Это безопасно (компилятор подскажет), но требует изменения существующего кода.
 
 ```ocaml
-let () =
-  Eio_main.run @@ fun _env ->
-  let stream = Eio.Stream.create 10 in  (* буфер на 10 элементов *)
-  Eio.Fiber.both
-    (fun () ->
-      for i = 1 to 5 do
-        Eio.Stream.add stream i;
-        traceln "Отправил: %d" i
-      done)
-    (fun () ->
-      for _ = 1 to 5 do
-        let v = Eio.Stream.take stream in
-        traceln "Получил: %d" v
-      done)
+let rec eval = function
+  | Int n -> n
+  | Add (a, b) -> eval a + eval b
+  | Mul (a, b) -> eval a * eval b  (* новая ветка *)
+
+let rec show = function
+  | Int n -> string_of_int n
+  | Add (a, b) -> "(" ^ show a ^ " + " ^ show b ^ ")"
+  | Mul (a, b) -> "(" ^ show a ^ " * " ^ show b ^ ")"  (* новая ветка *)
 ```
 
-- `Eio.Stream.create n` --- создать канал с буфером размера `n`. Если `n = 0` --- синхронный канал (отправитель блокируется до получения).
-- `Eio.Stream.add stream v` --- отправить значение (блокируется, если буфер полон).
-- `Eio.Stream.take stream` --- получить значение (блокируется, если буфер пуст).
+### Резюме
 
-### Паттерн Producer-Consumer
+| Направление расширения | Сложность |
+|------------------------|-----------|
+| Новая операция         | Легко --- пишем новую функцию |
+| Новый случай           | Трудно --- изменяем тип и все функции |
 
-```ocaml
-let producer stream n =
-  for i = 1 to n do
-    Eio.Stream.add stream (Some i)
-  done;
-  Eio.Stream.add stream None  (* сигнал завершения *)
+В Haskell ситуация аналогичная. `data Expr = Int Int | Add Expr Expr` расширяется так же --- легко добавить новую функцию, трудно добавить конструктор.
 
-let consumer stream =
-  let rec loop acc =
-    match Eio.Stream.take stream with
-    | None -> List.rev acc
-    | Some v -> loop (v :: acc)
-  in
-  loop []
-```
+## Решение 2: Объекты
 
-## Таймауты и отмена
-
-### `Eio.Time.sleep`
+OCaml поддерживает объектно-ориентированное программирование. Попробуем решить Expression Problem через объекты:
 
 ```ocaml
-let () =
-  Eio_main.run @@ fun env ->
-  let clock = Eio.Stdenv.clock env in
-  traceln "Начало";
-  Eio.Time.sleep clock 1.0;
-  traceln "Прошла 1 секунда"
-```
-
-### Таймаут с `Fiber.any`
-
-```ocaml
-let with_timeout clock seconds f =
-  Eio.Fiber.any [
-    (fun () -> Some (f ()));
-    (fun () -> Eio.Time.sleep clock seconds; None);
-  ]
-```
-
-Если `f` завершается за `seconds` секунд --- возвращает `Some result`. Иначе --- `None`, а `f` отменяется.
-
-## Сравнение Eio с Lwt и Async
-
-| Аспект | Lwt | Async | Eio |
-|--------|-----|-------|-----|
-| Стиль | Монадический (`>>=`) | Монадический (`>>=`) | Прямой |
-| Параллелизм | Нет (1 ядро) | Нет (1 ядро) | Да (домены) |
-| Механизм | Промисы | Deferred | Effect handlers |
-| Структурированность | Нет | Нет | Да (Switch) |
-| Зрелость | Высокая | Высокая | Растущая |
-
-Eio --- будущее конкурентности в OCaml. Lwt и Async остаются для обратной совместимости.
-
-## Проект: конкурентные вычисления
-
-Модуль `lib/concurrent.ml` демонстрирует базовые паттерны конкурентности с Eio.
-
-### Параллельный map
-
-```ocaml
-let parallel_map f lst =
-  Eio.Fiber.List.map f lst
-```
-
-`Eio.Fiber.List.map` выполняет `f` для каждого элемента конкурентно (в отдельных файберах) и собирает результаты в том же порядке.
-
-### Параллельная свёртка
-
-```ocaml
-let parallel_sum lst =
-  let results = Eio.Fiber.List.map (fun x -> x) lst in
-  List.fold_left ( + ) 0 results
-```
-
-## Buf_read и сетевое взаимодействие
-
-До сих пор мы работали с файберами, каналами и таймаутами. Но Eio также предоставляет удобные средства для **буферизованного чтения** данных из потоков и **сетевого взаимодействия**.
-
-### Buf_read --- буферизованное чтение
-
-`Eio.Buf_read` оборачивает поток (`flow`) в буфер и позволяет читать данные построчно, побайтово или по произвольным разделителям. Это аналог `Buffered_reader` в других языках:
-
-```ocaml
-let read_http_status flow =
-  let buf = Eio.Buf_read.of_flow flow ~max_size:4096 in
-  let status_line = Eio.Buf_read.line buf in
-  status_line
-```
-
-`Eio.Buf_read.of_flow flow ~max_size:n` создаёт буферизованный читатель с ограничением буфера в `n` байт. `Eio.Buf_read.line buf` читает одну строку (до `\n`).
-
-Основные функции `Buf_read`:
-
-| Функция | Описание |
-|---------|----------|
-| `Eio.Buf_read.line buf` | Прочитать строку до `\n` |
-| `Eio.Buf_read.take n buf` | Прочитать ровно `n` байт |
-| `Eio.Buf_read.at_end_of_input buf` | Проверить, достигнут ли конец потока |
-| `Eio.Buf_read.any_char buf` | Прочитать один символ |
-
-### Custom-парсеры для бинарных протоколов
-
-`Buf_read` позволяет создавать собственные комбинаторы для чтения бинарных данных. Например, целые числа разной ширины:
-
-```ocaml
-module R = struct
-  include Eio.Buf_read
-  let int8 = map (Fun.flip String.get_int8 0) (take 1)
-  let int16_be = map (Fun.flip String.get_int16_be 0) (take 2)
+class virtual expr = object
+  method virtual eval : int
+  method virtual show : string
 end
 ```
 
-Здесь `take n` читает `n` байт как строку, а `map f parser` применяет функцию `f` к результату парсера. Такой подход удобен для реализации бинарных протоколов (например, чтение заголовков пакетов).
-
-### Networking --- сетевое взаимодействие
-
-Eio предоставляет модуль `Eio.Net` для работы с TCP/UDP. Сетевой стек доступен через `Eio.Stdenv.net env`.
-
-#### TCP-клиент
+Каждый случай --- отдельный класс:
 
 ```ocaml
-let tcp_client ~net ~host ~port =
-  let addr = `Tcp (Eio.Net.Ipaddr.V4.loopback, port) in
-  Eio.Net.connect net addr |> fun flow ->
-  let buf = Eio.Buf_read.of_flow flow ~max_size:4096 in
-  Eio.Flow.copy_string "GET / HTTP/1.0\r\n\r\n" flow;
-  Eio.Buf_read.line buf
+class int_expr (n : int) = object
+  inherit expr
+  method eval = n
+  method show = string_of_int n
+end
+
+class add_expr (a : expr) (b : expr) = object
+  inherit expr
+  method eval = a#eval + b#eval
+  method show = "(" ^ a#show ^ " + " ^ b#show ^ ")"
+end
 ```
 
-Разберём по шагам:
+```text
+# let e = new add_expr (new int_expr 1) (new add_expr (new int_expr 2) (new int_expr 3));;
+# e#eval;;
+- : int = 6
+# e#show;;
+- : string = "(1 + (2 + 3))"
+```
 
-1. `Eio.Net.connect net addr` --- устанавливает TCP-соединение и возвращает `flow`.
-2. `Eio.Flow.copy_string ... flow` --- отправляет данные в поток.
-3. `Eio.Buf_read.of_flow flow` --- оборачивает поток для буферизованного чтения.
-4. `Eio.Buf_read.line buf` --- читает строку ответа.
+### Добавить вариант --- легко
 
-#### Адреса
+Хотим добавить `Mul`. Пишем **новый класс**, не трогая существующие:
 
-Eio поддерживает несколько видов адресов:
+```ocaml
+class mul_expr (a : expr) (b : expr) = object
+  inherit expr
+  method eval = a#eval * b#eval
+  method show = "(" ^ a#show ^ " * " ^ b#show ^ ")"
+end
+```
 
-- `` `Tcp (ip, port) `` --- TCP-соединение.
-- `Eio.Net.Ipaddr.V4.loopback` --- `127.0.0.1`.
-- `Eio.Net.Ipaddr.V6.loopback` --- `::1`.
+Все старые классы (`int_expr`, `add_expr`) не изменились.
 
-Обратите внимание: `net` передаётся как аргумент (dependency injection), что позволяет подставить мок-сеть в тестах.
+### Добавить операцию --- трудно
+
+Хотим добавить метод `double`. Нужно изменить базовый класс `expr`:
+
+```ocaml
+class virtual expr = object
+  method virtual eval : int
+  method virtual show : string
+  method virtual double : expr   (* новый метод *)
+end
+```
+
+Теперь **все** существующие классы (`int_expr`, `add_expr`, `mul_expr`) должны реализовать `double`. Это зеркальная проблема по сравнению с вариантами.
+
+### Резюме
+
+| Направление расширения | Сложность |
+|------------------------|-----------|
+| Новая операция         | Трудно --- изменяем базовый класс и все подклассы |
+| Новый случай           | Легко --- пишем новый класс |
+
+В Java/C# ситуация аналогичная. Интерфейс `Expr` с методами `eval()` и `show()` легко расширяется новыми классами, но добавление нового метода в интерфейс ломает все реализации.
+
+````admonish tip title="Для Python/TypeScript-разработчиков"
+Объектный подход в OCaml очень похож на то, как Expression Problem решается в Python и TypeScript с помощью абстрактных классов и интерфейсов:
+
+```python
+# Python: паттерн Visitor --- попытка решить EP в ОО-стиле
+from abc import ABC, abstractmethod
+
+class Expr(ABC):
+    @abstractmethod
+    def accept(self, visitor: "Visitor"): ...
+
+class IntExpr(Expr):
+    def accept(self, visitor): return visitor.visit_int(self)
+```
+
+В TypeScript --- интерфейсы:
+
+```typescript
+interface Expr {
+  eval(): number;
+  show(): string;
+}
+class IntExpr implements Expr { ... }
+class AddExpr implements Expr { ... }
+```
+
+Добавить `MulExpr` --- легко (новый класс). Добавить `toJSON()` ко всем --- трудно (менять интерфейс + все классы). Это та же асимметрия, что и с OCaml-объектами.
+````
+
+## Решение 3: Модули и Tagless Final
+
+**Tagless Final** --- подход, в котором выражения описываются не как тип данных, а как **набор операций** (smart-конструкторов) в сигнатуре модуля. Каждая **интерпретация** --- отдельный модуль, реализующий сигнатуру.
+
+### Сигнатура
+
+```ocaml
+module type Expr = sig
+  type t
+  val int_ : int -> t
+  val add : t -> t -> t
+end
+```
+
+Тип `t` абстрактный --- он может быть `int` (для вычисления), `string` (для отображения) или чем-то ещё. Функции `int_` и `add` --- «конструкторы» выражений.
+
+### Интерпретация: вычисление
+
+```ocaml
+module Eval : Expr with type t = int = struct
+  type t = int
+  let int_ n = n
+  let add a b = a + b
+end
+```
+
+### Интерпретация: отображение
+
+```ocaml
+module Show : Expr with type t = string = struct
+  type t = string
+  let int_ n = string_of_int n
+  let add a b = "(" ^ a ^ " + " ^ b ^ ")"
+end
+```
+
+### Использование
+
+Выражение записывается **один раз** как функция, параметризованная модулем:
+
+```ocaml
+let example (module E : Expr) =
+  E.add (E.int_ 1) (E.add (E.int_ 2) (E.int_ 3))
+```
+
+```text
+# example (module Eval);;
+- : int = 6
+
+# example (module Show);;
+- : string = "(1 + (2 + 3))"
+```
+
+Или через функтор:
+
+```ocaml
+module Example (E : Expr) = struct
+  let result = E.add (E.int_ 1) (E.add (E.int_ 2) (E.int_ 3))
+end
+
+module R1 = Example(Eval)
+module R2 = Example(Show)
+```
+
+```text
+# R1.result;;
+- : int = 6
+
+# R2.result;;
+- : string = "(1 + (2 + 3))"
+```
+
+### Добавить операцию --- новый модуль
+
+Хотим добавить операцию `pretty_print` с красивыми отступами? Пишем **новый модуль**:
+
+```ocaml
+module PrettyPrint : Expr with type t = int -> string = struct
+  type t = int -> string
+  let int_ n _indent = string_of_int n
+  let add a b indent =
+    let pad = String.make indent ' ' in
+    pad ^ "Add\n"
+    ^ pad ^ "  " ^ a (indent + 2) ^ "\n"
+    ^ pad ^ "  " ^ b (indent + 2)
+end
+```
+
+Существующие модули не изменились.
+
+### Добавить вариант --- расширить сигнатуру
+
+Хотим добавить `Mul`? Расширяем сигнатуру:
+
+```ocaml
+module type ExprMul = sig
+  include Expr
+  val mul : t -> t -> t
+end
+```
+
+И реализуем расширенные модули:
+
+```ocaml
+module EvalMul : ExprMul with type t = int = struct
+  include Eval
+  let mul a b = a * b
+end
+
+module ShowMul : ExprMul with type t = string = struct
+  include Show
+  let mul a b = "(" ^ a ^ " * " ^ b ^ ")"
+end
+```
+
+Обратите внимание: мы использовали `include Eval` и `include Show` --- **повторного кода нет**. Старые модули `Eval` и `Show` не изменились.
+
+```text
+# let example2 (module E : ExprMul) =
+    E.mul (E.int_ 2) (E.add (E.int_ 3) (E.int_ 4));;
+
+# example2 (module EvalMul);;
+- : int = 14
+
+# example2 (module ShowMul);;
+- : string = "(2 * (3 + 4))"
+```
+
+### Почему это работает
+
+Tagless Final решает Expression Problem благодаря двум механизмам:
+
+1. **Абстрактный тип `t`** --- позволяет каждому модулю выбирать своё представление.
+2. **`include`** --- позволяет расширять модули без копирования кода.
+
+В Haskell аналогичный подход --- классы типов (type classes). Сигнатура `module type Expr` --- это аналог класса типов:
+
+```haskell
+-- Haskell: класс типов
+class Expr repr where
+  int_ :: Int -> repr
+  add  :: repr -> repr -> repr
+
+-- OCaml: сигнатура модуля
+module type Expr = sig
+  type t
+  val int_ : int -> t
+  val add : t -> t -> t
+end
+```
+
+Добавление новой операции --- новый экземпляр (instance) в Haskell, новый модуль в OCaml. Добавление нового конструктора --- расширение класса в Haskell, `include` в OCaml.
+
+```admonish tip title="Для TypeScript-разработчиков"
+Tagless Final в OCaml похож на **паттерн «интерпретатор через обобщённый интерфейс»** в TypeScript:
+
+```typescript
+interface Expr<T> {
+  int_(n: number): T;
+  add(a: T, b: T): T;
+}
+
+const evalInterp: Expr<number> = {
+  int_: (n) => n,
+  add: (a, b) => a + b,
+};
+
+const showInterp: Expr<string> = {
+  int_: (n) => String(n),
+  add: (a, b) => `(${a} + ${b})`,
+};
+```
+
+Абстрактный тип `t` в сигнатуре OCaml играет ту же роль, что дженерик `T` в TypeScript-интерфейсе. Каждый модуль (или объект) выбирает конкретный тип `T`.
+```
+
+### Резюме
+
+| Направление расширения | Сложность |
+|------------------------|-----------|
+| Новая операция         | Легко --- новый модуль, реализующий `Expr` |
+| Новый случай           | Легко --- расширяем сигнатуру через `include` |
+
+## Решение 4: Полиморфные варианты (открытая рекурсия)
+
+Полиморфные варианты (polymorphic variants) --- ещё один способ решения Expression Problem в OCaml. В отличие от обычных вариантов, полиморфные варианты **не привязаны** к конкретному определению типа.
+
+### Базовые выражения
+
+```ocaml
+type 'a expr_base = [> `Int of int | `Add of 'a * 'a ] as 'a
+```
+
+Здесь `[> ...]` означает «открытый тип» --- он может содержать **как минимум** указанные конструкторы, но допускает и другие.
+
+Операции определяются для конкретных конструкторов:
+
+```ocaml
+let rec eval : 'a expr_base -> int = function
+  | `Int n -> n
+  | `Add (a, b) -> eval a + eval b
+  | _ -> failwith "unknown expression"
+
+let rec show : 'a expr_base -> string = function
+  | `Int n -> string_of_int n
+  | `Add (a, b) -> "(" ^ show a ^ " + " ^ show b ^ ")"
+  | _ -> failwith "unknown expression"
+```
+
+```text
+# eval (`Add (`Int 1, `Add (`Int 2, `Int 3)));;
+- : int = 6
+
+# show (`Add (`Int 1, `Add (`Int 2, `Int 3)));;
+- : string = "(1 + (2 + 3))"
+```
+
+### Добавить вариант --- расширить тип
+
+Хотим добавить `Mul`? Определяем расширенный тип и функции:
+
+```ocaml
+type 'a expr_mul = [> `Int of int | `Add of 'a * 'a | `Mul of 'a * 'a ] as 'a
+
+let rec eval_mul : 'a expr_mul -> int = function
+  | `Int n -> n
+  | `Add (a, b) -> eval_mul a + eval_mul b
+  | `Mul (a, b) -> eval_mul a * eval_mul b
+  | _ -> failwith "unknown expression"
+
+let rec show_mul : 'a expr_mul -> string = function
+  | `Int n -> string_of_int n
+  | `Add (a, b) -> "(" ^ show_mul a ^ " + " ^ show_mul b ^ ")"
+  | `Mul (a, b) -> "(" ^ show_mul a ^ " * " ^ show_mul b ^ ")"
+  | _ -> failwith "unknown expression"
+```
+
+```text
+# eval_mul (`Mul (`Int 2, `Add (`Int 3, `Int 4)));;
+- : int = 14
+
+# show_mul (`Mul (`Int 2, `Add (`Int 3, `Int 4)));;
+- : string = "(2 * (3 + 4))"
+```
+
+### Избавление от дублирования через открытую рекурсию
+
+В примере выше мы продублировали ветки `Int` и `Add` в `eval_mul`. Можно этого избежать с помощью **открытой рекурсии** --- рекурсивный вызов передаётся как параметр:
+
+```ocaml
+let eval_base self = function
+  | `Int n -> n
+  | `Add (a, b) -> self a + self b
+
+let eval_mul_ext self = function
+  | `Mul (a, b) -> self a * self b
+  | other -> eval_base self other
+
+let rec eval_mul_v2 x = eval_mul_ext eval_mul_v2 x
+```
+
+```text
+# eval_mul_v2 (`Mul (`Int 2, `Add (`Int 3, `Int 4)));;
+- : int = 14
+```
+
+Здесь `eval_base` и `eval_mul_ext` не рекурсивны сами по себе --- рекурсия замыкается через параметр `self`. Это позволяет **комбинировать** обработчики разных расширений.
+
+### Достоинства и ограничения
+
+Полиморфные варианты --- мощный инструмент, но у него есть ограничения:
+
+- **Сообщения об ошибках** --- типы полиморфных вариантов бывают длинными и трудночитаемыми.
+- **Производительность** --- полиморфные варианты немного медленнее обычных.
+- **Вайлдкард `_`** --- необходимость catch-all ветки ослабляет проверку полноты.
+
+### Резюме
+
+| Направление расширения | Сложность |
+|------------------------|-----------|
+| Новая операция         | Средне --- новая функция, но без полноты проверки |
+| Новый случай           | Средне --- расширяем тип, комбинируем через открытую рекурсию |
+
+## Сравнение подходов
+
+| Подход | Новая операция | Новый случай | Типобезопасность | Сложность |
+|--------|---------------|-------------|-----------------|-----------|
+| Варианты (ADT) | Легко | Трудно (изменить тип + все функции) | Полная (exhaustiveness) | Низкая |
+| Объекты | Трудно (изменить базовый класс) | Легко | Полная (виртуальные методы) | Средняя |
+| Tagless Final | Легко (новый модуль) | Легко (`include` + новая функция) | Полная | Средняя |
+| Полиморфные варианты | Средне | Средне (открытая рекурсия) | Частичная (нужен `_`) | Высокая |
+
+**Рекомендации:**
+
+- **Варианты** --- лучший выбор по умолчанию. Если набор случаев фиксирован и стабилен (например, AST конкретного языка), а операции добавляются часто --- используйте обычные варианты.
+- **Tagless Final** --- когда нужна расширяемость в обоих измерениях. Особенно хорош для DSL (domain-specific languages), где и операции, и типы выражений могут расти.
+- **Объекты** --- редко используются в идиоматическом OCaml. Полезны при взаимодействии с ОО-библиотеками или когда подтипирование действительно нужно.
+- **Полиморфные варианты** --- для случаев, когда нужна гибкость без тяжёлой модульной системы. Хороши для протоколов и расширяемых обработчиков.
+
+## Проект: расширяемый калькулятор
+
+Модуль `lib/expr.ml` реализует расширяемый калькулятор тремя способами: через варианты, Tagless Final и полиморфные варианты.
+
+### Способ 1: Варианты
+
+```ocaml
+module Variant = struct
+  type expr =
+    | Int of int
+    | Add of expr * expr
+
+  let rec eval = function
+    | Int n -> n
+    | Add (a, b) -> eval a + eval b
+
+  let rec show = function
+    | Int n -> string_of_int n
+    | Add (a, b) -> "(" ^ show a ^ " + " ^ show b ^ ")"
+end
+```
+
+### Способ 2: Tagless Final
+
+```ocaml
+module type EXPR = sig
+  type t
+  val int_ : int -> t
+  val add : t -> t -> t
+end
+
+module TF_Eval : EXPR with type t = int = struct
+  type t = int
+  let int_ n = n
+  let add a b = a + b
+end
+
+module TF_Show : EXPR with type t = string = struct
+  type t = string
+  let int_ n = string_of_int n
+  let add a b = "(" ^ a ^ " + " ^ b ^ ")"
+end
+```
+
+### Способ 3: Полиморфные варианты
+
+```ocaml
+module PolyVar = struct
+  type 'a t = [> `Int of int | `Add of 'a * 'a ] as 'a
+
+  let rec eval : 'a t -> int = function
+    | `Int n -> n
+    | `Add (a, b) -> eval a + eval b
+    | _ -> failwith "unknown"
+
+  let rec show : 'a t -> string = function
+    | `Int n -> string_of_int n
+    | `Add (a, b) -> "(" ^ show a ^ " + " ^ show b ^ ")"
+    | _ -> failwith "unknown"
+end
+```
+
+### Пример использования всех трёх подходов
+
+```text
+# (* Вариантный подход *)
+  Variant.(eval (Add (Int 1, Add (Int 2, Int 3))));;
+- : int = 6
+
+# (* Tagless Final *)
+  let module E = TF_Eval in E.add (E.int_ 1) (E.add (E.int_ 2) (E.int_ 3));;
+- : int = 6
+
+# (* Полиморфные варианты *)
+  PolyVar.eval (`Add (`Int 1, `Add (`Int 2, `Int 3)));;
+- : int = 6
+```
+
+Все три подхода дают одинаковый результат, но отличаются возможностями расширения.
 
 ## Упражнения
 
 Решения пишите в `test/my_solutions.ml`. Проверяйте: `dune runtest`.
 
-Все упражнения этой главы выполняются внутри `Eio_main.run`. Тесты оборачивают ваши функции в Eio-окружение.
-
-1. **(Среднее)** Реализуйте функцию `parallel_fib`, которая вычисляет N-й и M-й числа Фибоначчи параллельно, используя `Eio.Fiber.both`, и возвращает их сумму.
+1. **(Среднее)** Добавьте конструктор `Mul of expr * expr` к вариантному типу `expr` и расширьте функции `eval` и `show`.
 
     ```ocaml
-    val parallel_fib : int -> int -> int
+    module VariantMul : sig
+      type expr =
+        | Int of int
+        | Add of expr * expr
+        | Mul of expr * expr
+
+      val eval : expr -> int
+      val show : expr -> string
+    end
     ```
 
-    *Подсказка:* напишите обычную функцию `fib n` и используйте `Eio.Fiber.both` с `ref` для сбора результатов.
+    Например:
+    - `eval (Mul (Int 2, Add (Int 3, Int 4)))` = `14`
+    - `show (Mul (Int 2, Add (Int 3, Int 4)))` = `"(2 * (3 + 4))"`
 
-2. **(Среднее)** Реализуйте функцию `concurrent_map`, которая применяет функцию к каждому элементу списка конкурентно, используя `Eio.Fiber.List.map`.
+2. **(Среднее)** Добавьте интерпретацию `pretty_print` для Tagless Final --- модуль, генерирующий строку с правильной расстановкой скобок и инфиксной записью, но **без лишних скобок** у литералов.
 
     ```ocaml
-    val concurrent_map : ('a -> 'b) -> 'a list -> 'b list
+    module TF_Pretty : EXPR with type t = string
     ```
 
-3. **(Среднее)** Реализуйте паттерн producer-consumer: функцию `produce_consume`, где producer отправляет числа от 1 до n в `Eio.Stream`, а consumer суммирует их.
+    Например:
+    - `TF_Pretty.int_ 42` = `"42"`
+    - `TF_Pretty.add (TF_Pretty.int_ 1) (TF_Pretty.int_ 2)` = `"(1 + 2)"`
+    - Вложенные: `TF_Pretty.add (TF_Pretty.int_ 1) (TF_Pretty.add (TF_Pretty.int_ 2) (TF_Pretty.int_ 3))` = `"(1 + (2 + 3))"`
+
+3. **(Среднее)** Добавьте `` `Neg `` (унарное отрицание) к полиморфным вариантам. Реализуйте `eval_neg` и `show_neg`.
 
     ```ocaml
-    val produce_consume : int -> int
+    type 'a expr_neg = [> `Int of int | `Add of 'a * 'a | `Neg of 'a ] as 'a
+
+    val eval_neg : 'a expr_neg -> int
+    val show_neg : 'a expr_neg -> string
     ```
 
-    *Подсказка:* используйте `Eio.Stream.create`, `Eio.Fiber.both`, `Some`/`None` как сигнал завершения.
+    Например:
+    - `` eval_neg (`Neg (`Int 5)) `` = `-5`
+    - `` show_neg (`Neg (`Add (`Int 1, `Int 2))) `` = `"(-(1 + 2))"`
 
-4. **(Среднее)** Реализуйте функцию `race`, которая запускает список функций конкурентно и возвращает результат первой завершившейся.
+4. **(Сложное)** Реализуйте Tagless Final DSL для **булевых** выражений. Определите сигнатуру `BOOL_EXPR` и два модуля-интерпретатора.
 
     ```ocaml
-    val race : (unit -> 'a) list -> 'a
+    module type BOOL_EXPR = sig
+      type t
+      val bool_ : bool -> t
+      val and_ : t -> t -> t
+      val or_ : t -> t -> t
+      val not_ : t -> t
+    end
+
+    module Bool_Eval : BOOL_EXPR with type t = bool
+    module Bool_Show : BOOL_EXPR with type t = string
     ```
 
-    *Подсказка:* используйте `Eio.Fiber.any`.
+    Например:
+    - `Bool_Eval.(and_ (bool_ true) (or_ (bool_ false) (bool_ true)))` = `true`
+    - `Bool_Show.(and_ (bool_ true) (or_ (bool_ false) (bool_ true)))` = `"(true && (false || true))"`
+
+5. **(Сложное)** Объедините арифметический и булев DSL. Создайте сигнатуру `COMBINED_EXPR`, включающую операции из обоих DSL, а также операцию сравнения `eq : t -> t -> t`. Реализуйте `Combined_Show`.
+
+    ```ocaml
+    module type COMBINED_EXPR = sig
+      type t
+      val int_ : int -> t
+      val add : t -> t -> t
+      val bool_ : bool -> t
+      val and_ : t -> t -> t
+      val or_ : t -> t -> t
+      val not_ : t -> t
+      val eq : t -> t -> t
+    end
+
+    module Combined_Show : COMBINED_EXPR with type t = string
+    ```
+
+    Например:
+    - `Combined_Show.(eq (add (int_ 1) (int_ 2)) (int_ 3))` = `"((1 + 2) == 3)"`
+    - `Combined_Show.(and_ (bool_ true) (eq (int_ 1) (int_ 1)))` = `"(true && (1 == 1))"`
 
 ## Заключение
 
 В этой главе мы:
 
-- Познакомились с доменами --- единицей параллелизма OCaml 5.
-- Изучили Eio --- библиотеку прямого стиля для конкурентности.
-- Разобрали файберы и структурированную конкурентность через `Switch`.
-- Научились использовать каналы (`Eio.Stream`) для коммуникации.
-- Познакомились с таймаутами и отменой операций.
-- Сравнили Eio с Lwt и Async.
+- Познакомились с Expression Problem --- классической задачей расширяемости программ.
+- Изучили четыре подхода к её решению в OCaml.
+- Увидели, что **варианты** оптимальны, когда набор случаев фиксирован.
+- Изучили **Tagless Final** --- элегантное решение, расширяемое в обоих измерениях через модульную систему OCaml.
+- Познакомились с **полиморфными вариантами** и открытой рекурсией.
+- Сравнили Tagless Final с классами типов Haskell.
+- Реализовали расширяемый калькулятор тремя способами.
 
-В следующей главе мы изучим FFI --- взаимодействие OCaml с кодом на C и работу с JSON.
+```admonish info title="Подробнее"
+Подробное описание объектной системы OCaml и полиморфных вариантов: [Real World OCaml, глава «Objects»](https://dev.realworldocaml.org/objects.html) и [глава «Variants»](https://dev.realworldocaml.org/variants.html).
+```
+
+В следующей главе мы изучим конкурентное программирование с библиотекой Eio --- прямой стиль вместо промисов и колбэков.

@@ -1,723 +1,617 @@
-# Рекурсия, map и свёртки
+# Алгебраические типы данных
 
 ## Цели главы
 
-В этой главе мы изучим рекурсию, функции высшего порядка и свёртки --- основные инструменты обработки данных в функциональном стиле:
+В этой главе мы изучим **алгебраические типы данных** (algebraic data types, ADT) --- один из самых мощных инструментов моделирования данных в OCaml. Мы рассмотрим:
 
-- Рекурсия (`let rec`) и хвостовая рекурсия (tail recursion).
-- Функции высшего порядка: `List.map`, `List.filter`, `List.filter_map`, `List.concat_map`.
-- Свёртки: `List.fold_left` и `List.fold_right`.
-- Оператор конвейера `|>` в цепочках обработки.
-- Ленивые последовательности `Seq`.
-- Проект: виртуальная файловая система.
+- Вариантные типы (variant types) --- типы-суммы.
+- Сопоставление с образцом (pattern matching).
+- Вложенные паттерны, or-паттерны, as-паттерны.
+- Паттерны для списков.
+- Проверку полноты (exhaustiveness checking).
+- Кортежи (tuples) и деструктуризацию.
+- Полиморфные варианты (polymorphic variants).
+- Типы `option` и `result`.
+- Проект: геометрические фигуры.
 
 ## Подготовка проекта
 
-Код этой главы находится в `exercises/chapter05`. Основной модуль --- `lib/path.ml`. Соберите проект:
+Код этой главы находится в `exercises/chapter05`. Основной модуль --- `lib/shapes.ml`. Соберите проект:
 
 ```text
 $ cd exercises/chapter05
 $ dune build
 ```
 
-## Рекурсия
+## Вариантные типы
 
-В предыдущих главах мы уже встречали `let rec`. Теперь рассмотрим рекурсию подробнее.
-
-### Базовые примеры
-
-Факториал --- классический пример:
+Вариантный тип (variant type) описывает значение, которое может принимать одну из нескольких форм. Каждая форма обозначается **конструктором** (constructor):
 
 ```ocaml
-let rec factorial n =
-  if n = 0 then 1
-  else n * factorial (n - 1)
+type color = Red | Green | Blue
 ```
 
-Рекурсия на списках:
+Здесь `color` --- тип с тремя конструкторами. Конструкторы начинаются с заглавной буквы.
+
+Конструкторы могут нести данные:
 
 ```ocaml
-let rec sum = function
+type shape =
+  | Circle of float
+  | Rectangle of float * float
+  | Triangle of float * float * float
+```
+
+`Circle of float` означает «круг с радиусом типа `float`». `Rectangle of float * float` --- «прямоугольник с шириной и высотой». Символ `*` обозначает кортеж (tuple) --- упорядоченную группу значений.
+
+Создание значений:
+
+```text
+# Circle 5.0;;
+- : shape = Circle 5.
+
+# Rectangle (3.0, 4.0);;
+- : shape = Rectangle (3., 4.)
+
+# Triangle (3.0, 4.0, 5.0);;
+- : shape = Triangle (3., 4., 5.)
+```
+
+Вариантные типы OCaml --- аналог `data` в Haskell:
+
+```
+Haskell:  data Shape = Circle Double | Rectangle Double Double
+OCaml:    type shape = Circle of float | Rectangle of float * float
+```
+
+Обратите внимание на различия: в OCaml имена типов пишутся в `snake_case`, а конструкторы --- в `PascalCase`. Вместо `Double` используется `float`.
+
+```admonish tip title="Для Python/TS-разработчиков"
+Вариантные типы OCaml --- это как `Enum` на стероидах. В Python вы бы использовали `@dataclass` с наследованием или `Union[Circle, Rectangle, Triangle]`. В TypeScript --- discriminated union: `type Shape = { kind: "circle"; r: number } | { kind: "rect"; w: number; h: number }`. В OCaml то же самое записывается компактнее, а компилятор автоматически проверяет полноту обработки --- в Python и TypeScript об этом нужно заботиться самостоятельно.
+```
+
+## Сопоставление с образцом
+
+Сопоставление с образцом (pattern matching) --- основной способ работы с вариантными типами. Выражение `match ... with` проверяет значение и извлекает данные:
+
+```ocaml
+let describe = function
+  | Circle r -> "Круг с радиусом " ^ string_of_float r
+  | Rectangle (w, h) ->
+    "Прямоугольник " ^ string_of_float w ^ "x" ^ string_of_float h
+  | Triangle (a, b, c) ->
+    "Треугольник со сторонами " ^ string_of_float a
+    ^ ", " ^ string_of_float b ^ ", " ^ string_of_float c
+```
+
+Здесь `function` --- сокращение для `fun x -> match x with`. Каждая ветка паттерна начинается с `|`. Переменные `r`, `w`, `h`, `a`, `b`, `c` привязываются к значениям внутри конструкторов.
+
+```admonish tip title="Для Python/TS-разработчиков"
+Pattern matching в OCaml --- аналог `match/case` в Python 3.10+ (PEP 634) и предложения `pattern matching` в TC39 для JavaScript. Но в OCaml он значительно мощнее: поддерживает вложенные паттерны, деструктуризацию и проверку полноты на этапе компиляции. В Python `match` --- это `switch` с паттернами; в OCaml --- основной инструмент анализа данных.
+```
+
+Равнозначная запись с `match`:
+
+```ocaml
+let describe s =
+  match s with
+  | Circle r -> "Круг с радиусом " ^ string_of_float r
+  | Rectangle (w, h) ->
+    "Прямоугольник " ^ string_of_float w ^ "x" ^ string_of_float h
+  | Triangle (a, b, c) ->
+    "Треугольник со сторонами " ^ string_of_float a
+    ^ ", " ^ string_of_float b ^ ", " ^ string_of_float c
+```
+
+### Паттерны для литералов
+
+Сопоставление работает не только с вариантами, но и с литералами:
+
+```ocaml
+let is_zero = function
+  | 0 -> true
+  | _ -> false
+
+let describe_bool = function
+  | true -> "да"
+  | false -> "нет"
+```
+
+Символ `_` (подчёркивание) --- подстановочный паттерн (wildcard), который совпадает с любым значением и не привязывает его к переменной.
+
+### Вложенные паттерны
+
+Паттерны можно вкладывать друг в друга:
+
+```ocaml
+type point = { x : float; y : float }
+
+type located_shape =
+  | Located of point * shape
+
+let is_at_origin = function
+  | Located ({ x = 0.0; y = 0.0 }, _) -> true
+  | _ -> false
+```
+
+Здесь мы сопоставляем с конструктором `Located`, внутри которого проверяем запись `point` на равенство координат нулю.
+
+### Or-паттерны
+
+Or-паттерн `|` позволяет объединить несколько вариантов в одну ветку:
+
+```ocaml
+type day = Mon | Tue | Wed | Thu | Fri | Sat | Sun
+
+let is_weekend = function
+  | Sat | Sun -> true
+  | Mon | Tue | Wed | Thu | Fri -> false
+```
+
+Or-паттерн удобен, когда несколько конструкторов должны обрабатываться одинаково. Важное ограничение: все ветки or-паттерна должны привязывать одинаковые переменные.
+
+### As-паттерны
+
+As-паттерн `as` привязывает значение к переменной, одновременно сопоставляя с образцом:
+
+```ocaml
+let first_if_positive = function
+  | (x :: _) as lst when x > 0 -> Some lst
+  | _ -> None
+```
+
+Здесь `(x :: _) as lst` совпадает с непустым списком, привязывая первый элемент к `x`, а весь список к `lst`.
+
+### Паттерны для списков
+
+Списки в OCaml --- это вариантный тип с двумя конструкторами: `[]` (пустой список) и `::` (cons --- элемент + хвост). Поэтому с ними работает сопоставление:
+
+```ocaml
+let head_or_default default = function
+  | [] -> default
+  | x :: _ -> x
+
+let rec length = function
   | [] -> 0
-  | x :: rest -> x + sum rest
+  | _ :: rest -> 1 + length rest
 ```
 
-Каждая рекурсивная функция должна иметь **базовый случай** (условие остановки) и **рекурсивный случай** (шаг, приближающий к базовому).
-
-### Взаимная рекурсия
-
-OCaml поддерживает взаимную рекурсию через `and`:
+Можно сопоставлять с конкретным количеством элементов:
 
 ```ocaml
-let rec is_even n =
-  if n = 0 then true
-  else is_odd (n - 1)
-and is_odd n =
-  if n = 0 then false
-  else is_even (n - 1)
+let describe_list = function
+  | [] -> "пустой"
+  | [_] -> "один элемент"
+  | [_; _] -> "два элемента"
+  | _ -> "три или более"
 ```
 
-Обе функции определяются одновременно через `let rec ... and ...`.
+Паттерн `[x; y]` эквивалентен `x :: y :: []`.
 
-## Хвостовая рекурсия
+## Проверка полноты
 
-### Проблема стека
-
-Рассмотрим функцию `sum`:
+Компилятор OCaml проверяет, покрывает ли сопоставление **все** возможные случаи. Если нет --- выдаёт предупреждение:
 
 ```ocaml
-let rec sum = function
-  | [] -> 0
-  | x :: rest -> x + sum rest
+let area = function
+  | Circle r -> Float.pi *. r *. r
+  | Rectangle (w, h) -> w *. h
+  (* Triangle не обработан --- предупреждение! *)
 ```
 
-При вызове `sum [1; 2; 3]` OCaml строит цепочку отложенных вычислений:
-
-```
-sum [1; 2; 3]
-= 1 + sum [2; 3]
-= 1 + (2 + sum [3])
-= 1 + (2 + (3 + sum []))
-= 1 + (2 + (3 + 0))
-= 6
+```text
+Warning 8: this pattern-matching is not exhaustive.
+Here is an example of a case that is not matched:
+Triangle (_, _, _)
 ```
 
-Каждый рекурсивный вызов занимает место в стеке. Для длинных списков (миллионы элементов) стек переполнится --- `Stack_overflow`.
+Это одна из самых ценных особенностей OCaml: если вы добавите новый конструктор в тип, компилятор покажет **все** места, где нужно обработать новый случай.
 
-Это принципиальное отличие от Haskell, где ленивость позволяет обрабатывать бесконечные списки без переполнения стека. В OCaml вычисления строгие (strict), поэтому о стеке нужно заботиться явно.
+Не подавляйте это предупреждение добавлением `| _ -> ...`, если вы не уверены, что обработали все значимые случаи. Подстановочный паттерн `_` скрывает от компилятора будущие конструкторы.
 
-### Решение: хвостовая рекурсия
+```admonish tip title="Для TypeScript-разработчиков"
+Проверка полноты в OCaml --- аналог `exhaustive checking` в TypeScript с `never`. В TS вы бы написали `const _exhaustive: never = shape` в `default`-ветке `switch`, чтобы компилятор ругался при добавлении нового варианта. В OCaml это встроено: компилятор автоматически проверяет каждый `match` и предупреждает о пропущенных случаях. Не нужен `never`-хак --- язык делает это сам.
+```
 
-Функция **хвостово-рекурсивна** (tail-recursive), если рекурсивный вызов --- последняя операция в функции. Компилятор OCaml оптимизирует такие вызовы, превращая рекурсию в цикл:
+### Guard-выражения
+
+Иногда паттернов недостаточно и нужна дополнительная проверка. Для этого используется `when`:
 
 ```ocaml
-let sum lst =
-  let rec go acc = function
-    | [] -> acc
-    | x :: rest -> go (acc + x) rest
-  in
-  go 0 lst
+let classify_number = function
+  | n when n < 0 -> "отрицательное"
+  | 0 -> "ноль"
+  | n when n mod 2 = 0 -> "положительное чётное"
+  | _ -> "положительное нечётное"
 ```
 
-Здесь `go` --- хвостово-рекурсивная вспомогательная функция с аккумулятором `acc`. Вызов `go (acc + x) rest` --- последняя операция, ничего не нужно делать после возврата. Компилятор превращает это в цикл, и стек не растёт.
+Guard `when` добавляет произвольное условие к ветке. Обратите внимание: компилятор не может проверить полноту guard-выражений, поэтому обычно нужна финальная ветка с `_`.
 
-### Паттерн «аккумулятор»
+## Кортежи
 
-Преобразование в хвостовую рекурсию обычно следует паттерну:
+Кортеж (tuple) --- упорядоченная группа значений фиксированной длины. В отличие от записей, элементы кортежа не имеют имён:
 
-1. Добавьте вспомогательную функцию с дополнительным параметром --- аккумулятором.
-2. Базовый случай возвращает аккумулятор вместо начального значения.
-3. Рекурсивный шаг обновляет аккумулятор и вызывает себя.
+```text
+# (1, "hello");;
+- : int * string = (1, "hello")
 
-Ещё примеры:
+# (true, 3.14, 'a');;
+- : bool * float * char = (true, 3.14, 'a')
+```
+
+Тип кортежа записывается через `*`: `int * string`, `bool * float * char`.
+
+### Деструктуризация кортежей
+
+Кортежи разбираются через сопоставление с образцом или через `let`:
+
+```text
+# let (a, b) = (1, 2);;
+val a : int = 1
+val b : int = 2
+
+# let swap (x, y) = (y, x);;
+val swap : 'a * 'b -> 'b * 'a = <fun>
+
+# swap (1, "hello");;
+- : string * int = ("hello", 1)
+```
+
+Для пар есть стандартные функции `fst` и `snd`:
+
+```text
+# fst (1, "hello");;
+- : int = 1
+
+# snd (1, "hello");;
+- : string = "hello"
+```
+
+Кортежи часто используются для возврата нескольких значений из функции:
 
 ```ocaml
-(* Длина списка --- хвостовая рекурсия *)
-let length lst =
-  let rec go acc = function
-    | [] -> acc
-    | _ :: rest -> go (acc + 1) rest
-  in
-  go 0 lst
-
-(* Реверс списка --- хвостовая рекурсия *)
-let rev lst =
-  let rec go acc = function
-    | [] -> acc
-    | x :: rest -> go (x :: acc) rest
-  in
-  go [] lst
+let min_max lst =
+  let mn = List.fold_left min max_int lst in
+  let mx = List.fold_left max min_int lst in
+  (mn, mx)
 ```
 
-### Когда нужна хвостовая рекурсия
+## Типы-записи vs кортежи
 
-В OCaml хвостовая рекурсия важна для:
+Когда использовать записи, а когда кортежи?
 
-- Обработки длинных списков (> 10 000 элементов).
-- Циклов с большим количеством итераций.
-- Любых функций, которые должны работать с произвольным объёмом данных.
+- **Записи** --- когда полей больше двух или их назначение не очевидно из контекста. Имена полей служат документацией.
+- **Кортежи** --- для коротких группировок (пары, тройки), где назначение элементов очевидно: `(x, y)`, `(key, value)`, `(min, max)`.
 
-Для коротких списков и неглубокой рекурсии обычная рекурсия вполне допустима.
+## Рекурсивные типы
 
-## Функции высшего порядка для списков
+Вариантные типы могут ссылаться на себя --- это рекурсивные типы. Классический пример --- двоичное дерево:
 
-Функция высшего порядка (higher-order function) --- функция, принимающая или возвращающая другие функции. Стандартная библиотека OCaml предоставляет богатый набор таких функций для списков.
-
-### `List.map`
-
-`List.map f lst` применяет функцию `f` к каждому элементу списка:
-
-```text
-# List.map (fun x -> x * 2) [1; 2; 3; 4];;
-- : int list = [2; 4; 6; 8]
-
-# List.map String.uppercase_ascii ["hello"; "world"];;
-- : string list = ["HELLO"; "WORLD"]
-
-# List.map string_of_int [1; 2; 3];;
-- : string list = ["1"; "2"; "3"]
+```ocaml
+type 'a tree =
+  | Leaf
+  | Node of 'a tree * 'a * 'a tree
 ```
 
-Тип: `('a -> 'b) -> 'a list -> 'b list`. Функция может менять тип элементов --- это отражается в типе `'a -> 'b`.
-
-### `List.filter`
-
-`List.filter pred lst` оставляет только элементы, для которых предикат `pred` возвращает `true`:
+`'a` --- параметр типа (type parameter), аналог `a` в `data Tree a = ...` Haskell. Деревья строятся так:
 
 ```text
-# List.filter (fun x -> x mod 2 = 0) [1; 2; 3; 4; 5; 6];;
-- : int list = [2; 4; 6]
+# Leaf;;
+- : 'a tree = Leaf
 
-# List.filter (fun s -> String.length s > 3) ["hi"; "hello"; "ok"; "world"];;
-- : string list = ["hello"; "world"]
+# Node (Leaf, 42, Leaf);;
+- : int tree = Node (Leaf, 42, Leaf)
+
+# Node (Node (Leaf, 1, Leaf), 2, Node (Leaf, 3, Leaf));;
+- : int tree = Node (Node (Leaf, 1, Leaf), 2, Node (Leaf, 3, Leaf))
 ```
 
-Тип: `('a -> bool) -> 'a list -> 'a list`.
+Функции над рекурсивными типами сами рекурсивны:
 
-### `List.filter_map`
+```ocaml
+let rec tree_size = function
+  | Leaf -> 0
+  | Node (left, _, right) -> 1 + tree_size left + tree_size right
 
-`List.filter_map f lst` --- комбинация `filter` и `map`. Функция `f` возвращает `option`: `Some x` оставляет элемент, `None` отбрасывает:
-
-```text
-# List.filter_map (fun x ->
-    if x > 0 then Some (x * 10) else None
-  ) [-1; 2; -3; 4; 5];;
-- : int list = [20; 40; 50]
+let rec tree_depth = function
+  | Leaf -> 0
+  | Node (left, _, right) -> 1 + max (tree_depth left) (tree_depth right)
 ```
 
-Тип: `('a -> 'b option) -> 'a list -> 'b list`. Это удобнее, чем отдельные `filter` + `map`, когда решение о включении и преобразование зависят друг от друга.
+## Тип `option`
 
-### `List.concat_map`
+Мы уже видели `option` в предыдущей главе. Теперь, зная вариантные типы, рассмотрим его определение:
 
-`List.concat_map f lst` применяет `f` к каждому элементу (каждый вызов возвращает список) и конкатенирует результаты:
-
-```text
-# List.concat_map (fun x -> [x; x * 10]) [1; 2; 3];;
-- : int list = [1; 10; 2; 20; 3; 30]
-
-# List.concat_map (fun s -> String.split_on_char ' ' s) ["hello world"; "foo bar baz"];;
-- : string list = ["hello"; "world"; "foo"; "bar"; "baz"]
+```ocaml
+type 'a option = None | Some of 'a
 ```
 
-Тип: `('a -> 'b list) -> 'a list -> 'b list`. Аналог `concatMap` из Haskell.
+Это обычный вариантный тип с двумя конструкторами. `None` означает отсутствие значения, `Some x` --- наличие. Работа с `option` через сопоставление:
 
-### `List.find_opt` и `List.exists`
+```ocaml
+let greet name =
+  match name with
+  | Some n -> "Привет, " ^ n ^ "!"
+  | None -> "Привет, незнакомец!"
+```
+
+### Функции модуля `Option`
+
+Стандартная библиотека предоставляет модуль `Option` с полезными функциями:
 
 ```text
-# List.find_opt (fun x -> x > 3) [1; 2; 3; 4; 5];;
-- : int option = Some 4
+# Option.map (fun x -> x * 2) (Some 5);;
+- : int option = Some 10
 
-# List.exists (fun x -> x > 10) [1; 2; 3];;
-- : bool = false
+# Option.map (fun x -> x * 2) None;;
+- : int option = None
 
-# List.for_all (fun x -> x > 0) [1; 2; 3];;
+# Option.value ~default:0 (Some 42);;
+- : int = 42
+
+# Option.value ~default:0 None;;
+- : int = 0
+
+# Option.bind (Some 5) (fun x -> if x > 0 then Some (x * 2) else None);;
+- : int option = Some 10
+
+# Option.is_some (Some 1);;
+- : bool = true
+
+# Option.is_none None;;
 - : bool = true
 ```
 
-### Цепочки с `|>`
+- `Option.map f opt` --- применяет `f` к значению внутри `Some`, оставляет `None` как есть.
+- `Option.value ~default opt` --- извлекает значение из `Some` или возвращает `default`.
+- `Option.bind opt f` --- применяет функцию, которая сама возвращает `option` (цепочка вычислений).
+- `Option.is_some`, `Option.is_none` --- проверки.
 
-Функции высшего порядка раскрывают свою мощь в цепочках с оператором конвейера `|>`:
+## Тип `result`
+
+Тип `result` --- обобщение `option`, которое несёт информацию об ошибке:
 
 ```ocaml
-let result =
-  [1; 2; 3; 4; 5; 6; 7; 8; 9; 10]
-  |> List.filter (fun x -> x mod 2 = 0)
-  |> List.map (fun x -> x * x)
-  |> List.fold_left ( + ) 0
+type ('a, 'b) result = Ok of 'a | Error of 'b
 ```
 
-Читается слева направо: «взять числа от 1 до 10, отфильтровать чётные, возвести в квадрат, сложить». Результат: 4 + 16 + 36 + 64 + 100 = 220.
-
-## Свёртки
-
-Свёртка (fold) --- самая мощная функция обработки списков. Любую функцию на списках можно выразить через свёртку.
-
-### `List.fold_left`
-
-`List.fold_left f init lst` обрабатывает список **слева направо**, накапливая результат:
+`Ok x` --- успешный результат. `Error e` --- ошибка с описанием. В Haskell аналог --- `Either`:
 
 ```
-fold_left f init [a; b; c] = f (f (f init a) b) c
+Haskell:  Either e a = Left e | Right a
+OCaml:    ('a, 'e) result = Ok of 'a | Error of 'e
 ```
 
-Примеры:
+Пример --- безопасное деление:
 
-```text
-# List.fold_left ( + ) 0 [1; 2; 3; 4];;
-- : int = 10
-
-# List.fold_left ( * ) 1 [1; 2; 3; 4];;
-- : int = 24
-
-# List.fold_left (fun acc x -> acc ^ ", " ^ x) "начало" ["а"; "б"; "в"];;
-- : string = "начало, а, б, в"
-```
-
-Тип: `('acc -> 'a -> 'acc) -> 'acc -> 'a list -> 'acc`.
-
-- `f` --- функция, принимающая аккумулятор и текущий элемент, возвращающая новый аккумулятор.
-- `init` --- начальное значение аккумулятора.
-- `lst` --- список для обработки.
-
-`List.fold_left` **хвостово-рекурсивна** и безопасна для длинных списков.
-
-### `List.fold_right`
-
-`List.fold_right f lst init` обрабатывает список **справа налево**:
-
-```
-fold_right f [a; b; c] init = f a (f b (f c init))
+```ocaml
+let safe_div a b =
+  if b = 0 then Error "деление на ноль"
+  else Ok (a / b)
 ```
 
 ```text
-# List.fold_right (fun x acc -> x :: acc) [1; 2; 3] [];;
-- : int list = [1; 2; 3]
+# safe_div 10 3;;
+- : (int, string) result = Ok 3
 
-# List.fold_right (fun x acc -> acc ^ string_of_int x) [1; 2; 3] "";;
-- : string = "321"
+# safe_div 10 0;;
+- : (int, string) result = Error "деление на ноль"
 ```
 
-Тип: `('a -> 'acc -> 'acc) -> 'a list -> 'acc -> 'a list`.
-
-Обратите внимание: порядок аргументов отличается от `fold_left` --- список идёт вторым аргументом, а начальное значение --- третьим.
-
-`List.fold_right` **не хвостово-рекурсивна** и может вызвать `Stack_overflow` на длинных списках.
-
-### Когда что использовать
-
-| Функция | Направление | Хвостовая рекурсия | Типичное применение |
-|---------|------------|--------------------|--------------------|
-| `fold_left` | Слева направо | Да | Суммы, подсчёты, аккумуляция |
-| `fold_right` | Справа налево | Нет | Построение списков, сохранение порядка |
-
-Предпочитайте `fold_left`, если порядок не важен. Используйте `fold_right` для построения списков, когда нужно сохранить исходный порядок элементов.
-
-### Выражение через свёртки
-
-Многие стандартные функции можно выразить через свёртки:
+Работа с `result` через сопоставление:
 
 ```ocaml
-(* map через fold_right *)
-let map f lst =
-  List.fold_right (fun x acc -> f x :: acc) lst []
-
-(* filter через fold_right *)
-let filter pred lst =
-  List.fold_right (fun x acc -> if pred x then x :: acc else acc) lst []
-
-(* length через fold_left *)
-let length lst =
-  List.fold_left (fun acc _ -> acc + 1) 0 lst
-
-(* rev через fold_left *)
-let rev lst =
-  List.fold_left (fun acc x -> x :: acc) [] lst
-
-(* flatten через fold_right *)
-let flatten lst =
-  List.fold_right (fun x acc -> x @ acc) lst []
+let show_result = function
+  | Ok x -> "Результат: " ^ string_of_int x
+  | Error msg -> "Ошибка: " ^ msg
 ```
 
-## Traverse: обработка списков с эффектами
+Модуль `Result` предоставляет функции `Result.map`, `Result.bind`, `Result.is_ok`, `Result.is_error` --- аналогично модулю `Option`. Подробно мы рассмотрим `result` в главе 8.
 
-Рассмотрим частую задачу: у нас есть список значений, каждое из которых нужно обработать функцией, возвращающей `option` или `result`. Если **все** обработки успешны, мы хотим получить список результатов. Если хотя бы одна неуспешна, вся операция должна провалиться.
+```admonish info title="Подробнее"
+Глубокое погружение в вариантные типы и pattern matching: [Real World OCaml, глава «Variants»](https://dev.realworldocaml.org/variants.html)
+```
 
-### Проблема: `'a option list` → `'a list option`
+## Полиморфные варианты
 
-Допустим, мы парсим список строк в числа:
+Помимо обычных вариантов, OCaml предлагает **полиморфные варианты** (polymorphic variants) --- уникальную особенность, которой нет в Haskell. Полиморфные варианты обозначаются обратной кавычкой `` ` ``:
 
 ```text
-# List.map int_of_string_opt ["1"; "2"; "3"];;
-- : int option list = [Some 1; Some 2; Some 3]
+# `Red;;
+- : [> `Red ] = `Red
 
-# List.map int_of_string_opt ["1"; "abc"; "3"];;
-- : int option list = [Some 1; None; Some 3]
+# `Circle 5.0;;
+- : [> `Circle of float ] = `Circle 5.
+
+# [`Red; `Green; `Blue];;
+- : [> `Blue | `Green | `Red ] list = [`Red; `Green; `Blue]
 ```
 
-Мы получаем `int option list` --- список, где каждый элемент может быть `Some` или `None`. Но нам нужен `int list option` --- либо весь список целиком, либо `None`.
+Ключевое отличие: полиморфные варианты **не требуют предварительного объявления типа**. Конструктор `` `Red `` может появиться в любом месте, и компилятор выведет тип автоматически.
 
-### `sequence_option`: сборка списка из option
+### Типовые аннотации
+
+Типы полиморфных вариантов записываются в квадратных скобках:
 
 ```ocaml
-let sequence_option lst =
-  List.fold_right
-    (fun x acc ->
-      match x, acc with
-      | Some v, Some vs -> Some (v :: vs)
-      | _ -> None)
-    lst (Some [])
+type primary = [ `Red | `Green | `Blue ]
+type extended = [ primary | `Yellow | `Cyan | `Magenta ]
 ```
 
-```text
-# sequence_option [Some 1; Some 2; Some 3];;
-- : int list option = Some [1; 2; 3]
+Заметьте: `extended` **включает** все конструкторы `primary` через синтаксис включения. Это невозможно с обычными вариантами.
 
-# sequence_option [Some 1; None; Some 3];;
-- : int list option = None
-```
+### Ограничения типов
 
-`fold_right` обходит список справа налево. Если аккумулятор и текущий элемент оба `Some`, добавляем значение в список. Иначе --- всё `None`.
+Полиморфные варианты используют три формы ограничений:
 
-### `traverse_option`: map + sequence за один проход
-
-`sequence_option` требует сначала `List.map`, а потом сборку. Можно совместить оба шага:
+- `[> ...]` --- «хотя бы эти конструкторы» (открытый тип для чтения).
+- `[< ...]` --- «не более этих конструкторов» (закрытый тип для записи).
+- `[ ... ]` --- «ровно эти конструкторы» (точный тип).
 
 ```ocaml
-let traverse_option f lst =
-  List.fold_right
-    (fun x acc ->
-      match f x, acc with
-      | Some v, Some vs -> Some (v :: vs)
-      | _ -> None)
-    lst (Some [])
+(* Принимает Red, Green, Blue и любые другие *)
+let is_red = function
+  | `Red -> true
+  | _ -> false
+(* val is_red : [> `Red ] -> bool *)
+
+(* Принимает только Red, Green, Blue *)
+let to_string : [ `Red | `Green | `Blue ] -> string = function
+  | `Red -> "red"
+  | `Green -> "green"
+  | `Blue -> "blue"
+(* val to_string : [ `Red | `Green | `Blue ] -> string *)
 ```
 
-```text
-# traverse_option int_of_string_opt ["1"; "2"; "3"];;
-- : int list option = Some [1; 2; 3]
+### Когда использовать полиморфные варианты
 
-# traverse_option int_of_string_opt ["1"; "abc"; "3"];;
-- : int list option = None
-```
+Полиморфные варианты полезны, когда:
 
-`traverse_option f` = `sequence_option ∘ List.map f`, но за один проход.
+- Нужна **расширяемость**: разные модули добавляют свои конструкторы.
+- Нужно передавать значения между типами без конвертации.
+- Конструкторы из разных типов пересекаются.
 
-### `traverse_result`: аналог для `Result`
+Однако у них есть недостатки:
 
-Для `result` логика аналогична, но при ошибке мы сохраняем информацию о причине:
+- Более сложные сообщения об ошибках.
+- Нет проверки полноты без явной аннотации типа.
+- Медленнее обычных вариантов.
+
+Для большинства задач обычные варианты предпочтительнее. Используйте полиморфные варианты, когда их преимущества действительно нужны.
+
+## Проект: геометрические фигуры
+
+Рассмотрим модуль `lib/shapes.ml`, который объединяет концепции этой главы.
+
+### Типы
 
 ```ocaml
-let traverse_result f lst =
-  List.fold_right
-    (fun x acc ->
-      match f x, acc with
-      | Ok v, Ok vs -> Ok (v :: vs)
-      | Error e, _ -> Error e
-      | _, Error e -> Error e)
-    lst (Ok [])
+type point = { x : float; y : float }
+
+type shape =
+  | Circle of point * float
+  | Rectangle of point * float * float
+  | Line of point * point
+  | Text of point * string
+
+type picture = shape list
 ```
 
-```text
-# let parse s =
-    match int_of_string_opt s with
-    | Some n -> Ok n
-    | None -> Error (Printf.sprintf "не число: %s" s);;
+`point` --- запись с двумя полями. `shape` --- вариантный тип с четырьмя конструкторами, каждый из которых несёт данные (центр/угол, размеры). `picture` --- синоним для списка фигур.
 
-# traverse_result parse ["1"; "2"; "3"];;
-- : (int list, string) result = Ok [1; 2; 3]
+### Ограничивающий прямоугольник
 
-# traverse_result parse ["1"; "abc"; "3"];;
-- : (int list, string) result = Error "не число: abc"
-```
-
-### Связь с `List.filter_map`
-
-`List.filter_map` --- похожая функция, но с другой семантикой: она **молча отбрасывает** неуспешные элементы вместо того, чтобы провалить всю операцию:
-
-```text
-# List.filter_map int_of_string_opt ["1"; "abc"; "3"];;
-- : int list = [1; 3]
-```
-
-Выбирайте по ситуации:
-
-| Функция | При ошибке | Результат |
-|---------|-----------|-----------|
-| `filter_map` | Пропускает элемент | Всегда `'b list` |
-| `traverse_option` | Провал всей операции | `'b list option` |
-| `traverse_result` | Провал с сообщением | `('b list, 'e) result` |
-
-### Практический пример: парсинг CSV-строки
+Ограничивающий прямоугольник (bounding box) --- минимальный прямоугольник, содержащий фигуру:
 
 ```ocaml
-type person = { name : string; age : int }
-
-let parse_csv_line line =
-  match String.split_on_char ',' line with
-  | [name; age_str] ->
-    (match int_of_string_opt (String.trim age_str) with
-     | Some age -> Ok { name = String.trim name; age }
-     | None -> Error (Printf.sprintf "некорректный возраст: %s" age_str))
-  | _ -> Error (Printf.sprintf "неверный формат строки: %s" line)
-
-let parse_csv lines = traverse_result parse_csv_line lines
+type bounds = {
+  min_x : float;
+  min_y : float;
+  max_x : float;
+  max_y : float;
+}
 ```
 
-```text
-# parse_csv ["Alice, 30"; "Bob, 25"];;
-- : (person list, string) result = Ok [{name = "Alice"; age = 30}; ...]
-
-# parse_csv ["Alice, 30"; "Bob, xyz"];;
-- : (person list, string) result = Error "некорректный возраст:  xyz"
-```
-
-Если хотя бы одна строка невалидна, весь парсинг провалится с понятным сообщением об ошибке.
-
-## Ленивые последовательности: `Seq`
-
-В Haskell все списки ленивые, что позволяет работать с бесконечными структурами. В OCaml списки строгие (strict) --- все элементы вычисляются сразу. Для ленивых вычислений OCaml предоставляет модуль `Seq`.
-
-### Что такое `Seq`
-
-`Seq.t` --- ленивая последовательность. Элементы вычисляются **по требованию** --- только когда к ним обращаются:
-
-```text
-# let nats = Seq.ints 0;;
-val nats : int Seq.t = <fun>
-
-# Seq.take 5 nats |> List.of_seq;;
-- : int list = [0; 1; 2; 3; 4]
-
-# Seq.take 10 nats |> List.of_seq;;
-- : int list = [0; 1; 2; 3; 4; 5; 6; 7; 8; 9]
-```
-
-`Seq.ints 0` создаёт **бесконечную** последовательность 0, 1, 2, ... --- но она не вычисляется вся сразу, а генерирует элементы по мере необходимости.
-
-### Создание последовательностей
-
-```text
-(* Из списка *)
-# List.to_seq [1; 2; 3] |> List.of_seq;;
-- : int list = [1; 2; 3]
-
-(* Бесконечная последовательность *)
-# Seq.ints 0 |> Seq.take 5 |> List.of_seq;;
-- : int list = [0; 1; 2; 3; 4]
-
-(* Генерация через unfold *)
-# Seq.unfold (fun n -> if n > 5 then None else Some (n * n, n + 1)) 1
-  |> List.of_seq;;
-- : int list = [1; 4; 9; 16; 25]
-```
-
-`Seq.unfold f seed` --- генерация последовательности: `f` принимает текущее состояние и возвращает `Some (element, next_state)` для продолжения или `None` для остановки.
-
-### Операции над `Seq`
-
-Модуль `Seq` предоставляет функции, аналогичные `List`:
+Вычисление bounds для каждой фигуры --- классический пример сопоставления с образцом:
 
 ```ocaml
-(* Фильтрация + преобразование бесконечной последовательности *)
-let even_squares =
-  Seq.ints 0
-  |> Seq.filter (fun x -> x mod 2 = 0)
-  |> Seq.map (fun x -> x * x)
-  |> Seq.take 5
-  |> List.of_seq
-(* = [0; 4; 16; 36; 64] *)
+let shape_bounds = function
+  | Circle ({ x; y }, r) ->
+    { min_x = x -. r; min_y = y -. r;
+      max_x = x +. r; max_y = y +. r }
+  | Rectangle ({ x; y }, w, h) ->
+    { min_x = x; min_y = y;
+      max_x = x +. w; max_y = y +. h }
+  | Line (p1, p2) ->
+    { min_x = Float.min p1.x p2.x; min_y = Float.min p1.y p2.y;
+      max_x = Float.max p1.x p2.x; max_y = Float.max p1.y p2.y }
+  | Text (p, _) ->
+    { min_x = p.x; min_y = p.y;
+      max_x = p.x; max_y = p.y }
 ```
 
-### Пример: числа Фибоначчи
+Обратите внимание на деструктуризацию:
 
-Бесконечная последовательность Фибоначчи через `Seq.unfold`:
+- `Circle ({ x; y }, r)` --- извлекаем поля записи `point` и радиус одновременно.
+- `Line (p1, p2)` --- привязываем обе точки к переменным.
+- `Text (p, _)` --- нам не нужен текст, поэтому используем `_`.
+
+### Объединение bounds и bounds картинки
 
 ```ocaml
-let fibs =
-  Seq.unfold (fun (a, b) -> Some (a, (b, a + b))) (0, 1)
+let union_bounds b1 b2 =
+  { min_x = Float.min b1.min_x b2.min_x;
+    min_y = Float.min b1.min_y b2.min_y;
+    max_x = Float.max b1.max_x b2.max_x;
+    max_y = Float.max b1.max_y b2.max_y }
+
+let bounds = function
+  | [] -> { min_x = 0.0; min_y = 0.0; max_x = 0.0; max_y = 0.0 }
+  | s :: ss ->
+    List.fold_left
+      (fun acc shape -> union_bounds acc (shape_bounds shape))
+      (shape_bounds s) ss
 ```
 
-```text
-# fibs |> Seq.take 10 |> List.of_seq;;
-- : int list = [0; 1; 1; 2; 3; 5; 8; 13; 21; 34]
-```
+Функция `bounds` вычисляет ограничивающий прямоугольник всей картинки. Она использует:
 
-Состояние `(a, b)` хранит два последних числа. На каждом шаге выдаём `a` и переходим к `(b, a + b)`.
-
-## Проект: виртуальная файловая система
-
-Модуль `lib/path.ml` моделирует файловую систему как рекурсивный тип данных.
-
-### Тип `path`
-
-```ocaml
-type path =
-  | File of string * int
-  | Directory of string * path list
-```
-
-`File (name, size)` --- файл с именем и размером. `Directory (name, children)` --- директория с именем и списком вложенных элементов. Тип рекурсивный --- директория может содержать другие директории.
-
-### Базовые функции
-
-```ocaml
-let filename = function
-  | File (name, _) -> name
-  | Directory (name, _) -> name
-
-let is_directory = function
-  | Directory _ -> true
-  | File _ -> false
-
-let file_size = function
-  | File (_, size) -> Some size
-  | Directory _ -> None
-
-let children = function
-  | Directory (_, cs) -> cs
-  | File _ -> []
-```
-
-### Обход дерева
-
-```ocaml
-let rec all_paths p =
-  p :: List.concat_map all_paths (children p)
-```
-
-`all_paths` --- обход в глубину (DFS). Для каждого узла: добавляем сам узел, затем рекурсивно обходим всех потомков. `List.concat_map` применяет `all_paths` к каждому потомку и конкатенирует результаты.
-
-### Тестовое дерево
-
-```ocaml
-let root =
-  Directory ("root", [
-    File ("readme.txt", 100);
-    Directory ("src", [
-      File ("main.ml", 500);
-      File ("utils.ml", 300);
-      Directory ("lib", [
-        File ("parser.ml", 800);
-        File ("lexer.ml", 600);
-      ]);
-    ]);
-    Directory ("test", [
-      File ("test_main.ml", 400);
-    ]);
-    File (".gitignore", 50);
-  ])
-```
+- Сопоставление списка: `[]` (пустой) и `s :: ss` (голова + хвост).
+- `List.fold_left` --- свёртку списка (подробно рассмотрим в следующей главе).
 
 ## Упражнения
 
 Решения пишите в `test/my_solutions.ml`. Проверяйте: `dune runtest`.
 
-1. **(Среднее)** Реализуйте функцию `all_files`, которая извлекает из дерева только файлы (не директории).
+1. **(Среднее)** Реализуйте функцию `area`, которая вычисляет площадь фигуры.
 
     ```ocaml
-    val all_files : path -> path list
+    val area : shape -> float
     ```
 
-    *Подсказка:* используйте `all_paths` из библиотеки и `List.filter`.
+    - `Circle` --- π × r²
+    - `Rectangle` --- width × height
+    - `Line` и `Text` --- 0.0
 
-2. **(Среднее)** Реализуйте функцию `largest_file`, которая находит файл с наибольшим размером и возвращает пару `(path, size)`. Для пустого дерева (директория без файлов) возвращает `None`.
+    *Подсказка:* используйте `function` и `Float.pi`.
+
+2. **(Среднее)** Реализуйте функцию `scale`, которая масштабирует фигуру на заданный множитель. Все координаты и размеры умножаются на множитель, текст остаётся без изменений.
 
     ```ocaml
-    val largest_file : path -> (path * int) option
+    val scale : float -> shape -> shape
     ```
 
-    *Подсказка:* используйте `all_files` и `List.fold_left`.
+    Например, `scale 2.0 (Circle ({x=1.0; y=2.0}, 5.0))` должна вернуть `Circle ({x=2.0; y=4.0}, 10.0)`.
 
-3. **(Среднее)** Реализуйте функцию `where_is`, которая ищет файл по имени и возвращает директорию, в которой он находится.
+    *Подсказка:* создайте новую фигуру с пересчитанными координатами и размерами.
+
+3. **(Лёгкое)** Реализуйте функцию `shape_text`, которая извлекает текст из фигуры `Text`. Для остальных фигур возвращает `None`.
 
     ```ocaml
-    val where_is : path -> string -> path option
+    val shape_text : shape -> string option
     ```
 
-    *Подсказка:* используйте рекурсию. Проверяйте `children` текущей директории --- если среди них есть файл с нужным именем, возвращайте текущую директорию.
+    *Подсказка:* верните `Some s` для `Text` и `None` для всех остальных.
 
-4. **(Среднее)** Реализуйте функцию `total_size`, которая вычисляет суммарный размер всех файлов в дереве.
+4. **(Лёгкое)** Реализуйте функцию `safe_head`, которая возвращает первый элемент списка, обёрнутый в `option`.
 
     ```ocaml
-    val total_size : path -> int
+    val safe_head : 'a list -> 'a option
     ```
 
-    *Подсказка:* используйте `all_files`, `List.filter_map` и `List.fold_left`.
+    `safe_head [1; 2; 3]` = `Some 1`, `safe_head []` = `None`.
 
-5. **(Сложное)** Реализуйте бесконечную последовательность чисел Фибоначчи через `Seq.unfold`.
-
-    ```ocaml
-    val fibs : int Seq.t
-    ```
-
-    `Seq.take 7 fibs |> List.of_seq` = `[0; 1; 1; 2; 3; 5; 8]`.
-
-    *Подсказка:* используйте `Seq.unfold` с состоянием-парой `(a, b)`, где `a` --- текущее число, `b` --- следующее.
-
-6. **(Среднее)** Pangram --- проверить, содержит ли строка все буквы английского алфавита (регистронезависимо).
-
-    ```ocaml
-    val is_pangram : string -> bool
-    ```
-
-    `is_pangram "The quick brown fox jumps over the lazy dog"` = `true`.
-
-7. **(Среднее)** Isogram --- проверить, что в слове нет повторяющихся букв (пробелы и дефисы не считаются).
-
-    ```ocaml
-    val is_isogram : string -> bool
-    ```
-
-8. **(Среднее)** Anagram --- найти анаграммы заданного слова из списка кандидатов. Само слово не является своей анаграммой.
-
-    ```ocaml
-    val anagrams : string -> string list -> string list
-    ```
-
-    *Подсказка:* отсортируйте буквы слова и сравните.
-
-9. **(Лёгкое)** Reverse String --- перевернуть строку.
-
-    ```ocaml
-    val reverse_string : string -> string
-    ```
-
-10. **(Среднее)** Nucleotide Count --- подсчитать количество каждого нуклеотида (A, C, G, T) в строке ДНК.
-
-    ```ocaml
-    val nucleotide_count : string -> (char * int) list
-    ```
-
-11. **(Среднее)** Hamming Distance --- подсчитать количество различий между двумя строками одинаковой длины. Вернуть `Error`, если строки разной длины.
-
-    ```ocaml
-    val hamming_distance : string -> string -> (int, string) result
-    ```
-
-12. **(Среднее)** Run-Length Encoding --- сжать строку методом RLE и декодировать обратно.
-
-    ```ocaml
-    val rle_encode : string -> string
-    val rle_decode : string -> string
-    ```
-
-    `rle_encode "AABBBC"` = `"2A3B1C"`. `rle_decode "2A3B1C"` = `"AABBBC"`.
-
-13. **(Среднее)** Реализуйте `traverse_option` и `traverse_result` --- функции, которые применяют функцию к каждому элементу списка и собирают результат в `option`/`result`. Если хотя бы один вызов неуспешен, вся операция проваливается.
-
-    ```ocaml
-    val traverse_option : ('a -> 'b option) -> 'a list -> 'b list option
-    val traverse_result : ('a -> ('b, 'e) result) -> 'a list -> ('b list, 'e) result
-    ```
-
-    *Подсказка:* используйте `List.fold_right`.
-
-14. **(Сложное)** List Ops --- реализуйте стандартные операции над списками **без использования функций модуля `List`**.
-
-    ```ocaml
-    module List_ops : sig
-      val length : 'a list -> int
-      val reverse : 'a list -> 'a list
-      val map : ('a -> 'b) -> 'a list -> 'b list
-      val filter : ('a -> bool) -> 'a list -> 'a list
-      val fold_left : ('b -> 'a -> 'b) -> 'b -> 'a list -> 'b
-      val fold_right : ('a -> 'b -> 'b) -> 'a list -> 'b -> 'b
-      val append : 'a list -> 'a list -> 'a list
-      val concat : 'a list list -> 'a list
-    end
-    ```
-
-    *Подсказка:* `reverse` и `map` реализуйте через хвостовую рекурсию с аккумулятором. `append` и `concat` --- через `fold_right`.
+    *Подсказка:* используйте сопоставление с образцом для списка.
 
 ## Заключение
 
 В этой главе мы:
 
-- Изучили рекурсию и хвостовую рекурсию с аккумулятором.
-- Познакомились с функциями высшего порядка: `List.map`, `List.filter`, `List.filter_map`, `List.concat_map`.
-- Разобрали свёртки `List.fold_left` (хвостовая, слева направо) и `List.fold_right` (не хвостовая, справа налево).
-- Изучили паттерн traverse --- обработку списков с эффектами (`option`, `result`).
-- Научились строить цепочки обработки данных с оператором `|>`.
-- Познакомились с ленивыми последовательностями `Seq` --- аналогом бесконечных списков Haskell.
+- Изучили вариантные типы --- основу моделирования данных в OCaml.
+- Освоили сопоставление с образцом: вложенные, or- и as-паттерны, паттерны для списков.
+- Познакомились с проверкой полноты --- компилятор проверяет, что мы обработали все варианты.
+- Разобрали кортежи и их деструктуризацию.
+- Узнали о рекурсивных типах на примере двоичного дерева.
+- Подробнее рассмотрели типы `option` и `result`.
+- Познакомились с полиморфными вариантами --- уникальной особенностью OCaml.
 
-В следующей главе мы изучим модульную систему OCaml --- модули, сигнатуры, функторы и модули первого класса.
+В следующей главе мы подробно разберём рекурсию, функции высшего порядка (`map`, `filter`, `fold`) и ленивые последовательности `Seq`.

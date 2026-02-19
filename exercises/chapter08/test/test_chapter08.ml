@@ -1,314 +1,241 @@
-open Chapter08.Records
+open Chapter08.Validation
 
-(* --- Пользовательские testable --- *)
+(* --- Пользовательские testable для Alcotest --- *)
 
-let record_testable : record Alcotest.testable =
+let address_testable : address Alcotest.testable =
   Alcotest.testable
-    (fun fmt r -> Format.pp_print_string fmt (show_record r))
+    (fun fmt a ->
+      Format.fprintf fmt "{street=%s; city=%s; state=%s}"
+        a.street a.city a.state)
     ( = )
+
+let person_testable : person Alcotest.testable =
+  Alcotest.testable
+    (fun fmt p ->
+      Format.fprintf fmt "{first=%s; last=%s; addr={%s, %s, %s}}"
+        p.first_name p.last_name
+        p.address.street p.address.city p.address.state)
+    ( = )
+
+let string_list = Alcotest.(list string)
+
+let result_string_errors (type a) (ok_t : a Alcotest.testable) =
+  Alcotest.(result ok_t (list string))
 
 (* --- Тесты библиотеки --- *)
 
-let store_tests =
+let non_empty_tests =
   let open Alcotest in
   [
-    test_case "создание пустого хранилища" `Quick (fun () ->
-      let s = create_store () in
-      check int "count" 0 (count s));
-    test_case "добавление записей" `Quick (fun () ->
-      let s = create_store () in
-      let r1 = add_record s ~name:"host" ~value:"localhost" in
-      let r2 = add_record s ~name:"port" ~value:"8080" in
-      check int "r1.id" 1 r1.id;
-      check int "r2.id" 2 r2.id;
-      check int "count" 2 (count s));
-    test_case "поиск записи" `Quick (fun () ->
-      let s = create_store () in
-      let _ = add_record s ~name:"key" ~value:"val" in
-      check (option record_testable) "found"
-        (Some { id = 1; name = "key"; value = "val" })
-        (find_record s 1);
-      check (option record_testable) "not found"
-        None (find_record s 99));
-    test_case "удаление записи" `Quick (fun () ->
-      let s = create_store () in
-      let _ = add_record s ~name:"a" ~value:"1" in
-      let _ = add_record s ~name:"b" ~value:"2" in
-      remove_record s 1;
-      check int "count after remove" 1 (count s);
-      check (option record_testable) "removed"
-        None (find_record s 1));
-    test_case "all_records в порядке добавления" `Quick (fun () ->
-      let s = create_store () in
-      let _ = add_record s ~name:"first" ~value:"1" in
-      let _ = add_record s ~name:"second" ~value:"2" in
-      let names = all_records s |> List.map (fun r -> r.name) in
-      check (list string) "order" ["first"; "second"] names);
-    test_case "show_record" `Quick (fun () ->
-      let r = { id = 1; name = "host"; value = "localhost" } in
-      check string "show" "[1] host = localhost" (show_record r));
+    test_case "непустая строка --- Ok" `Quick (fun () ->
+      check (result unit string) "ok"
+        (Ok ()) (non_empty "Поле" "hello"));
+    test_case "пустая строка --- Error" `Quick (fun () ->
+      check (result unit string) "error"
+        (Error "Поле не может быть пустым") (non_empty "Поле" ""));
+    test_case "пробелы --- Error" `Quick (fun () ->
+      check (result unit string) "spaces"
+        (Error "Поле не может быть пустым") (non_empty "Поле" "   "));
+  ]
+
+let validate_all_tests =
+  let open Alcotest in
+  [
+    test_case "все проверки проходят" `Quick (fun () ->
+      check (result string string_list) "ok"
+        (Ok "hello")
+        (validate_all [non_empty "F"] "hello"));
+    test_case "накопление ошибок" `Quick (fun () ->
+      check (result string string_list) "errors"
+        (Error ["Поле не может быть пустым";
+                "Поле должен быть не короче 3 символов"])
+        (validate_all [non_empty "Поле"; min_length "Поле" 3] ""));
+  ]
+
+let validate_address_tests =
+  let open Alcotest in
+  [
+    test_case "валидный адрес" `Quick (fun () ->
+      check (result address_testable string_list) "ok"
+        (Ok { street = "ул. Пушкина"; city = "Москва"; state = "Москва" })
+        (validate_address "ул. Пушкина" "Москва" "Москва"));
+    test_case "все поля пустые" `Quick (fun () ->
+      match validate_address "" "" "" with
+      | Error es -> check int "3 ошибки" 3 (List.length es)
+      | Ok _ -> fail "ожидалась ошибка");
+  ]
+
+let conversion_tests =
+  let open Alcotest in
+  [
+    test_case "option_to_result Some" `Quick (fun () ->
+      check (result int string) "some"
+        (Ok 42) (option_to_result ~error:"err" (Some 42)));
+    test_case "option_to_result None" `Quick (fun () ->
+      check (result int string) "none"
+        (Error "err") (option_to_result ~error:"err" None));
+    test_case "result_to_option Ok" `Quick (fun () ->
+      check (option int) "ok"
+        (Some 42) (result_to_option (Ok 42)));
+    test_case "result_to_option Error" `Quick (fun () ->
+      check (option int) "error"
+        None (result_to_option (Error "err")));
   ]
 
 (* --- Тесты упражнений --- *)
 
-let counter_tests =
+let validate_phone_tests =
   let open Alcotest in
   [
-    test_case "создание счётчика" `Quick (fun () ->
-      let c = My_solutions.counter_create 0 in
-      check int "init" 0 (My_solutions.counter_value c));
-    test_case "создание с начальным значением" `Quick (fun () ->
-      let c = My_solutions.counter_create 10 in
-      check int "init 10" 10 (My_solutions.counter_value c));
-    test_case "increment" `Quick (fun () ->
-      let c = My_solutions.counter_create 0 in
-      My_solutions.counter_increment c;
-      My_solutions.counter_increment c;
-      My_solutions.counter_increment c;
-      check int "after 3 increments" 3 (My_solutions.counter_value c));
-    test_case "decrement" `Quick (fun () ->
-      let c = My_solutions.counter_create 5 in
-      My_solutions.counter_decrement c;
-      My_solutions.counter_decrement c;
-      check int "after 2 decrements" 3 (My_solutions.counter_value c));
-    test_case "reset" `Quick (fun () ->
-      let c = My_solutions.counter_create 0 in
-      My_solutions.counter_increment c;
-      My_solutions.counter_increment c;
-      My_solutions.counter_reset c;
-      check int "after reset" 0 (My_solutions.counter_value c));
+    test_case "валидный телефон" `Quick (fun () ->
+      check (result_string_errors string) "ok"
+        (Ok "1234567")
+        (My_solutions.validate_phone "1234567"));
+    test_case "пустой телефон" `Quick (fun () ->
+      match My_solutions.validate_phone "" with
+      | Error es ->
+        check bool "есть ошибки" true (List.length es > 0)
+      | Ok _ -> Alcotest.fail "ожидалась ошибка");
+    test_case "буквы в телефоне" `Quick (fun () ->
+      match My_solutions.validate_phone "123abc" with
+      | Error es ->
+        check bool "есть ошибка о цифрах" true
+          (List.exists (fun e -> String.length e > 0) es)
+      | Ok _ -> Alcotest.fail "ожидалась ошибка");
+    test_case "слишком короткий телефон" `Quick (fun () ->
+      match My_solutions.validate_phone "123" with
+      | Error es ->
+        check bool "есть ошибка о длине" true (List.length es > 0)
+      | Ok _ -> Alcotest.fail "ожидалась ошибка");
+    test_case "все ошибки сразу" `Quick (fun () ->
+      match My_solutions.validate_phone "" with
+      | Error es ->
+        check bool "множественные ошибки" true (List.length es >= 2)
+      | Ok _ -> Alcotest.fail "ожидалась ошибка");
   ]
 
-let logger_tests =
+let validate_person_tests =
   let open Alcotest in
   [
-    test_case "создание логгера" `Quick (fun () ->
-      let l = My_solutions.logger_create () in
-      check int "empty" 0 (My_solutions.logger_count l));
-    test_case "добавление сообщений" `Quick (fun () ->
-      let l = My_solutions.logger_create () in
-      My_solutions.logger_log l "first";
-      My_solutions.logger_log l "second";
-      check (list string) "messages"
-        ["first"; "second"]
-        (My_solutions.logger_messages l));
-    test_case "count" `Quick (fun () ->
-      let l = My_solutions.logger_create () in
-      My_solutions.logger_log l "a";
-      My_solutions.logger_log l "b";
-      My_solutions.logger_log l "c";
-      check int "count" 3 (My_solutions.logger_count l));
-    test_case "clear" `Quick (fun () ->
-      let l = My_solutions.logger_create () in
-      My_solutions.logger_log l "msg";
-      My_solutions.logger_clear l;
-      check int "after clear" 0 (My_solutions.logger_count l);
-      check (list string) "empty messages" []
-        (My_solutions.logger_messages l));
+    test_case "валидная персона" `Quick (fun () ->
+      check (result_string_errors person_testable) "ok"
+        (Ok { first_name = "Иван"; last_name = "Петров";
+              address = { street = "ул. Пушкина"; city = "Москва";
+                          state = "Москва" } })
+        (My_solutions.validate_person
+           "Иван" "Петров" "ул. Пушкина" "Москва" "Москва"));
+    test_case "все поля пустые" `Quick (fun () ->
+      match My_solutions.validate_person "" "" "" "" "" with
+      | Error es ->
+        check bool "5 ошибок" true (List.length es >= 5)
+      | Ok _ -> Alcotest.fail "ожидалась ошибка");
+    test_case "пустое имя" `Quick (fun () ->
+      match My_solutions.validate_person "" "Петров" "ул. Пушкина" "Москва" "Москва" with
+      | Error es ->
+        check bool "1 ошибка" true (List.length es >= 1)
+      | Ok _ -> Alcotest.fail "ожидалась ошибка");
   ]
 
-let format_table_tests =
+let traverse_result_tests =
   let open Alcotest in
+  let parse x =
+    match int_of_string_opt x with
+    | Some n -> Ok n
+    | None -> Error ("не число: " ^ x)
+  in
   [
-    test_case "таблица из двух строк" `Quick (fun () ->
-      let result = My_solutions.format_table
-        [("Имя", "Иван"); ("Город", "Москва")] in
-      let lines = String.split_on_char '\n' result in
-      check int "две строки" 2 (List.length lines);
-      check bool "содержит Иван" true
-        (List.exists (fun l -> String.contains l '|') lines));
-    test_case "содержит разделитель |" `Quick (fun () ->
-      let result = My_solutions.format_table
-        [("key", "value")] in
-      check bool "has |" true
-        (String.contains result '|'));
+    test_case "все Ok" `Quick (fun () ->
+      check (result (list int) (list string)) "all ok"
+        (Ok [1; 2; 3])
+        (My_solutions.traverse_result parse ["1"; "2"; "3"]));
+    test_case "есть ошибки" `Quick (fun () ->
+      check (result (list int) (list string)) "errors"
+        (Error ["не число: a"; "не число: c"])
+        (My_solutions.traverse_result parse ["a"; "2"; "c"]));
     test_case "пустой список" `Quick (fun () ->
-      check string "empty" "" (My_solutions.format_table []));
-    test_case "выравнивание" `Quick (fun () ->
-      let result = My_solutions.format_table
-        [("a", "1"); ("longer_key", "2")] in
-      let lines = String.split_on_char '\n' result in
-      let pipe_positions = List.filter_map (fun l ->
-        match String.index_opt l '|' with
-        | Some i -> Some i
-        | None -> None
-      ) lines in
-      match pipe_positions with
-      | [] -> Alcotest.fail "нет разделителей"
-      | p :: rest ->
-        check bool "все | на одной позиции" true
-          (List.for_all (fun x -> x = p) rest));
+      check (result (list int) (list string)) "empty"
+        (Ok [])
+        (My_solutions.traverse_result parse []));
   ]
 
-let array_sum_tests =
+let option_result_tests =
   let open Alcotest in
   [
-    test_case "сумма массива" `Quick (fun () ->
-      check int "sum" 15
-        (My_solutions.array_sum_imperative [| 1; 2; 3; 4; 5 |]));
-    test_case "пустой массив" `Quick (fun () ->
-      check int "empty" 0
-        (My_solutions.array_sum_imperative [| |]));
-    test_case "один элемент" `Quick (fun () ->
-      check int "single" 42
-        (My_solutions.array_sum_imperative [| 42 |]));
-    test_case "отрицательные числа" `Quick (fun () ->
-      check int "negative" (-3)
-        (My_solutions.array_sum_imperative [| 1; -2; 3; -4; -1 |]));
+    test_case "option_to_result Some" `Quick (fun () ->
+      check (result int string) "some"
+        (Ok 42)
+        (My_solutions.option_to_result ~error:"err" (Some 42)));
+    test_case "option_to_result None" `Quick (fun () ->
+      check (result int string) "none"
+        (Error "err")
+        (My_solutions.option_to_result ~error:"err" None));
+    test_case "result_to_option Ok" `Quick (fun () ->
+      check (option int) "ok"
+        (Some 42)
+        (My_solutions.result_to_option (Ok 42)));
+    test_case "result_to_option Error" `Quick (fun () ->
+      check (option int) "error"
+        None
+        (My_solutions.result_to_option (Error "err")));
   ]
 
-let gc_stats_tests =
+let isbn_tests =
   let open Alcotest in
   [
-    test_case "gc_stats возвращает строку" `Quick (fun () ->
-      let stats = Chapter08.Records.gc_stats () in
-      check bool "содержит Minor" true
-        (String.length stats > 0));
+    test_case "валидный ISBN" `Quick (fun () ->
+      check bool "valid" true
+        (My_solutions.isbn_verifier "3-598-21508-8"));
+    test_case "невалидный ISBN" `Quick (fun () ->
+      check bool "invalid" false
+        (My_solutions.isbn_verifier "3-598-21508-9"));
+    test_case "ISBN с X" `Quick (fun () ->
+      check bool "with X" true
+        (My_solutions.isbn_verifier "3-598-21507-X"));
   ]
 
-let weak_cache_tests =
+let luhn_tests =
   let open Alcotest in
-  let open Chapter08.Records.WeakCache in
   [
-    test_case "set и get" `Quick (fun () ->
-      let cache = create 10 in
-      set cache 0 42;
-      check (option int) "get 0" (Some 42) (get cache 0));
-    test_case "пустой слот" `Quick (fun () ->
-      let cache = create 10 in
-      check (option int) "get empty" None (get cache 0));
-    test_case "clear" `Quick (fun () ->
-      let cache = create 10 in
-      set cache 0 42;
-      clear cache;
-      check (option int) "cleared" None (get cache 0));
+    test_case "валидный номер" `Quick (fun () ->
+      check bool "valid" true (My_solutions.luhn "4539 3195 0343 6467"));
+    test_case "невалидный номер" `Quick (fun () ->
+      check bool "invalid" false (My_solutions.luhn "8273 1232 7352 0569"));
+    test_case "одна цифра" `Quick (fun () ->
+      check bool "single" false (My_solutions.luhn "0"));
+    test_case "с пробелами" `Quick (fun () ->
+      check bool "spaces" true (My_solutions.luhn "0 0 0"));
   ]
 
-let robot_tests =
+let composable_error_tests =
   let open Alcotest in
+  let open Chapter08.Validation in
   [
-    test_case "робот имеет имя" `Quick (fun () ->
-      let robot = My_solutions.Robot.create () in
-      let name = My_solutions.Robot.name robot in
-      check bool "длина имени 5" true (String.length name = 5));
-    test_case "имя начинается с 2 букв" `Quick (fun () ->
-      let robot = My_solutions.Robot.create () in
-      let name = My_solutions.Robot.name robot in
-      check bool "буква 0" true (name.[0] >= 'A' && name.[0] <= 'Z');
-      check bool "буква 1" true (name.[1] >= 'A' && name.[1] <= 'Z'));
-    test_case "имя заканчивается 3 цифрами" `Quick (fun () ->
-      let robot = My_solutions.Robot.create () in
-      let name = My_solutions.Robot.name robot in
-      check bool "цифра 2" true (name.[2] >= '0' && name.[2] <= '9');
-      check bool "цифра 3" true (name.[3] >= '0' && name.[3] <= '9');
-      check bool "цифра 4" true (name.[4] >= '0' && name.[4] <= '9'));
-    test_case "два робота — разные имена" `Quick (fun () ->
-      let r1 = My_solutions.Robot.create () in
-      let r2 = My_solutions.Robot.create () in
-      check bool "different" true
-        (My_solutions.Robot.name r1 <> My_solutions.Robot.name r2));
-  ]
-
-let lru_tests =
-  let open Alcotest in
-  [
-    test_case "put и get" `Quick (fun () ->
-      let cache = My_solutions.LRU.create 3 in
-      My_solutions.LRU.put cache "a" 1;
-      check (option int) "get a" (Some 1) (My_solutions.LRU.get cache "a"));
-    test_case "вытеснение" `Quick (fun () ->
-      let cache = My_solutions.LRU.create 2 in
-      My_solutions.LRU.put cache "a" 1;
-      My_solutions.LRU.put cache "b" 2;
-      My_solutions.LRU.put cache "c" 3;
-      check (option int) "a вытеснена" None (My_solutions.LRU.get cache "a");
-      check (option int) "c есть" (Some 3) (My_solutions.LRU.get cache "c"));
-    test_case "size" `Quick (fun () ->
-      let cache = My_solutions.LRU.create 3 in
-      My_solutions.LRU.put cache "a" 1;
-      My_solutions.LRU.put cache "b" 2;
-      check int "size" 2 (My_solutions.LRU.size cache));
-  ]
-
-let logger_fcis_tests =
-  let open Alcotest in
-  [
-    test_case "LoggerPure.add" `Quick (fun () ->
-      let msgs = My_solutions.LoggerPure.add [] "hello" in
-      check (list string) "one msg" ["hello"]
-        (My_solutions.LoggerPure.messages msgs));
-    test_case "LoggerPure.count" `Quick (fun () ->
-      let msgs = My_solutions.LoggerPure.add
-          (My_solutions.LoggerPure.add [] "a") "b" in
-      check int "count" 2 (My_solutions.LoggerPure.count msgs));
-    test_case "LoggerShell create и log" `Quick (fun () ->
-      let l = My_solutions.LoggerShell.create () in
-      My_solutions.LoggerShell.log l "first";
-      My_solutions.LoggerShell.log l "second";
-      check (list string) "messages" ["first"; "second"]
-        (My_solutions.LoggerShell.messages l));
-    test_case "LoggerShell count и clear" `Quick (fun () ->
-      let l = My_solutions.LoggerShell.create () in
-      My_solutions.LoggerShell.log l "a";
-      My_solutions.LoggerShell.log l "b";
-      check int "count" 2 (My_solutions.LoggerShell.count l);
-      My_solutions.LoggerShell.clear l;
-      check int "after clear" 0 (My_solutions.LoggerShell.count l));
-  ]
-
-let bowling_tests =
-  let open Alcotest in
-  [
-    test_case "все нули" `Quick (fun () ->
-      let game = My_solutions.Bowling.create () in
-      for _ = 1 to 20 do
-        ignore (My_solutions.Bowling.roll game 0)
-      done;
-      check int "score" 0 (My_solutions.Bowling.score game));
-    test_case "все единицы" `Quick (fun () ->
-      let game = My_solutions.Bowling.create () in
-      for _ = 1 to 20 do
-        ignore (My_solutions.Bowling.roll game 1)
-      done;
-      check int "score" 20 (My_solutions.Bowling.score game));
-    test_case "один spare" `Quick (fun () ->
-      let game = My_solutions.Bowling.create () in
-      ignore (My_solutions.Bowling.roll game 5);
-      ignore (My_solutions.Bowling.roll game 5);
-      ignore (My_solutions.Bowling.roll game 3);
-      for _ = 1 to 17 do
-        ignore (My_solutions.Bowling.roll game 0)
-      done;
-      check int "score" 16 (My_solutions.Bowling.score game));
-    test_case "один strike" `Quick (fun () ->
-      let game = My_solutions.Bowling.create () in
-      ignore (My_solutions.Bowling.roll game 10);
-      ignore (My_solutions.Bowling.roll game 3);
-      ignore (My_solutions.Bowling.roll game 4);
-      for _ = 1 to 16 do
-        ignore (My_solutions.Bowling.roll game 0)
-      done;
-      check int "score" 24 (My_solutions.Bowling.score game));
-    test_case "perfect game" `Quick (fun () ->
-      let game = My_solutions.Bowling.create () in
-      for _ = 1 to 12 do
-        ignore (My_solutions.Bowling.roll game 10)
-      done;
-      check int "score" 300 (My_solutions.Bowling.score game));
+    test_case "parse и validate — Ok" `Quick (fun () ->
+      match process_input "hello" with
+      | Ok _ -> ()
+      | Error _ -> fail "ожидался Ok");
+    test_case "parse error — syntax" `Quick (fun () ->
+      match process_input "" with
+      | Error (`SyntaxError _) -> ()
+      | _ -> fail "ожидалась SyntaxError");
+    test_case "validate error — too short" `Quick (fun () ->
+      match process_input "x" with
+      | Error (`TooShort _) -> ()
+      | _ -> fail "ожидалась TooShort");
   ]
 
 let () =
-  Alcotest.run "Chapter 08"
+  Alcotest.run "Chapter 07"
     [
-      ("store --- хранилище записей", store_tests);
-      ("counter --- счётчик на ref", counter_tests);
-      ("logger --- логгер", logger_tests);
-      ("format_table --- форматирование таблицы", format_table_tests);
-      ("array_sum_imperative --- сумма массива", array_sum_tests);
-      ("gc_stats", gc_stats_tests);
-      ("WeakCache --- кеш на слабых ссылках", weak_cache_tests);
-      ("Robot --- уникальные имена", robot_tests);
-      ("LRU кеш", lru_tests);
-      ("Logger FC/IS", logger_fcis_tests);
-      ("Bowling --- боулинг", bowling_tests);
+      ("non_empty --- проверка непустоты", non_empty_tests);
+      ("validate_all --- накопление ошибок", validate_all_tests);
+      ("validate_address --- валидация адреса", validate_address_tests);
+      ("конвертация option/result", conversion_tests);
+      ("validate_phone --- валидация телефона", validate_phone_tests);
+      ("validate_person --- валидация персоны", validate_person_tests);
+      ("traverse_result --- траверс", traverse_result_tests);
+      ("option_to_result / result_to_option", option_result_tests);
+      ("ISBN Verifier", isbn_tests);
+      ("Luhn — алгоритм Луна", luhn_tests);
+      ("composable errors — полиморфные варианты", composable_error_tests);
     ]

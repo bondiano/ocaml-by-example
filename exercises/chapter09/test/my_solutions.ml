@@ -1,146 +1,98 @@
 (** Здесь вы можете писать свои решения упражнений. *)
 
-(** Упражнение 1 (Лёгкое): PositiveInt --- smart constructor
-    для строго положительных целых чисел.
+(** Упражнение 1: Счётчик на ref. *)
+let counter_create (_init : int) : int ref =
+  failwith "todo"
 
-    make n -> Ok, если n > 0, иначе Error "число должно быть положительным".
-    add складывает два значения.
-    to_string --- строковое представление. *)
-module PositiveInt : sig
-  type t
-  val make : int -> (t, string) result
-  val value : t -> int
-  val add : t -> t -> t
-  val to_string : t -> string
-end = struct
-  type t = int
-  let make _n = failwith "todo"
-  let value _t = failwith "todo"
-  let add _a _b = failwith "todo"
-  let to_string _t = failwith "todo"
+let counter_increment (_c : int ref) : unit =
+  failwith "todo"
+
+let counter_decrement (_c : int ref) : unit =
+  failwith "todo"
+
+let counter_reset (_c : int ref) : unit =
+  failwith "todo"
+
+let counter_value (_c : int ref) : int =
+  failwith "todo"
+
+(** Упражнение 2: Логгер. *)
+type logger = {
+  mutable messages : string list;
+}
+
+let logger_create () : logger =
+  failwith "todo"
+
+let logger_log (_l : logger) (_msg : string) : unit =
+  failwith "todo"
+
+let logger_messages (_l : logger) : string list =
+  failwith "todo"
+
+let logger_clear (_l : logger) : unit =
+  failwith "todo"
+
+let logger_count (_l : logger) : int =
+  failwith "todo"
+
+(** Упражнение 3: Форматирование таблицы. *)
+let format_table (_rows : (string * string) list) : string =
+  failwith "todo"
+
+(** Упражнение 4: Сумма массива через for-цикл. *)
+let array_sum_imperative (_arr : int array) : int =
+  failwith "todo"
+
+(** Упражнение: Robot Name — уникальные имена роботов. *)
+module Robot = struct
+  type t = { name : string }
+  let _used_names : (string, unit) Hashtbl.t = Hashtbl.create 100
+
+  let create () : t = failwith "todo"
+  let name (_robot : t) : string = failwith "todo"
+  let reset (_robot : t) : t = failwith "todo"
 end
 
-(** Упражнение 2 (Среднее): Email --- smart constructor для email-адресов.
+(** Упражнение: simple LRU cache. *)
+module LRU = struct
+  type ('k, 'v) t = {
+    mutable entries : ('k * 'v) list;
+    capacity : int;
+  }
 
-    Правила валидации:
-    - строка не пуста -> Error "email не может быть пустым"
-    - содержит '@' -> Error "email должен содержать @"
-    - домен содержит '.' -> Error "некорректный домен"
-    - иначе Ok *)
-module Email : sig
-  type t
-  val make : string -> (t, string) result
-  val to_string : t -> string
-end = struct
-  type t = string
-  let make _s = failwith "todo"
-  let to_string _t = failwith "todo"
+  let create (_capacity : int) : ('k, 'v) t = failwith "todo"
+  let get (_cache : ('k, 'v) t) (_key : 'k) : 'v option = failwith "todo"
+  let put (_cache : ('k, 'v) t) (_key : 'k) (_value : 'v) : unit = failwith "todo"
+  let size (_cache : ('k, 'v) t) : int = failwith "todo"
 end
 
-(** Упражнение 3 (Среднее): NonEmptyList --- список,
-    гарантированно содержащий хотя бы один элемент.
-
-    head и tail не могут завершиться ошибкой.
-    Внутреннее представление: 'a * 'a list. *)
-module NonEmptyList : sig
-  type 'a t
-  val make : 'a list -> ('a t, string) result
-  val singleton : 'a -> 'a t
-  val head : 'a t -> 'a
-  val tail : 'a t -> 'a list
-  val to_list : 'a t -> 'a list
-  val length : 'a t -> int
-  val map : ('a -> 'b) -> 'a t -> 'b t
-end = struct
-  type 'a t = 'a * 'a list
-  let make _lst = failwith "todo"
-  let singleton _x = failwith "todo"
-  let head (_x, _xs) = failwith "todo"
-  let tail (_x, _xs) = failwith "todo"
-  let to_list (_x, _xs) = failwith "todo"
-  let length (_x, _xs) = failwith "todo"
-  let map _f (_x, _xs) = failwith "todo"
+(** Упражнение 7: Logger FC/IS --- Functional Core. *)
+module LoggerPure = struct
+  let add (_msgs : string list) (_msg : string) : string list = failwith "todo"
+  let count (_msgs : string list) : int = failwith "todo"
+  let messages (_msgs : string list) : string list = failwith "todo"
 end
 
-(** Упражнение 4 (Среднее): TrafficLight --- светофор
-    как конечный автомат с phantom types.
-
-    Порядок: Red -> Green -> Yellow -> Red -> ...
-    Нарушение порядка --- ошибка компиляции. *)
-module TrafficLight : sig
-  type red
-  type yellow
-  type green
-
-  type 'state light
-
-  val start : red light
-  val red_to_green : red light -> green light
-  val green_to_yellow : green light -> yellow light
-  val yellow_to_red : yellow light -> red light
-  val show : 'state light -> string
-end = struct
-  type red
-  type yellow
-  type green
-
-  type 'state light = { color : string }
-
-  let start = failwith "todo"
-  let red_to_green _l = failwith "todo"
-  let green_to_yellow _l = failwith "todo"
-  let yellow_to_red _l = failwith "todo"
-  let show _l = failwith "todo"
+(** Logger FC/IS --- Imperative Shell. *)
+module LoggerShell = struct
+  type t = { mutable msgs : string list }
+  let create () : t = failwith "todo"
+  let log (_l : t) (_msg : string) : unit = failwith "todo"
+  let messages (_l : t) : string list = failwith "todo"
+  let count (_l : t) : int = failwith "todo"
+  let clear (_l : t) : unit = failwith "todo"
 end
 
-(** Упражнение 5 (Сложное): Form --- строитель формы
-    с накоплением ошибок.
+(** Упражнение: Bowling — подсчёт очков в боулинге. *)
+module Bowling = struct
+  type t = {
+    mutable rolls : int list;
+    mutable current_frame : int;
+    mutable finished : bool;
+  }
 
-    field name raw_value parser --- валидирует одно поле.
-    map2 f a b --- комбинирует два поля, накапливая ошибки.
-    map3 f a b c --- комбинирует три поля.
-    run --- возвращает Ok результат или Error список пар (имя_поля, ошибка). *)
-module Form : sig
-  type 'a validated
-  val field : string -> string -> (string -> ('a, string) result) -> 'a validated
-  val map2 : ('a -> 'b -> 'c) -> 'a validated -> 'b validated -> 'c validated
-  val map3 : ('a -> 'b -> 'c -> 'd) ->
-    'a validated -> 'b validated -> 'c validated -> 'd validated
-  val run : 'a validated -> ('a, (string * string) list) result
-end = struct
-  type 'a validated = ('a, (string * string) list) result
-  let field _name _raw _parser = failwith "todo"
-  let map2 _f _a _b = failwith "todo"
-  let map3 _f _a _b _c = failwith "todo"
-  let run v = v
-end
-
-(** Упражнение 6 (Сложное): FileHandle --- API для работы с «файлами»,
-    где чтение и запись возможны только для открытых дескрипторов.
-
-    Использует phantom types: opened / closed.
-    read и write принимают только opened handle.
-    close возвращает closed handle. *)
-module FileHandle : sig
-  type opened
-  type closed
-
-  type 'state handle
-
-  val open_file : string -> opened handle
-  val read : opened handle -> string
-  val write : opened handle -> string -> opened handle
-  val close : opened handle -> closed handle
-  val name : 'state handle -> string
-end = struct
-  type opened
-  type closed
-
-  type 'state handle = { name : string; content : string }
-
-  let open_file _path = failwith "todo"
-  let read _h = failwith "todo"
-  let write _h _data = failwith "todo"
-  let close _h = failwith "todo"
-  let name _h = failwith "todo"
+  let create () : t = failwith "todo"
+  let roll (_game : t) (_pins : int) : (unit, string) result = failwith "todo"
+  let score (_game : t) : int = failwith "todo"
 end

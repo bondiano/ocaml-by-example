@@ -1,2 +1,4 @@
 (library
- (name chapter14))
+ (name chapter14)
+ (libraries yojson)
+ (preprocess (pps ppx_deriving_yojson)))

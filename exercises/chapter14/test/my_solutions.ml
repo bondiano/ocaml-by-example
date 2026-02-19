@@ -1,26 +1,26 @@
 (** Здесь вы можете писать свои решения упражнений. *)
-open Chapter14.Game
 
-(** Упражнение 1: Отражение вектора от горизонтальной поверхности. *)
-let reflect_horizontal (_v : vec2) : vec2 =
-  failwith "todo"
-
-(** Упражнение 2: Отражение вектора от вертикальной поверхности. *)
-let reflect_vertical (_v : vec2) : vec2 =
-  failwith "todo"
-
-(** Упражнение 3: Проверка столкновения круга и прямоугольника. *)
-let circle_rect_collide (_c : circle) (_r : rect) : bool =
-  failwith "todo"
-
-(** Упражнение 4: Обновление позиции с гравитацией. *)
-type entity = {
-  pos : vec2;
-  vel : vec2;
-  gravity : float;
+(** Упражнение 1: Ручная конвертация product -> JSON. *)
+type product = {
+  title : string;
+  price : float;
+  in_stock : bool;
 }
 
-let update_entity (dt : float) (e : entity) : entity =
-  ignore dt;
-  ignore e;
+let product_to_json (_p : product) : Yojson.Safe.t =
   failwith "todo"
+
+(** Упражнение 2: Ручная конвертация JSON -> product. *)
+let product_of_json (_json : Yojson.Safe.t) : (product, string) result =
+  failwith "todo"
+
+(** Упражнение 3: Преобразование списка JSON-объектов --- извлечь имена. *)
+let extract_names (_json : Yojson.Safe.t) : string list =
+  failwith "todo"
+
+(** Упражнение 4: ppx --- тип с автоматической сериализацией. *)
+type config = {
+  host : string;
+  port : int;
+  debug : bool;
+} [@@deriving yojson]

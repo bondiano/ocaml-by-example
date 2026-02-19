@@ -1,165 +1,167 @@
 (** Референсные решения --- не подсматривайте, пока не попробуете сами! *)
 
-(** Упражнение 1 (Лёгкое): PositiveInt --- smart constructor. *)
-module PositiveInt : sig
-  type t
-  val make : int -> (t, string) result
-  val value : t -> int
-  val add : t -> t -> t
-  val to_string : t -> string
-end = struct
-  type t = int
+(** Упражнение 1: Счётчик на ref. *)
+let counter_create init = ref init
 
-  let make n =
-    if n > 0 then Ok n
-    else Error "число должно быть положительным"
+let counter_increment c = c := !c + 1
 
-  let value t = t
-  let add a b = a + b
-  let to_string = string_of_int
+let counter_decrement c = c := !c - 1
+
+let counter_reset c = c := 0
+
+let counter_value c = !c
+
+(** Упражнение 2: Логгер. *)
+type logger = {
+  mutable messages : string list;
+}
+
+let logger_create () = { messages = [] }
+
+let logger_log l msg =
+  l.messages <- l.messages @ [msg]
+
+let logger_messages l = l.messages
+
+let logger_clear l =
+  l.messages <- []
+
+let logger_count l =
+  List.length l.messages
+
+(** Упражнение 3: Форматирование таблицы. *)
+let format_table rows =
+  match rows with
+  | [] -> ""
+  | _ ->
+    let max_key_len =
+      List.fold_left (fun acc (k, _) -> max acc (String.length k)) 0 rows
+    in
+    rows
+    |> List.map (fun (k, v) ->
+      Printf.sprintf "%-*s | %s" max_key_len k v)
+    |> String.concat "\n"
+
+(** Упражнение 4: Сумма массива через for-цикл. *)
+let array_sum_imperative arr =
+  let sum = ref 0 in
+  for i = 0 to Array.length arr - 1 do
+    sum := !sum + arr.(i)
+  done;
+  !sum
+
+(** Logger FC/IS --- Functional Core. *)
+module LoggerPure = struct
+  let add msgs msg = msgs @ [msg]
+  let count msgs = List.length msgs
+  let messages msgs = msgs
 end
 
-(** Упражнение 2 (Среднее): Email --- smart constructor. *)
-module Email : sig
-  type t
-  val make : string -> (t, string) result
-  val to_string : t -> string
-end = struct
-  type t = string
-
-  let make s =
-    if String.length s = 0 then
-      Error "email не может быть пустым"
-    else if not (String.contains s '@') then
-      Error "email должен содержать @"
-    else
-      let parts = String.split_on_char '@' s in
-      match parts with
-      | [_local; domain] when String.contains domain '.' -> Ok s
-      | _ -> Error "некорректный домен"
-
-  let to_string t = t
+(** Logger FC/IS --- Imperative Shell. *)
+module LoggerShell = struct
+  type t = { mutable msgs : string list }
+  let create () = { msgs = [] }
+  let log l msg = l.msgs <- LoggerPure.add l.msgs msg
+  let messages l = LoggerPure.messages l.msgs
+  let count l = LoggerPure.count l.msgs
+  let clear l = l.msgs <- []
 end
 
-(** Упражнение 3 (Среднее): NonEmptyList. *)
-module NonEmptyList : sig
-  type 'a t
-  val make : 'a list -> ('a t, string) result
-  val singleton : 'a -> 'a t
-  val head : 'a t -> 'a
-  val tail : 'a t -> 'a list
-  val to_list : 'a t -> 'a list
-  val length : 'a t -> int
-  val map : ('a -> 'b) -> 'a t -> 'b t
-end = struct
-  type 'a t = 'a * 'a list
+(** Robot Name --- генерация уникальных имён формата AA000. *)
+module Robot = struct
+  type t = { name : string }
+  let _used_names : (string, unit) Hashtbl.t = Hashtbl.create 100
 
-  let make = function
-    | [] -> Error "список не может быть пустым"
-    | x :: xs -> Ok (x, xs)
+  let generate_name () =
+    let letter () = Char.chr (Char.code 'A' + Random.int 26) in
+    let digit () = Char.chr (Char.code '0' + Random.int 10) in
+    let rec try_name () =
+      let name = Printf.sprintf "%c%c%c%c%c"
+        (letter ()) (letter ()) (digit ()) (digit ()) (digit ()) in
+      if Hashtbl.mem _used_names name then try_name ()
+      else begin
+        Hashtbl.add _used_names name ();
+        name
+      end
+    in
+    try_name ()
 
-  let singleton x = (x, [])
-  let head (x, _) = x
-  let tail (_, xs) = xs
-  let to_list (x, xs) = x :: xs
-  let length (_, xs) = 1 + List.length xs
-  let map f (x, xs) = (f x, List.map f xs)
+  let create () = { name = generate_name () }
+  let name robot = robot.name
+  let reset _robot =
+    let new_name = generate_name () in
+    { name = new_name }
 end
 
-(** Упражнение 4 (Среднее): TrafficLight --- FSM на phantom types. *)
-module TrafficLight : sig
-  type red
-  type yellow
-  type green
-
-  type 'state light
-
-  val start : red light
-  val red_to_green : red light -> green light
-  val green_to_yellow : green light -> yellow light
-  val yellow_to_red : yellow light -> red light
-  val show : 'state light -> string
-end = struct
-  type red
-  type yellow
-  type green
-
-  type 'state light = { color : string }
-
-  let start = { color = "red" }
-  let red_to_green _l = { color = "green" }
-  let green_to_yellow _l = { color = "yellow" }
-  let yellow_to_red _l = { color = "red" }
-  let show l = l.color
-end
-
-(** Упражнение 5 (Сложное): Form --- строитель формы с накоплением ошибок. *)
-module Form : sig
-  type 'a validated
-  val field : string -> string -> (string -> ('a, string) result) -> 'a validated
-  val map2 : ('a -> 'b -> 'c) -> 'a validated -> 'b validated -> 'c validated
-  val map3 : ('a -> 'b -> 'c -> 'd) ->
-    'a validated -> 'b validated -> 'c validated -> 'd validated
-  val run : 'a validated -> ('a, (string * string) list) result
-end = struct
-  type 'a validated = ('a, (string * string) list) result
-
-  let field name raw parser =
-    match parser raw with
-    | Ok v -> Ok v
-    | Error msg -> Error [(name, msg)]
-
-  let map2 f a b =
-    match a, b with
-    | Ok a, Ok b -> Ok (f a b)
-    | Error ea, Error eb -> Error (ea @ eb)
-    | Error e, _ | _, Error e -> Error e
-
-  let map3 f a b c =
-    match a, b, c with
-    | Ok a, Ok b, Ok c -> Ok (f a b c)
-    | _ ->
-      let errors =
-        (match a with Error e -> e | Ok _ -> [])
-        @ (match b with Error e -> e | Ok _ -> [])
-        @ (match c with Error e -> e | Ok _ -> [])
-      in
-      Error errors
-
-  let run v = v
-end
-
-(** Упражнение 6 (Сложное): FileHandle --- phantom types для файловых дескрипторов. *)
-module FileHandle : sig
-  type opened
-  type closed
-
-  type 'state handle
-
-  val open_file : string -> opened handle
-  val read : opened handle -> string
-  val write : opened handle -> string -> opened handle
-  val close : opened handle -> closed handle
-  val name : 'state handle -> string
-end = struct
-  type opened
-  type closed
-
-  type 'state handle = {
-    name : string;
-    content : string;
+(** Simple LRU cache. *)
+module LRU = struct
+  type ('k, 'v) t = {
+    mutable entries : ('k * 'v) list;
+    capacity : int;
   }
 
-  let open_file path =
-    { name = path; content = "" }
+  let create capacity = { entries = []; capacity }
 
-  let read h = h.content
+  let get cache key =
+    match List.assoc_opt key cache.entries with
+    | None -> None
+    | Some v ->
+      cache.entries <- (key, v) :: List.filter (fun (k, _) -> k <> key) cache.entries;
+      Some v
 
-  let write h data =
-    { name = h.name; content = h.content ^ data }
+  let put cache key value =
+    let entries = List.filter (fun (k, _) -> k <> key) cache.entries in
+    let entries = (key, value) :: entries in
+    cache.entries <-
+      if List.length entries > cache.capacity then
+        List.filteri (fun i _ -> i < cache.capacity) entries
+      else entries
 
-  let close h =
-    { name = h.name; content = h.content }
+  let size cache = List.length cache.entries
+end
 
-  let name h = h.name
+(** Bowling — подсчёт очков в боулинге. *)
+module Bowling = struct
+  type t = {
+    mutable rolls : int list;
+    mutable current_frame : int;
+    mutable finished : bool;
+  }
+
+  let create () = { rolls = []; current_frame = 1; finished = false }
+
+  let roll game pins =
+    if game.finished then Error "Game is already over"
+    else if pins < 0 || pins > 10 then Error "Invalid number of pins"
+    else begin
+      game.rolls <- game.rolls @ [pins];
+      Ok ()
+    end
+
+  let score game =
+    let rolls = Array.of_list game.rolls in
+    let len = Array.length rolls in
+    let total = ref 0 in
+    let i = ref 0 in
+    let frame = ref 0 in
+    while !frame < 10 && !i < len do
+      if rolls.(!i) = 10 then begin
+        (* Strike *)
+        total := !total + 10
+          + (if !i + 1 < len then rolls.(!i + 1) else 0)
+          + (if !i + 2 < len then rolls.(!i + 2) else 0);
+        i := !i + 1
+      end else if !i + 1 < len && rolls.(!i) + rolls.(!i + 1) = 10 then begin
+        (* Spare *)
+        total := !total + 10
+          + (if !i + 2 < len then rolls.(!i + 2) else 0);
+        i := !i + 2
+      end else if !i + 1 < len then begin
+        total := !total + rolls.(!i) + rolls.(!i + 1);
+        i := !i + 2
+      end else
+        i := !i + 1;
+      frame := !frame + 1
+    done;
+    !total
 end

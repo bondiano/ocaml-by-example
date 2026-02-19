@@ -1,259 +1,179 @@
-open Chapter04.Shapes
+open Chapter04.Address_book
 
-(* --- Тестовые данные --- *)
+(* ---- Тестовые данные ---- *)
 
-let origin = { x = 0.0; y = 0.0 }
-let p1 = { x = 1.0; y = 2.0 }
-let p2 = { x = 4.0; y = 6.0 }
+let address_moscow =
+  { street = "ул. Пушкина, 10"; city = "Москва"; state = "Москва" }
 
-let circle = Circle (origin, 5.0)
-let rect = Rectangle (origin, 3.0, 4.0)
-let line = Line (p1, p2)
-let text = Text (p1, "hello")
+let address_spb =
+  { street = "Невский пр., 28"; city = "Санкт-Петербург"; state = "Санкт-Петербург" }
 
-let unit_circle = Circle (origin, 1.0)
+let ivan =
+  { first_name = "Иван"; last_name = "Петров"; address = address_moscow }
 
-(* --- Пользовательские testable для Alcotest --- *)
+let anna =
+  { first_name = "Анна"; last_name = "Сидорова"; address = address_spb }
 
-let shape_testable : shape Alcotest.testable =
+let ivan_dup =
+  { first_name = "Иван"; last_name = "Петров"; address = address_spb }
+
+let book =
+  empty_book |> insert_entry anna |> insert_entry ivan
+
+let book_with_dup =
+  book |> insert_entry ivan_dup
+
+(* ---- Вспомогательные функции для Alcotest ---- *)
+
+let entry_testable : entry Alcotest.testable =
   Alcotest.testable
-    (fun fmt s -> Format.pp_print_string fmt (show_shape s))
+    (fun fmt e -> Format.fprintf fmt "%s" (show_entry e))
     ( = )
 
-let bounds_testable : bounds Alcotest.testable =
-  Alcotest.testable
-    (fun fmt b ->
-      Format.fprintf fmt "{min_x=%g; min_y=%g; max_x=%g; max_y=%g}"
-        b.min_x b.min_y b.max_x b.max_y)
-    (fun a b ->
-      a.min_x = b.min_x && a.min_y = b.min_y
-      && a.max_x = b.max_x && a.max_y = b.max_y)
+let entry_option_testable : entry option Alcotest.testable =
+  Alcotest.option entry_testable
 
-(* --- Тесты библиотеки --- *)
+let entry_list_testable : entry list Alcotest.testable =
+  Alcotest.list entry_testable
 
-let show_point_tests =
+(* ---- Тесты библиотеки (show_address, show_entry, find_entry) ---- *)
+
+let show_address_tests =
   let open Alcotest in
   [
-    test_case "начало координат" `Quick (fun () ->
-      check string "origin" "(0., 0.)" (show_point origin));
-    test_case "произвольная точка" `Quick (fun () ->
-      check string "p1" "(1., 2.)" (show_point p1));
+    test_case "форматирует адрес" `Quick (fun () ->
+      check string "show_address"
+        "ул. Пушкина, 10, Москва, Москва"
+        (show_address address_moscow));
+    test_case "форматирует другой адрес" `Quick (fun () ->
+      check string "show_address spb"
+        "Невский пр., 28, Санкт-Петербург, Санкт-Петербург"
+        (show_address address_spb));
   ]
 
-let shape_bounds_tests =
+let show_entry_tests =
   let open Alcotest in
   [
-    test_case "bounds круга" `Quick (fun () ->
-      check bounds_testable "circle bounds"
-        { min_x = -5.0; min_y = -5.0; max_x = 5.0; max_y = 5.0 }
-        (shape_bounds circle));
-    test_case "bounds прямоугольника" `Quick (fun () ->
-      check bounds_testable "rect bounds"
-        { min_x = 0.0; min_y = 0.0; max_x = 3.0; max_y = 4.0 }
-        (shape_bounds rect));
-    test_case "bounds линии" `Quick (fun () ->
-      check bounds_testable "line bounds"
-        { min_x = 1.0; min_y = 2.0; max_x = 4.0; max_y = 6.0 }
-        (shape_bounds line));
+    test_case "форматирует запись" `Quick (fun () ->
+      check string "show_entry"
+        "Петров, Иван: ул. Пушкина, 10, Москва, Москва"
+        (show_entry ivan));
   ]
 
-let bounds_tests =
+let find_entry_tests =
+  [
+    Alcotest.test_case "находит существующую запись" `Quick (fun () ->
+      Alcotest.check entry_option_testable "find_entry Иван Петров"
+        (Some ivan)
+        (find_entry "Иван" "Петров" book));
+    Alcotest.test_case "возвращает None для несуществующей записи" `Quick (fun () ->
+      Alcotest.check entry_option_testable "find_entry Пётр Иванов"
+        None
+        (find_entry "Пётр" "Иванов" book));
+  ]
+
+let insert_entry_tests =
   let open Alcotest in
   [
-    test_case "bounds пустой картинки" `Quick (fun () ->
-      check bounds_testable "empty"
-        { min_x = 0.0; min_y = 0.0; max_x = 0.0; max_y = 0.0 }
-        (bounds []));
-    test_case "bounds картинки из нескольких фигур" `Quick (fun () ->
-      check bounds_testable "picture"
-        { min_x = -5.0; min_y = -5.0; max_x = 5.0; max_y = 6.0 }
-        (bounds [circle; rect; line]));
+    test_case "добавляет запись в книгу" `Quick (fun () ->
+      check int "length after insert" 2 (List.length book));
+    test_case "новая запись в начале" `Quick (fun () ->
+      check entry_testable "head is ivan"
+        ivan (List.hd book));
   ]
 
-(* --- Тесты упражнений --- *)
+(* ---- Тесты упражнений ---- *)
 
-let area_tests =
+let find_entry_by_street_tests =
+  [
+    Alcotest.test_case "находит запись по улице" `Quick (fun () ->
+      Alcotest.check entry_option_testable "find by Невский"
+        (Some anna)
+        (My_solutions.find_entry_by_street "Невский пр., 28" book));
+    Alcotest.test_case "возвращает None для несуществующей улицы" `Quick (fun () ->
+      Alcotest.check entry_option_testable "find by unknown street"
+        None
+        (My_solutions.find_entry_by_street "ул. Ленина, 1" book));
+  ]
+
+let entry_exists_tests =
   let open Alcotest in
   [
-    test_case "площадь круга" `Quick (fun () ->
-      check (float 1e-9) "circle"
-        (Float.pi *. 25.0) (My_solutions.area circle));
-    test_case "площадь единичного круга" `Quick (fun () ->
-      check (float 1e-9) "unit circle"
-        Float.pi (My_solutions.area unit_circle));
-    test_case "площадь прямоугольника" `Quick (fun () ->
-      check (float 1e-9) "rect" 12.0 (My_solutions.area rect));
-    test_case "площадь линии" `Quick (fun () ->
-      check (float 1e-9) "line" 0.0 (My_solutions.area line));
-    test_case "площадь текста" `Quick (fun () ->
-      check (float 1e-9) "text" 0.0 (My_solutions.area text));
+    test_case "возвращает true для существующей записи" `Quick (fun () ->
+      check bool "exists Анна Сидорова" true
+        (My_solutions.entry_exists ~first_name:"Анна" ~last_name:"Сидорова" book));
+    test_case "возвращает false для несуществующей записи" `Quick (fun () ->
+      check bool "not exists Пётр Иванов" false
+        (My_solutions.entry_exists ~first_name:"Пётр" ~last_name:"Иванов" book));
+    test_case "работает с именованными аргументами в произвольном порядке" `Quick (fun () ->
+      check bool "exists with swapped labels" true
+        (My_solutions.entry_exists ~last_name:"Петров" ~first_name:"Иван" book));
   ]
 
-let scale_tests =
-  let open Alcotest in
+let remove_duplicates_tests =
   [
-    test_case "масштабирование круга" `Quick (fun () ->
-      check shape_testable "scale circle"
-        (Circle (origin, 10.0))
-        (My_solutions.scale 2.0 circle));
-    test_case "масштабирование прямоугольника" `Quick (fun () ->
-      check shape_testable "scale rect"
-        (Rectangle (origin, 9.0, 12.0))
-        (My_solutions.scale 3.0 rect));
-    test_case "масштабирование линии" `Quick (fun () ->
-      check shape_testable "scale line"
-        (Line ({ x = 2.0; y = 4.0 }, { x = 8.0; y = 12.0 }))
-        (My_solutions.scale 2.0 line));
-    test_case "масштабирование текста" `Quick (fun () ->
-      check shape_testable "scale text"
-        (Text ({ x = 0.5; y = 1.0 }, "hello"))
-        (My_solutions.scale 0.5 text));
+    Alcotest.test_case "удаляет дубликаты по имени и фамилии" `Quick (fun () ->
+      Alcotest.check Alcotest.int "length after dedup"
+        2
+        (List.length (My_solutions.remove_duplicates book_with_dup)));
+    Alcotest.test_case "сохраняет первую запись из дубликатов" `Quick (fun () ->
+      let deduped = My_solutions.remove_duplicates book_with_dup in
+      (* book_with_dup = [ivan_dup; ivan; anna], первый Иван Петров — ivan_dup *)
+      let ivan_entry =
+        deduped |> List.find_opt (fun e ->
+          e.first_name = "Иван" && e.last_name = "Петров")
+      in
+      Alcotest.check entry_option_testable "first Ivan is ivan_dup"
+        (Some ivan_dup)
+        ivan_entry);
+    Alcotest.test_case "не меняет книгу без дубликатов" `Quick (fun () ->
+      Alcotest.check entry_list_testable "no change"
+        book
+        (My_solutions.remove_duplicates book));
   ]
 
-let shape_text_tests =
+let two_fer_tests =
   let open Alcotest in
   [
-    test_case "текст из Text" `Quick (fun () ->
-      check (option string) "text"
-        (Some "hello") (My_solutions.shape_text text));
-    test_case "текст из Circle" `Quick (fun () ->
-      check (option string) "circle"
-        None (My_solutions.shape_text circle));
-    test_case "текст из Rectangle" `Quick (fun () ->
-      check (option string) "rect"
-        None (My_solutions.shape_text rect));
-    test_case "текст из Line" `Quick (fun () ->
-      check (option string) "line"
-        None (My_solutions.shape_text line));
+    test_case "без имени" `Quick (fun () ->
+      check string "default" "One for you, one for me."
+        (My_solutions.two_fer ()));
+    test_case "с именем" `Quick (fun () ->
+      check string "alice" "One for Alice, one for me."
+        (My_solutions.two_fer ~name:"Alice" ()));
   ]
 
-let safe_head_tests =
+let grade_school_tests =
   let open Alcotest in
   [
-    test_case "head непустого списка" `Quick (fun () ->
-      check (option int) "non-empty"
-        (Some 1) (My_solutions.safe_head [1; 2; 3]));
-    test_case "head пустого списка" `Quick (fun () ->
-      check (option int) "empty"
-        None (My_solutions.safe_head []));
-    test_case "head списка строк" `Quick (fun () ->
-      check (option string) "strings"
-        (Some "hello") (My_solutions.safe_head ["hello"; "world"]));
+    test_case "add и grade" `Quick (fun () ->
+      let school = My_solutions.GradeSchool.empty in
+      let school = My_solutions.GradeSchool.add "Иван" 2 school in
+      let school = My_solutions.GradeSchool.add "Мария" 2 school in
+      let school = My_solutions.GradeSchool.add "Пётр" 3 school in
+      check (list string) "grade 2" ["Иван"; "Мария"]
+        (My_solutions.GradeSchool.grade 2 school));
+    test_case "sorted" `Quick (fun () ->
+      let school = My_solutions.GradeSchool.empty in
+      let school = My_solutions.GradeSchool.add "Мария" 2 school in
+      let school = My_solutions.GradeSchool.add "Иван" 2 school in
+      let school = My_solutions.GradeSchool.add "Пётр" 1 school in
+      let sorted = My_solutions.GradeSchool.sorted school in
+      check int "2 класса" 2 (List.length sorted));
   ]
 
-let bob_tests =
-  let open Alcotest in
-  [
-    test_case "вопрос" `Quick (fun () ->
-      check string "question" "Sure."
-        (My_solutions.bob "How are you?"));
-    test_case "крик" `Quick (fun () ->
-      check string "yell" "Whoa, chill out!"
-        (My_solutions.bob "WHAT ARE YOU DOING"));
-    test_case "крик-вопрос" `Quick (fun () ->
-      check string "yell question" "Calm down, I know what I'm doing!"
-        (My_solutions.bob "WHAT?"));
-    test_case "тишина" `Quick (fun () ->
-      check string "silence" "Fine. Be that way!"
-        (My_solutions.bob "   "));
-    test_case "обычное" `Quick (fun () ->
-      check string "normal" "Whatever."
-        (My_solutions.bob "Hello there"));
-  ]
-
-let triangle_tests =
-  let open Alcotest in
-  let triangle_testable = Alcotest.testable
-    (fun fmt t -> Format.pp_print_string fmt (match t with
-      | My_solutions.Equilateral -> "Equilateral"
-      | My_solutions.Isosceles -> "Isosceles"
-      | My_solutions.Scalene -> "Scalene"))
-    ( = ) in
-  [
-    test_case "равносторонний" `Quick (fun () ->
-      check (result triangle_testable string) "equilateral"
-        (Ok My_solutions.Equilateral)
-        (My_solutions.classify_triangle 2.0 2.0 2.0));
-    test_case "равнобедренный" `Quick (fun () ->
-      check (result triangle_testable string) "isosceles"
-        (Ok My_solutions.Isosceles)
-        (My_solutions.classify_triangle 3.0 3.0 4.0));
-    test_case "разносторонний" `Quick (fun () ->
-      check (result triangle_testable string) "scalene"
-        (Ok My_solutions.Scalene)
-        (My_solutions.classify_triangle 3.0 4.0 5.0));
-    test_case "невалидный" `Quick (fun () ->
-      match My_solutions.classify_triangle 1.0 1.0 3.0 with
-      | Error _ -> ()
-      | Ok _ -> Alcotest.fail "ожидалась ошибка");
-  ]
-
-let raindrops_tests =
-  let open Alcotest in
-  [
-    test_case "3 → Pling" `Quick (fun () ->
-      check string "3" "Pling" (My_solutions.raindrops 3));
-    test_case "5 → Plang" `Quick (fun () ->
-      check string "5" "Plang" (My_solutions.raindrops 5));
-    test_case "7 → Plong" `Quick (fun () ->
-      check string "7" "Plong" (My_solutions.raindrops 7));
-    test_case "15 → PlingPlang" `Quick (fun () ->
-      check string "15" "PlingPlang" (My_solutions.raindrops 15));
-    test_case "34 → 34" `Quick (fun () ->
-      check string "34" "34" (My_solutions.raindrops 34));
-  ]
-
-let perfect_numbers_tests =
-  let open Alcotest in
-  let class_testable = Alcotest.testable
-    (fun fmt c -> Format.pp_print_string fmt (match c with
-      | My_solutions.Perfect -> "Perfect"
-      | My_solutions.Abundant -> "Abundant"
-      | My_solutions.Deficient -> "Deficient"))
-    ( = ) in
-  [
-    test_case "6 — совершенное" `Quick (fun () ->
-      check (result class_testable string) "6"
-        (Ok My_solutions.Perfect) (My_solutions.classify 6));
-    test_case "12 — избыточное" `Quick (fun () ->
-      check (result class_testable string) "12"
-        (Ok My_solutions.Abundant) (My_solutions.classify 12));
-    test_case "7 — недостаточное" `Quick (fun () ->
-      check (result class_testable string) "7"
-        (Ok My_solutions.Deficient) (My_solutions.classify 7));
-    test_case "0 — ошибка" `Quick (fun () ->
-      match My_solutions.classify 0 with
-      | Error _ -> ()
-      | Ok _ -> Alcotest.fail "ожидалась ошибка");
-  ]
-
-let allergies_tests =
-  let open Alcotest in
-  [
-    test_case "нет аллергий" `Quick (fun () ->
-      check (list int) "empty" [] (List.map Obj.magic (My_solutions.allergies 0)));
-    test_case "аллергия на яйца" `Quick (fun () ->
-      check bool "eggs" true
-        (My_solutions.is_allergic_to My_solutions.Eggs 1));
-    test_case "аллергия на несколько" `Quick (fun () ->
-      let a = My_solutions.allergies 5 in
-      check bool "eggs+shellfish" true
-        (List.length a = 2));
-  ]
+(* ---- Запуск ---- *)
 
 let () =
-  Alcotest.run "Chapter 04"
+  Alcotest.run "Chapter 03"
     [
-      ("show_point --- форматирование точки", show_point_tests);
-      ("shape_bounds --- bounds фигуры", shape_bounds_tests);
-      ("bounds --- bounds картинки", bounds_tests);
-      ("area --- площадь фигуры", area_tests);
-      ("scale --- масштабирование", scale_tests);
-      ("shape_text --- извлечение текста", shape_text_tests);
-      ("safe_head --- безопасный head", safe_head_tests);
-      ("Bob — ответы", bob_tests);
-      ("Triangle — классификация", triangle_tests);
-      ("Raindrops", raindrops_tests);
-      ("Perfect Numbers", perfect_numbers_tests);
-      ("Allergies — аллергии", allergies_tests);
+      ("show_address — форматирование адреса", show_address_tests);
+      ("show_entry — форматирование записи", show_entry_tests);
+      ("find_entry — поиск по имени", find_entry_tests);
+      ("insert_entry — добавление записи", insert_entry_tests);
+      ("find_entry_by_street — поиск по улице", find_entry_by_street_tests);
+      ("entry_exists — проверка существования", entry_exists_tests);
+      ("remove_duplicates — удаление дубликатов", remove_duplicates_tests);
+      ("Two-Fer", two_fer_tests);
+      ("Grade School — школа", grade_school_tests);
     ]

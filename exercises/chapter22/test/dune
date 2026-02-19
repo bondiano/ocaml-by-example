@@ -1,3 +1,0 @@
-(test
- (name test_chapter22)
- (libraries chapter22 alcotest))

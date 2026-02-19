@@ -1,100 +1,60 @@
 (** Здесь вы можете писать свои решения упражнений. *)
 
-open Chapter06.Hashable
+open Chapter06.Path
 
-(** Упражнение 1: IntSet --- множество целых чисел на сортированном списке. *)
-module IntSet : Set_intf with type elt = int = struct
-  type elt = int
-  type t = int list
-
-  let empty = []
-
-  let add _x _s = failwith "todo"
-
-  let mem _x _s = failwith "todo"
-
-  let elements s = s
-
-  let size s = List.length s
-end
-
-(** Упражнение 2: Функтор MakeSet параметризованный по Comparable. *)
-module MakeSet (Elt : Comparable) : Set_intf with type elt = Elt.t = struct
-  type elt = Elt.t
-  type t = Elt.t list
-
-  let empty = []
-
-  let add _x _s = failwith "todo"
-
-  let mem _x _s = failwith "todo"
-
-  let elements s = s
-
-  let size s = List.length s
-end
-
-(** Упражнение 3: max_element через модуль первого класса. *)
-let max_element (type a) (module C : Comparable with type t = a) (_lst : a list)
-    : a option =
-  ignore (module C : Comparable with type t = a);
+let all_files (_p : path) : path list =
   failwith "todo"
 
-(** Упражнение 4: ExtendedIntSet --- IntSet с дополнительными операциями. *)
-module ExtendedIntSet : sig
-  include Set_intf with type elt = int
-  val union : t -> t -> t
-  val inter : t -> t -> t
-end = struct
-  include IntSet
-
-  let union _s1 _s2 = failwith "todo"
-
-  let inter _s1 _s2 = failwith "todo"
-end
-
-(** Упражнение 5: First semigroup. *)
-module First : Chapter06.Monoid.Semigroup with type t = string = struct
-  type t = string
-  let combine _a _b = failwith "todo"
-end
-
-(** Упражнение 6: concat_all через first-class module. *)
-let concat_all (type a) (module M : Chapter06.Monoid.Monoid with type t = a)
-    (_lst : a list) : a =
-  ignore (module M : Chapter06.Monoid.Monoid with type t = a);
+let largest_file (_p : path) : (path * int) option =
   failwith "todo"
 
-(** Упражнение: Custom Set — множество через модуль с сигнатурой. *)
-module type ORDERED = sig
-  type t
-  val compare : t -> t -> int
-end
+let where_is (_p : path) (_name : string) : path option =
+  failwith "todo"
 
-module MakeCustomSet (Elt : ORDERED) : sig
-  type t
-  type elt = Elt.t
-  val empty : t
-  val add : elt -> t -> t
-  val mem : elt -> t -> bool
-  val remove : elt -> t -> t
-  val elements : t -> elt list
-  val size : t -> int
-  val union : t -> t -> t
-  val inter : t -> t -> t
-  val diff : t -> t -> t
-  val is_empty : t -> bool
-end = struct
-  type elt = Elt.t
-  type t = elt list (* заменить на реальную реализацию *)
-  let empty = []
-  let add _x _s = failwith "todo"
-  let mem _x _s = failwith "todo"
-  let remove _x _s = failwith "todo"
-  let elements _s = failwith "todo"
-  let size _s = failwith "todo"
-  let union _s1 _s2 = failwith "todo"
-  let inter _s1 _s2 = failwith "todo"
-  let diff _s1 _s2 = failwith "todo"
-  let is_empty _s = failwith "todo"
+let total_size (_p : path) : int =
+  failwith "todo"
+
+let fibs : int Seq.t =
+  fun () -> failwith "todo"
+
+(** Упражнение: Pangram — проверить, содержит ли строка все буквы алфавита. *)
+let is_pangram (_sentence : string) : bool = failwith "todo"
+
+(** Упражнение: Isogram — проверить, все ли буквы уникальны. *)
+let is_isogram (_word : string) : bool = failwith "todo"
+
+(** Упражнение: Anagram — найти анаграммы слова из списка. *)
+let anagrams (_word : string) (_candidates : string list) : string list = failwith "todo"
+
+(** Упражнение: Reverse String *)
+let reverse_string (_s : string) : string = failwith "todo"
+
+(** Упражнение: Nucleotide Count *)
+let nucleotide_count (_dna : string) : (char * int) list = failwith "todo"
+
+(** Упражнение: Hamming distance *)
+let hamming_distance (_s1 : string) (_s2 : string) : (int, string) result = failwith "todo"
+
+(** Упражнение: Run-Length Encoding *)
+let rle_encode (_s : string) : string = failwith "todo"
+let rle_decode (_s : string) : string = failwith "todo"
+
+(** Упражнение: Traverse option *)
+let traverse_option (_f : 'a -> 'b option) (_lst : 'a list) : 'b list option =
+  failwith "todo"
+
+(** Упражнение: Traverse result *)
+let traverse_result (_f : 'a -> ('b, 'e) result) (_lst : 'a list) : ('b list, 'e) result =
+  failwith "todo"
+
+(** Упражнение: List Ops — реализуйте операции над списками без List.*. *)
+module List_ops = struct
+  let length (_lst : 'a list) : int = failwith "todo"
+  let reverse (_lst : 'a list) : 'a list = failwith "todo"
+  let map (_f : 'a -> 'b) (_lst : 'a list) : 'b list = failwith "todo"
+  let filter (_f : 'a -> bool) (_lst : 'a list) : 'a list = failwith "todo"
+  let fold_left (_f : 'b -> 'a -> 'b) (_init : 'b) (_lst : 'a list) : 'b = failwith "todo"
+  let fold_right (_f : 'a -> 'b -> 'b) (_lst : 'a list) (_init : 'b) : 'b = failwith "todo"
+  let append (_xs : 'a list) (_ys : 'a list) : 'a list = failwith "todo"
+  let concat (_lists : 'a list list) : 'a list = failwith "todo"
 end

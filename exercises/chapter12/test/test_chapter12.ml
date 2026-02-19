@@ -1,122 +1,126 @@
-open Chapter12.Ffi_json
+open Chapter12.Concurrent
+
+(* --- Утилита: запуск теста внутри Eio --- *)
+
+let run_eio f () =
+  Eio_main.run @@ fun _env -> f ()
 
 (* --- Тесты библиотеки --- *)
 
-let c_sin_tests =
+let fib_tests =
   let open Alcotest in
   [
-    test_case "c_sin 0" `Quick (fun () ->
-      let r = Float.abs (c_sin 0.0) in
-      check bool "~0" true (r < 1e-10));
-    test_case "c_sin pi/2" `Quick (fun () ->
-      let r = Float.abs (c_sin (Float.pi /. 2.0) -. 1.0) in
-      check bool "~1" true (r < 1e-10));
+    test_case "fib 0" `Quick (fun () ->
+      check int "fib 0" 0 (fib 0));
+    test_case "fib 1" `Quick (fun () ->
+      check int "fib 1" 1 (fib 1));
+    test_case "fib 10" `Quick (fun () ->
+      check int "fib 10" 55 (fib 10));
   ]
 
-let contact_json_tests =
-  let alice = {
-    name = "Alice"; age = 30; email = Some "alice@example.com";
-    address = { street = "Main St"; city = "Moscow"; zip = "101000" }
-  } in
+let parallel_map_tests =
   let open Alcotest in
   [
-    test_case "contact_to_json roundtrip" `Quick (fun () ->
-      let json = contact_to_json alice in
-      match contact_of_json json with
-      | Ok c -> check string "name" "Alice" c.name
-      | Error e -> fail e);
-    test_case "contact_of_json invalid" `Quick (fun () ->
-      match contact_of_json (`String "bad") with
-      | Error _ -> ()
-      | Ok _ -> fail "expected error");
-    test_case "json_string_field" `Quick (fun () ->
-      let json = `Assoc [("key", `String "val")] in
-      check (option string) "found" (Some "val") (json_string_field "key" json));
-    test_case "json_int_field" `Quick (fun () ->
-      let json = `Assoc [("n", `Int 42)] in
-      check (option int) "found" (Some 42) (json_int_field "n" json));
-    test_case "ppx contact_of_yojson roundtrip" `Quick (fun () ->
-      let json = contact_to_yojson alice in
-      match contact_of_yojson json with
-      | Ok c -> check string "name" "Alice" c.name
-      | Error e -> fail e);
+    test_case "parallel_map double" `Quick (run_eio (fun () ->
+      check (list int) "double" [2; 4; 6]
+        (parallel_map (fun x -> x * 2) [1; 2; 3])));
+    test_case "parallel_map пустой список" `Quick (run_eio (fun () ->
+      check (list int) "empty" []
+        (parallel_map (fun x -> x * 2) [])));
+  ]
+
+let parallel_sum_tests =
+  let open Alcotest in
+  [
+    test_case "parallel_sum" `Quick (run_eio (fun () ->
+      check int "sum" 15 (parallel_sum [1; 2; 3; 4; 5])));
+    test_case "parallel_sum пустой" `Quick (run_eio (fun () ->
+      check int "empty" 0 (parallel_sum [])));
+  ]
+
+let produce_and_collect_tests =
+  let open Alcotest in
+  [
+    test_case "produce_and_collect" `Quick (run_eio (fun () ->
+      let result = produce_and_collect (fun stream ->
+        for i = 1 to 3 do
+          Eio.Stream.add stream (Some i)
+        done;
+        Eio.Stream.add stream None
+      ) in
+      check (list int) "collected" [1; 2; 3] result));
   ]
 
 (* --- Тесты упражнений --- *)
 
-let product_json_tests =
+let parallel_fib_tests =
   let open Alcotest in
-  let book = My_solutions.{ title = "OCaml Book"; price = 29.99; in_stock = true } in
   [
-    test_case "product_to_json" `Quick (fun () ->
-      let json = My_solutions.product_to_json book in
-      match json with
-      | `Assoc fields ->
-        check (option string) "title"
-          (Some "OCaml Book")
-          (match List.assoc_opt "title" fields with Some (`String s) -> Some s | _ -> None)
-      | _ -> fail "expected object");
-    test_case "product_of_json valid" `Quick (fun () ->
-      let json = `Assoc [
-        ("title", `String "Pen");
-        ("price", `Float 1.50);
-        ("in_stock", `Bool false);
-      ] in
-      match My_solutions.product_of_json json with
-      | Ok p ->
-        check string "title" "Pen" p.title;
-        check bool "stock" false p.in_stock
-      | Error e -> fail e);
-    test_case "product_of_json invalid" `Quick (fun () ->
-      match My_solutions.product_of_json (`Int 42) with
-      | Error _ -> ()
-      | Ok _ -> fail "expected error");
-    test_case "product roundtrip" `Quick (fun () ->
-      let json = My_solutions.product_to_json book in
-      match My_solutions.product_of_json json with
-      | Ok p -> check string "title" "OCaml Book" p.title
-      | Error e -> fail e);
+    test_case "parallel_fib 10 10" `Quick (run_eio (fun () ->
+      check int "fib 10 + fib 10" 110
+        (My_solutions.parallel_fib 10 10)));
+    test_case "parallel_fib 5 7" `Quick (run_eio (fun () ->
+      check int "fib 5 + fib 7" 18
+        (My_solutions.parallel_fib 5 7)));
+    test_case "parallel_fib 0 1" `Quick (run_eio (fun () ->
+      check int "fib 0 + fib 1" 1
+        (My_solutions.parallel_fib 0 1)));
   ]
 
-let extract_names_tests =
+let concurrent_map_tests =
   let open Alcotest in
   [
-    test_case "extract_names" `Quick (fun () ->
-      let json = `List [
-        `Assoc [("name", `String "Alice"); ("age", `Int 30)];
-        `Assoc [("name", `String "Bob")];
-        `Assoc [("age", `Int 25)];
-      ] in
-      check (list string) "names" ["Alice"; "Bob"]
-        (My_solutions.extract_names json));
-    test_case "extract_names empty" `Quick (fun () ->
-      check (list string) "empty" []
-        (My_solutions.extract_names (`List [])));
-    test_case "extract_names not list" `Quick (fun () ->
-      check (list string) "not list" []
-        (My_solutions.extract_names (`String "bad")));
+    test_case "concurrent_map square" `Quick (run_eio (fun () ->
+      check (list int) "squares" [1; 4; 9; 16]
+        (My_solutions.concurrent_map (fun x -> x * x) [1; 2; 3; 4])));
+    test_case "concurrent_map strings" `Quick (run_eio (fun () ->
+      check (list string) "upper"
+        ["HELLO"; "WORLD"]
+        (My_solutions.concurrent_map String.uppercase_ascii
+           ["hello"; "world"])));
+    test_case "concurrent_map пустой" `Quick (run_eio (fun () ->
+      check (list int) "empty" []
+        (My_solutions.concurrent_map (fun x -> x) [])));
   ]
 
-let config_ppx_tests =
+let produce_consume_tests =
   let open Alcotest in
-  let cfg = My_solutions.{ host = "localhost"; port = 8080; debug = true } in
   [
-    test_case "config yojson roundtrip" `Quick (fun () ->
-      let json = My_solutions.config_to_yojson cfg in
-      match My_solutions.config_of_yojson json with
-      | Ok c ->
-        check string "host" "localhost" c.host;
-        check int "port" 8080 c.port;
-        check bool "debug" true c.debug
-      | Error e -> fail e);
+    test_case "produce_consume 5" `Quick (run_eio (fun () ->
+      check int "sum 1..5" 15
+        (My_solutions.produce_consume 5)));
+    test_case "produce_consume 10" `Quick (run_eio (fun () ->
+      check int "sum 1..10" 55
+        (My_solutions.produce_consume 10)));
+    test_case "produce_consume 0" `Quick (run_eio (fun () ->
+      check int "sum 0" 0
+        (My_solutions.produce_consume 0)));
+  ]
+
+let race_tests =
+  let open Alcotest in
+  [
+    test_case "race возвращает результат" `Quick (run_eio (fun () ->
+      let result = My_solutions.race [
+        (fun () -> 42);
+        (fun () -> 99);
+      ] in
+      check bool "result is 42 or 99" true
+        (result = 42 || result = 99)));
+    test_case "race с одной задачей" `Quick (run_eio (fun () ->
+      check int "single" 7
+        (My_solutions.race [(fun () -> 7)])));
   ]
 
 let () =
-  Alcotest.run "Chapter 10"
+  Alcotest.run "Chapter 09"
     [
-      ("c_sin --- FFI sin", c_sin_tests);
-      ("contact_json --- ручной JSON", contact_json_tests);
-      ("product_json --- product JSON", product_json_tests);
-      ("extract_names --- извлечение имён", extract_names_tests);
-      ("config_ppx --- ppx_deriving_yojson", config_ppx_tests);
+      ("fib --- числа Фибоначчи", fib_tests);
+      ("parallel_map --- параллельный map", parallel_map_tests);
+      ("parallel_sum --- параллельная сумма", parallel_sum_tests);
+      ("produce_and_collect --- producer-consumer", produce_and_collect_tests);
+      ("parallel_fib --- параллельный Фибоначчи", parallel_fib_tests);
+      ("concurrent_map --- конкурентный map", concurrent_map_tests);
+      ("produce_consume --- producer-consumer сумма", produce_consume_tests);
+      ("race --- гонка задач", race_tests);
     ]

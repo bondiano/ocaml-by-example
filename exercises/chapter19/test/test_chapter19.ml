@@ -1,150 +1,122 @@
-open Chapter19.Lwt_examples
+open Chapter19.Ppx_examples
 
 (* --- Тесты библиотеки --- *)
 
-let lwt_tc name f =
-  Alcotest.test_case name `Quick (fun () -> Lwt_main.run (f ()))
-
-let basic_tests =
+let show_tests =
+  let open Alcotest in
   [
-    lwt_tc "delay returns unit" (fun () ->
-      let open Lwt.Syntax in
-      let* () = delay 0.01 in
-      Lwt.return (Alcotest.(check unit) "unit" () ()));
+    test_case "show_direction North" `Quick (fun () ->
+      check string "show" "Ppx_examples.North" (show_direction North));
+    test_case "show_point" `Quick (fun () ->
+      let s = show_point { x = 1.0; y = 2.0 } in
+      check bool "contains x" true (String.length s > 0));
+    test_case "show_shape Circle" `Quick (fun () ->
+      let s = show_shape (Circle 5.0) in
+      check bool "not empty" true (String.length s > 0));
+  ]
 
-    lwt_tc "sequence" (fun () ->
-      let open Lwt.Syntax in
-      let* results = sequence [Lwt.return 1; Lwt.return 2; Lwt.return 3] in
-      Lwt.return (Alcotest.(check (list int)) "seq" [1; 2; 3] results));
+let eq_tests =
+  let open Alcotest in
+  [
+    test_case "equal_direction same" `Quick (fun () ->
+      check bool "equal" true (equal_direction North North));
+    test_case "equal_direction diff" `Quick (fun () ->
+      check bool "not equal" false (equal_direction North South));
+    test_case "equal_point same" `Quick (fun () ->
+      check bool "equal" true
+        (equal_point { x = 1.0; y = 2.0 } { x = 1.0; y = 2.0 }));
+    test_case "equal_point diff" `Quick (fun () ->
+      check bool "not equal" false
+        (equal_point { x = 1.0; y = 2.0 } { x = 3.0; y = 4.0 }));
+  ]
 
-    lwt_tc "parallel2" (fun () ->
-      let open Lwt.Syntax in
-      let* (a, b) = parallel2 (Lwt.return 1) (Lwt.return "hello") in
-      Alcotest.(check int) "a" 1 a;
-      Lwt.return (Alcotest.(check string) "b" "hello" b));
-
-    lwt_tc "race" (fun () ->
-      let open Lwt.Syntax in
-      let slow = let* () = delay 1.0 in Lwt.return "slow" in
-      let fast = let* () = delay 0.01 in Lwt.return "fast" in
-      let* winner = race fast slow in
-      Lwt.return (Alcotest.(check string) "winner" "fast" winner));
-
-    lwt_tc "parallel_delays" (fun () ->
-      let open Lwt.Syntax in
-      let* results = parallel_delays () in
-      Lwt.return (Alcotest.(check (list string)) "results" ["first"; "second"] results));
-
-    lwt_tc "race_example" (fun () ->
-      let open Lwt.Syntax in
-      let* result = race_example () in
-      Lwt.return (Alcotest.(check string) "fast" "fast" result));
+let lib_tests =
+  let open Alcotest in
+  [
+    test_case "all_directions" `Quick (fun () ->
+      check int "4 directions" 4 (List.length all_directions));
+    test_case "describe_direction" `Quick (fun () ->
+      check string "North" "North" (describe_direction North));
+    test_case "dedup_points" `Quick (fun () ->
+      let pts = [{ x = 1.0; y = 2.0 }; { x = 1.0; y = 2.0 }; { x = 3.0; y = 4.0 }] in
+      check int "deduped" 2 (List.length (dedup_points pts)));
+    test_case "area circle" `Quick (fun () ->
+      let a = area (Circle 1.0) in
+      check bool "pi" true (Float.abs (a -. Float.pi) < 0.001));
   ]
 
 (* --- Тесты упражнений --- *)
 
-let sequential_map_tests =
+let color_tests =
+  let open Alcotest in
   [
-    lwt_tc "sequential_map identity" (fun () ->
-      let open Lwt.Syntax in
-      let* results = My_solutions.sequential_map Lwt.return [1; 2; 3] in
-      Lwt.return (Alcotest.(check (list int)) "identity" [1; 2; 3] results));
-
-    lwt_tc "sequential_map double" (fun () ->
-      let open Lwt.Syntax in
-      let* results = My_solutions.sequential_map
-        (fun x -> Lwt.return (x * 2)) [1; 2; 3] in
-      Lwt.return (Alcotest.(check (list int)) "doubled" [2; 4; 6] results));
-
-    lwt_tc "sequential_map empty" (fun () ->
-      let open Lwt.Syntax in
-      let* results = My_solutions.sequential_map Lwt.return [] in
-      Lwt.return (Alcotest.(check (list int)) "empty" [] results));
-
-    lwt_tc "sequential_map preserves order" (fun () ->
-      let open Lwt.Syntax in
-      let order = ref [] in
-      let f x =
-        let* () = Lwt_unix.sleep (Float.of_int (3 - x) *. 0.01) in
-        order := x :: !order;
-        Lwt.return x
-      in
-      let* results = My_solutions.sequential_map f [1; 2; 3] in
-      Alcotest.(check (list int)) "results" [1; 2; 3] results;
-      Lwt.return (Alcotest.(check (list int)) "order" [3; 2; 1] !order));
+    test_case "all_colors length" `Quick (fun () ->
+      check int "3 colors" 3 (List.length My_solutions.all_colors));
+    test_case "all_colors contains Red" `Quick (fun () ->
+      check bool "has Red" true
+        (List.exists (My_solutions.equal_color My_solutions.Red) My_solutions.all_colors));
+    test_case "color_to_string Red" `Quick (fun () ->
+      let s = My_solutions.color_to_string My_solutions.Red in
+      check bool "not empty" true (String.length s > 0));
+    test_case "color_to_string distinct" `Quick (fun () ->
+      let r = My_solutions.color_to_string My_solutions.Red in
+      let g = My_solutions.color_to_string My_solutions.Green in
+      check bool "distinct" true (r <> g));
   ]
 
-let concurrent_map_tests =
+let dedup_person_tests =
+  let open Alcotest in
   [
-    lwt_tc "concurrent_map identity" (fun () ->
-      let open Lwt.Syntax in
-      let* results = My_solutions.concurrent_map Lwt.return [1; 2; 3] in
-      Lwt.return (Alcotest.(check (list int)) "identity" [1; 2; 3] results));
-
-    lwt_tc "concurrent_map double" (fun () ->
-      let open Lwt.Syntax in
-      let* results = My_solutions.concurrent_map
-        (fun x -> Lwt.return (x * 2)) [1; 2; 3] in
-      Lwt.return (Alcotest.(check (list int)) "doubled" [2; 4; 6] results));
-
-    lwt_tc "concurrent_map empty" (fun () ->
-      let open Lwt.Syntax in
-      let* results = My_solutions.concurrent_map Lwt.return [] in
-      Lwt.return (Alcotest.(check (list int)) "empty" [] results));
+    test_case "dedup empty" `Quick (fun () ->
+      check int "empty" 0 (List.length (My_solutions.dedup_persons [])));
+    test_case "dedup no dups" `Quick (fun () ->
+      let lst = My_solutions.[
+        { name = "Alice"; age = 30 };
+        { name = "Bob"; age = 25 }
+      ] in
+      check int "no dups" 2 (List.length (My_solutions.dedup_persons lst)));
+    test_case "dedup with dups" `Quick (fun () ->
+      let p = My_solutions.{ name = "Alice"; age = 30 } in
+      let lst = [p; p; My_solutions.{ name = "Bob"; age = 25 }] in
+      check int "deduped" 2 (List.length (My_solutions.dedup_persons lst)));
   ]
 
-let timeout_tests =
+let make_pair_tests =
+  let open Alcotest in
   [
-    lwt_tc "timeout succeeds" (fun () ->
-      let open Lwt.Syntax in
-      let* result = My_solutions.timeout 1.0 (Lwt.return 42) in
-      Lwt.return (Alcotest.(check (option int)) "some" (Some 42) result));
-
-    lwt_tc "timeout expires" (fun () ->
-      let open Lwt.Syntax in
-      let slow =
-        let* () = Lwt_unix.sleep 1.0 in
-        Lwt.return 42
-      in
-      let* result = My_solutions.timeout 0.01 slow in
-      Lwt.return (Alcotest.(check (option int)) "none" None result));
+    test_case "make_pair int string" `Quick (fun () ->
+      let result = My_solutions.make_pair 42 "hello" string_of_int Fun.id in
+      check string "pair" "(42, hello)" result);
+    test_case "make_pair float bool" `Quick (fun () ->
+      let result = My_solutions.make_pair 3.14 true
+        (Printf.sprintf "%.2f") string_of_bool in
+      check string "pair" "(3.14, true)" result);
   ]
 
-let rate_limit_tests =
+let suit_tests =
+  let open Alcotest in
   [
-    lwt_tc "rate_limit all" (fun () ->
-      let open Lwt.Syntax in
-      let tasks = List.init 5 (fun i -> fun () -> Lwt.return i) in
-      let* results = My_solutions.rate_limit 2 tasks in
-      Lwt.return (Alcotest.(check (list int)) "all" [0; 1; 2; 3; 4] results));
-
-    lwt_tc "rate_limit respects limit" (fun () ->
-      let open Lwt.Syntax in
-      let running = ref 0 in
-      let max_running = ref 0 in
-      let tasks = List.init 6 (fun i -> fun () ->
-        running := !running + 1;
-        if !running > !max_running then max_running := !running;
-        let* () = Lwt_unix.sleep 0.02 in
-        running := !running - 1;
-        Lwt.return i
-      ) in
-      let* results = My_solutions.rate_limit 3 tasks in
-      Alcotest.(check (list int)) "all results" [0; 1; 2; 3; 4; 5] results;
-      Lwt.return (Alcotest.(check bool) "max 3" true (!max_running <= 3)));
-
-    lwt_tc "rate_limit empty" (fun () ->
-      let open Lwt.Syntax in
-      let* results = My_solutions.rate_limit 5 [] in
-      Lwt.return (Alcotest.(check (list int)) "empty" [] results));
+    test_case "all_suits length" `Quick (fun () ->
+      check int "4 suits" 4 (List.length My_solutions.all_suits));
+    test_case "all_suits contains Hearts" `Quick (fun () ->
+      check bool "has Hearts" true
+        (List.exists (My_solutions.equal_suit My_solutions.Hearts) My_solutions.all_suits));
+    test_case "next_suit Hearts" `Quick (fun () ->
+      check bool "Some Diamonds" true
+        (My_solutions.next_suit My_solutions.Hearts = Some My_solutions.Diamonds));
+    test_case "next_suit Spades" `Quick (fun () ->
+      check bool "None" true
+        (My_solutions.next_suit My_solutions.Spades = None));
   ]
 
 let () =
-  Alcotest.run "Chapter 17"
+  Alcotest.run "Chapter 16"
     [
-      ("basic --- базовые операции Lwt", basic_tests);
-      ("sequential_map --- последовательный map", sequential_map_tests);
-      ("concurrent_map --- параллельный map", concurrent_map_tests);
-      ("timeout --- таймаут", timeout_tests);
-      ("rate_limit --- ограничение параллелизма", rate_limit_tests);
+      ("show --- ppx_deriving show", show_tests);
+      ("eq --- ppx_deriving eq", eq_tests);
+      ("lib --- библиотечные функции", lib_tests);
+      ("color --- тип color", color_tests);
+      ("dedup --- дедупликация записей", dedup_person_tests);
+      ("make_pair --- строковое представление пары", make_pair_tests);
+      ("suit --- перечисление вариантов", suit_tests);
     ]

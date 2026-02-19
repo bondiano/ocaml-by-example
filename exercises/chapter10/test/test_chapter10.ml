@@ -1,220 +1,301 @@
-open Chapter10.Expr
+open Chapter10.Payment
 
-(* --- Тесты библиотеки --- *)
+(* --- Вспомогательные testable для Alcotest --- *)
 
-let variant_tests =
+let result_string (type a) (ok_t : a Alcotest.testable) =
+  Alcotest.(result ok_t string)
+
+(* --- Тесты библиотеки: Money --- *)
+
+let money_tests =
   let open Alcotest in
-  let open Variant in
   [
-    test_case "eval: целое число" `Quick (fun () ->
-      check int "eval Int" 42 (eval (Int 42)));
-    test_case "eval: сложение" `Quick (fun () ->
-      check int "eval Add" 6
-        (eval (Add (Int 1, Add (Int 2, Int 3)))));
-    test_case "show: целое число" `Quick (fun () ->
-      check string "show Int" "42" (show (Int 42)));
-    test_case "show: сложение" `Quick (fun () ->
-      check string "show Add" "(1 + (2 + 3))"
-        (show (Add (Int 1, Add (Int 2, Int 3)))));
+    test_case "Money.make положительная сумма" `Quick (fun () ->
+      match Money.make 100.0 with
+      | Ok m -> check string "amount" "100.00" (Money.to_string m)
+      | Error _ -> fail "ожидался Ok");
+    test_case "Money.make нулевая сумма" `Quick (fun () ->
+      check (result_string string) "zero"
+        (Error "сумма должна быть положительной")
+        (Money.make 0.0 |> Result.map Money.to_string));
+    test_case "Money.make отрицательная сумма" `Quick (fun () ->
+      check (result_string string) "negative"
+        (Error "сумма должна быть положительной")
+        (Money.make (-5.0) |> Result.map Money.to_string));
+    test_case "Money.add" `Quick (fun () ->
+      match Money.make 100.0, Money.make 50.0 with
+      | Ok a, Ok b ->
+        check string "sum" "150.00" (Money.to_string (Money.add a b))
+      | _ -> fail "ожидались Ok");
   ]
 
-let tagless_final_tests =
+(* --- Тесты библиотеки: CardNumber --- *)
+
+let card_number_tests =
   let open Alcotest in
   [
-    test_case "TF_Eval: целое число" `Quick (fun () ->
-      check int "int_" 42 (TF_Eval.int_ 42));
-    test_case "TF_Eval: сложение" `Quick (fun () ->
-      check int "add" 6
-        (TF_Eval.add (TF_Eval.int_ 1) (TF_Eval.add (TF_Eval.int_ 2) (TF_Eval.int_ 3))));
-    test_case "TF_Show: целое число" `Quick (fun () ->
-      check string "int_" "42" (TF_Show.int_ 42));
-    test_case "TF_Show: сложение" `Quick (fun () ->
-      check string "add" "(1 + (2 + 3))"
-        (TF_Show.add (TF_Show.int_ 1) (TF_Show.add (TF_Show.int_ 2) (TF_Show.int_ 3))));
-    test_case "TF_EvalMul: умножение" `Quick (fun () ->
-      check int "mul" 14
-        (TF_EvalMul.mul (TF_EvalMul.int_ 2) (TF_EvalMul.add (TF_EvalMul.int_ 3) (TF_EvalMul.int_ 4))));
-    test_case "TF_ShowMul: умножение" `Quick (fun () ->
-      check string "mul" "(2 * (3 + 4))"
-        (TF_ShowMul.mul (TF_ShowMul.int_ 2) (TF_ShowMul.add (TF_ShowMul.int_ 3) (TF_ShowMul.int_ 4))));
+    test_case "CardNumber.make валидный номер" `Quick (fun () ->
+      match CardNumber.make "4111111111111111" with
+      | Ok _ -> ()
+      | Error e -> fail e);
+    test_case "CardNumber.make с пробелами" `Quick (fun () ->
+      match CardNumber.make "4111 1111 1111 1111" with
+      | Ok _ -> ()
+      | Error e -> fail e);
+    test_case "CardNumber.make с дефисами" `Quick (fun () ->
+      match CardNumber.make "4111-1111-1111-1111" with
+      | Ok _ -> ()
+      | Error e -> fail e);
+    test_case "CardNumber.make слишком короткий" `Quick (fun () ->
+      match CardNumber.make "1234" with
+      | Error _ -> ()
+      | Ok _ -> fail "ожидалась ошибка");
+    test_case "CardNumber.make с буквами" `Quick (fun () ->
+      match CardNumber.make "4111ABCD11111111" with
+      | Error _ -> ()
+      | Ok _ -> fail "ожидалась ошибка");
+    test_case "CardNumber.to_masked" `Quick (fun () ->
+      match CardNumber.make "4111111111111111" with
+      | Ok card ->
+        check string "masked" "************1111" (CardNumber.to_masked card)
+      | Error e -> fail e);
   ]
 
-let polyvar_tests =
+(* --- Тесты библиотеки: PaymentState --- *)
+
+let payment_state_tests =
   let open Alcotest in
   [
-    test_case "PolyVar.eval: целое число" `Quick (fun () ->
-      check int "Int" 42 (PolyVar.eval (`Int 42)));
-    test_case "PolyVar.eval: сложение" `Quick (fun () ->
-      check int "Add" 6
-        (PolyVar.eval (`Add (`Int 1, `Add (`Int 2, `Int 3)))));
-    test_case "PolyVar.show: целое число" `Quick (fun () ->
-      check string "Int" "42" (PolyVar.show (`Int 42)));
-    test_case "PolyVar.show: сложение" `Quick (fun () ->
-      check string "Add" "(1 + (2 + 3))"
-        (PolyVar.show (`Add (`Int 1, `Add (`Int 2, `Int 3)))));
-    test_case "PolyVar.eval_mul: умножение" `Quick (fun () ->
-      check int "Mul" 14
-        (PolyVar.eval_mul (`Mul (`Int 2, `Add (`Int 3, `Int 4)))));
-    test_case "PolyVar.show_mul: умножение" `Quick (fun () ->
-      check string "Mul" "(2 * (3 + 4))"
-        (PolyVar.show_mul (`Mul (`Int 2, `Add (`Int 3, `Int 4)))));
+    test_case "полный цикл платежа" `Quick (fun () ->
+      match Money.make 99.99, CardNumber.make "4111111111111111" with
+      | Ok amount, Ok card ->
+        let p = PaymentState.create ~amount "Книга" in
+        check string "draft" "draft" (PaymentState.state_name p);
+        let p = PaymentState.submit p ~card in
+        check string "submitted" "submitted" (PaymentState.state_name p);
+        let p = PaymentState.pay p ~transaction_id:"TXN-001" in
+        check string "paid" "paid" (PaymentState.state_name p);
+        let p = PaymentState.ship p ~tracking:"TRACK-42" in
+        check string "shipped" "shipped" (PaymentState.state_name p);
+        check string "description" "Книга" (PaymentState.description p);
+        check string "amount" "99.99"
+          (Money.to_string (PaymentState.amount p))
+      | _ -> fail "ожидались Ok");
   ]
 
 (* --- Тесты упражнений --- *)
 
-(* Упражнение 1: VariantMul *)
-let variant_mul_tests =
+(* Упражнение 1: PositiveInt *)
+
+let positive_int_tests =
   let open Alcotest in
-  let open My_solutions.VariantMul in
   [
-    test_case "eval: Int" `Quick (fun () ->
-      check int "eval Int" 42 (eval (Int 42)));
-    test_case "eval: Add" `Quick (fun () ->
-      check int "eval Add" 3 (eval (Add (Int 1, Int 2))));
-    test_case "eval: Mul" `Quick (fun () ->
-      check int "eval Mul" 14
-        (eval (Mul (Int 2, Add (Int 3, Int 4)))));
-    test_case "eval: вложенные Mul" `Quick (fun () ->
-      check int "eval nested" 24
-        (eval (Mul (Mul (Int 2, Int 3), Int 4))));
-    test_case "show: Int" `Quick (fun () ->
-      check string "show Int" "42" (show (Int 42)));
-    test_case "show: Add" `Quick (fun () ->
-      check string "show Add" "(1 + 2)" (show (Add (Int 1, Int 2))));
-    test_case "show: Mul" `Quick (fun () ->
-      check string "show Mul" "(2 * (3 + 4))"
-        (show (Mul (Int 2, Add (Int 3, Int 4)))));
+    test_case "PositiveInt.make положительное" `Quick (fun () ->
+      match My_solutions.PositiveInt.make 42 with
+      | Ok n -> check int "value" 42 (My_solutions.PositiveInt.value n)
+      | Error _ -> fail "ожидался Ok");
+    test_case "PositiveInt.make ноль" `Quick (fun () ->
+      check (result_string int) "zero"
+        (Error "число должно быть положительным")
+        (My_solutions.PositiveInt.make 0
+         |> Result.map My_solutions.PositiveInt.value));
+    test_case "PositiveInt.make отрицательное" `Quick (fun () ->
+      check (result_string int) "negative"
+        (Error "число должно быть положительным")
+        (My_solutions.PositiveInt.make (-5)
+         |> Result.map My_solutions.PositiveInt.value));
+    test_case "PositiveInt.add" `Quick (fun () ->
+      match My_solutions.PositiveInt.make 10, My_solutions.PositiveInt.make 20 with
+      | Ok a, Ok b ->
+        check int "sum" 30
+          (My_solutions.PositiveInt.value (My_solutions.PositiveInt.add a b))
+      | _ -> fail "ожидались Ok");
+    test_case "PositiveInt.to_string" `Quick (fun () ->
+      match My_solutions.PositiveInt.make 42 with
+      | Ok n -> check string "str" "42" (My_solutions.PositiveInt.to_string n)
+      | Error _ -> fail "ожидался Ok");
   ]
 
-(* Упражнение 2: TF_Pretty *)
-let tf_pretty_tests =
+(* Упражнение 2: Email *)
+
+let email_tests =
   let open Alcotest in
-  let open My_solutions.TF_Pretty in
   [
-    test_case "int_" `Quick (fun () ->
-      check string "int_" "42" (int_ 42));
-    test_case "add двух чисел" `Quick (fun () ->
-      check string "add" "(1 + 2)" (add (int_ 1) (int_ 2)));
-    test_case "вложенный add" `Quick (fun () ->
-      check string "nested" "(1 + (2 + 3))"
-        (add (int_ 1) (add (int_ 2) (int_ 3))));
-    test_case "глубокая вложенность" `Quick (fun () ->
-      check string "deep" "((1 + 2) + (3 + 4))"
-        (add (add (int_ 1) (int_ 2)) (add (int_ 3) (int_ 4))));
+    test_case "Email.make валидный" `Quick (fun () ->
+      match My_solutions.Email.make "user@example.com" with
+      | Ok e ->
+        check string "email" "user@example.com" (My_solutions.Email.to_string e)
+      | Error e -> fail e);
+    test_case "Email.make пустой" `Quick (fun () ->
+      check (result_string string) "empty"
+        (Error "email не может быть пустым")
+        (My_solutions.Email.make ""
+         |> Result.map My_solutions.Email.to_string));
+    test_case "Email.make без @" `Quick (fun () ->
+      check (result_string string) "no at"
+        (Error "email должен содержать @")
+        (My_solutions.Email.make "user"
+         |> Result.map My_solutions.Email.to_string));
+    test_case "Email.make без точки в домене" `Quick (fun () ->
+      check (result_string string) "no dot"
+        (Error "некорректный домен")
+        (My_solutions.Email.make "user@host"
+         |> Result.map My_solutions.Email.to_string));
   ]
 
-(* Упражнение 3: Полиморфные варианты с Neg *)
-let poly_neg_tests =
+(* Упражнение 3: NonEmptyList *)
+
+let non_empty_list_tests =
   let open Alcotest in
   [
-    test_case "eval_neg: Int" `Quick (fun () ->
-      check int "Int" 42 (My_solutions.eval_neg (`Int 42)));
-    test_case "eval_neg: Add" `Quick (fun () ->
-      check int "Add" 3
-        (My_solutions.eval_neg (`Add (`Int 1, `Int 2))));
-    test_case "eval_neg: Neg" `Quick (fun () ->
-      check int "Neg" (-5)
-        (My_solutions.eval_neg (`Neg (`Int 5))));
-    test_case "eval_neg: Neg Add" `Quick (fun () ->
-      check int "Neg Add" (-3)
-        (My_solutions.eval_neg (`Neg (`Add (`Int 1, `Int 2)))));
-    test_case "show_neg: Int" `Quick (fun () ->
-      check string "Int" "42"
-        (My_solutions.show_neg (`Int 42)));
-    test_case "show_neg: Neg" `Quick (fun () ->
-      check string "Neg" "(-5)"
-        (My_solutions.show_neg (`Neg (`Int 5))));
-    test_case "show_neg: Neg Add" `Quick (fun () ->
-      check string "Neg Add" "(-(1 + 2))"
-        (My_solutions.show_neg (`Neg (`Add (`Int 1, `Int 2)))));
+    test_case "NonEmptyList.make непустой" `Quick (fun () ->
+      match My_solutions.NonEmptyList.make [1; 2; 3] with
+      | Ok nel ->
+        check int "head" 1 (My_solutions.NonEmptyList.head nel);
+        check (list int) "tail" [2; 3] (My_solutions.NonEmptyList.tail nel);
+        check (list int) "to_list" [1; 2; 3]
+          (My_solutions.NonEmptyList.to_list nel);
+        check int "length" 3 (My_solutions.NonEmptyList.length nel)
+      | Error _ -> fail "ожидался Ok");
+    test_case "NonEmptyList.make пустой" `Quick (fun () ->
+      match My_solutions.NonEmptyList.make ([] : int list) with
+      | Error _ -> ()
+      | Ok _ -> fail "ожидалась ошибка");
+    test_case "NonEmptyList.singleton" `Quick (fun () ->
+      let nel = My_solutions.NonEmptyList.singleton 42 in
+      check int "head" 42 (My_solutions.NonEmptyList.head nel);
+      check (list int) "tail" [] (My_solutions.NonEmptyList.tail nel);
+      check int "length" 1 (My_solutions.NonEmptyList.length nel));
+    test_case "NonEmptyList.map" `Quick (fun () ->
+      match My_solutions.NonEmptyList.make [1; 2; 3] with
+      | Ok nel ->
+        let doubled = My_solutions.NonEmptyList.map (fun x -> x * 2) nel in
+        check (list int) "mapped" [2; 4; 6]
+          (My_solutions.NonEmptyList.to_list doubled)
+      | Error _ -> fail "ожидался Ok");
   ]
 
-(* Упражнение 4: Tagless Final для булевых выражений *)
-let bool_eval_tests =
+(* Упражнение 4: TrafficLight *)
+
+let traffic_light_tests =
   let open Alcotest in
-  let open My_solutions.Bool_Eval in
   [
-    test_case "bool_ true" `Quick (fun () ->
-      check bool "true" true (bool_ true));
-    test_case "bool_ false" `Quick (fun () ->
-      check bool "false" false (bool_ false));
-    test_case "and_ true true" `Quick (fun () ->
-      check bool "and tt" true (and_ (bool_ true) (bool_ true)));
-    test_case "and_ true false" `Quick (fun () ->
-      check bool "and tf" false (and_ (bool_ true) (bool_ false)));
-    test_case "or_ false true" `Quick (fun () ->
-      check bool "or ft" true (or_ (bool_ false) (bool_ true)));
-    test_case "or_ false false" `Quick (fun () ->
-      check bool "or ff" false (or_ (bool_ false) (bool_ false)));
-    test_case "not_ true" `Quick (fun () ->
-      check bool "not t" false (not_ (bool_ true)));
-    test_case "not_ false" `Quick (fun () ->
-      check bool "not f" true (not_ (bool_ false)));
-    test_case "сложное выражение" `Quick (fun () ->
-      check bool "complex" true
-        (and_ (bool_ true) (or_ (bool_ false) (bool_ true))));
+    test_case "начальное состояние --- красный" `Quick (fun () ->
+      check string "red"
+        "red" (My_solutions.TrafficLight.show My_solutions.TrafficLight.start));
+    test_case "полный цикл" `Quick (fun () ->
+      let open My_solutions.TrafficLight in
+      let l = start in
+      check string "red" "red" (show l);
+      let l = red_to_green l in
+      check string "green" "green" (show l);
+      let l = green_to_yellow l in
+      check string "yellow" "yellow" (show l);
+      let l = yellow_to_red l in
+      check string "red again" "red" (show l));
   ]
 
-let bool_show_tests =
+(* Упражнение 5: Form *)
+
+let form_tests =
   let open Alcotest in
-  let open My_solutions.Bool_Show in
+  let parse_name s =
+    if String.length s > 0 then Ok s
+    else Error "не может быть пустым"
+  in
+  let parse_age s =
+    match int_of_string_opt s with
+    | Some n when n > 0 -> Ok n
+    | _ -> Error "должен быть положительным числом"
+  in
   [
-    test_case "bool_ true" `Quick (fun () ->
-      check string "true" "true" (bool_ true));
-    test_case "bool_ false" `Quick (fun () ->
-      check string "false" "false" (bool_ false));
-    test_case "and_" `Quick (fun () ->
-      check string "and" "(true && false)"
-        (and_ (bool_ true) (bool_ false)));
-    test_case "or_" `Quick (fun () ->
-      check string "or" "(false || true)"
-        (or_ (bool_ false) (bool_ true)));
-    test_case "not_" `Quick (fun () ->
-      check string "not" "(!true)"
-        (not_ (bool_ true)));
-    test_case "сложное выражение" `Quick (fun () ->
-      check string "complex" "(true && (false || true))"
-        (and_ (bool_ true) (or_ (bool_ false) (bool_ true))));
+    test_case "Form --- все поля валидны" `Quick (fun () ->
+      let open My_solutions.Form in
+      match run (map2
+        (fun name age -> (name, age))
+        (field "имя" "Иван" parse_name)
+        (field "возраст" "25" parse_age))
+      with
+      | Ok (name, age) ->
+        check string "name" "Иван" name;
+        check int "age" 25 age
+      | Error _ -> fail "ожидался Ok");
+    test_case "Form --- одно поле невалидно" `Quick (fun () ->
+      let open My_solutions.Form in
+      match run (map2
+        (fun name age -> (name, age))
+        (field "имя" "" parse_name)
+        (field "возраст" "25" parse_age))
+      with
+      | Error errors ->
+        check int "одна ошибка" 1 (List.length errors);
+        check string "имя поля" "имя" (fst (List.hd errors))
+      | Ok _ -> fail "ожидалась ошибка");
+    test_case "Form --- оба поля невалидны" `Quick (fun () ->
+      let open My_solutions.Form in
+      match run (map2
+        (fun name age -> (name, age))
+        (field "имя" "" parse_name)
+        (field "возраст" "abc" parse_age))
+      with
+      | Error errors ->
+        check int "две ошибки" 2 (List.length errors)
+      | Ok _ -> fail "ожидалась ошибка");
+    test_case "Form.map3 --- все валидны" `Quick (fun () ->
+      let open My_solutions.Form in
+      match run (map3
+        (fun a b c -> (a, b, c))
+        (field "a" "hello" parse_name)
+        (field "b" "world" parse_name)
+        (field "c" "10" parse_age))
+      with
+      | Ok ("hello", "world", 10) -> ()
+      | Ok _ -> fail "неожиданные значения"
+      | Error _ -> fail "ожидался Ok");
+    test_case "Form.map3 --- все невалидны" `Quick (fun () ->
+      let open My_solutions.Form in
+      match run (map3
+        (fun a b c -> (a, b, c))
+        (field "a" "" parse_name)
+        (field "b" "" parse_name)
+        (field "c" "abc" parse_age))
+      with
+      | Error errors ->
+        check int "три ошибки" 3 (List.length errors)
+      | Ok _ -> fail "ожидалась ошибка");
   ]
 
-(* Упражнение 5: Объединённый DSL *)
-let combined_show_tests =
+(* Упражнение 6: FileHandle *)
+
+let file_handle_tests =
   let open Alcotest in
-  let open My_solutions.Combined_Show in
   [
-    test_case "int_" `Quick (fun () ->
-      check string "int_" "42" (int_ 42));
-    test_case "add" `Quick (fun () ->
-      check string "add" "(1 + 2)" (add (int_ 1) (int_ 2)));
-    test_case "bool_" `Quick (fun () ->
-      check string "bool_" "true" (bool_ true));
-    test_case "and_" `Quick (fun () ->
-      check string "and" "(true && false)"
-        (and_ (bool_ true) (bool_ false)));
-    test_case "eq int" `Quick (fun () ->
-      check string "eq int" "((1 + 2) == 3)"
-        (eq (add (int_ 1) (int_ 2)) (int_ 3)));
-    test_case "eq в and_" `Quick (fun () ->
-      check string "eq in and" "(true && (1 == 1))"
-        (and_ (bool_ true) (eq (int_ 1) (int_ 1))));
-    test_case "not_ с eq" `Quick (fun () ->
-      check string "not eq" "(!(1 == 2))"
-        (not_ (eq (int_ 1) (int_ 2))));
-    test_case "or_ с eq" `Quick (fun () ->
-      check string "or eq" "((1 == 1) || (2 == 3))"
-        (or_ (eq (int_ 1) (int_ 1)) (eq (int_ 2) (int_ 3))));
+    test_case "FileHandle --- открытие и чтение" `Quick (fun () ->
+      let h = My_solutions.FileHandle.open_file "test.txt" in
+      check string "name" "test.txt" (My_solutions.FileHandle.name h);
+      check string "empty content" "" (My_solutions.FileHandle.read h));
+    test_case "FileHandle --- запись и чтение" `Quick (fun () ->
+      let h = My_solutions.FileHandle.open_file "test.txt" in
+      let h = My_solutions.FileHandle.write h "hello " in
+      let h = My_solutions.FileHandle.write h "world" in
+      check string "content" "hello world" (My_solutions.FileHandle.read h));
+    test_case "FileHandle --- close сохраняет имя" `Quick (fun () ->
+      let h = My_solutions.FileHandle.open_file "test.txt" in
+      let h = My_solutions.FileHandle.write h "data" in
+      let closed = My_solutions.FileHandle.close h in
+      check string "name" "test.txt" (My_solutions.FileHandle.name closed));
   ]
 
 let () =
-  Alcotest.run "Chapter 10"
+  Alcotest.run "Chapter 09"
     [
-      ("Variant --- вариантный калькулятор", variant_tests);
-      ("Tagless Final --- модульный калькулятор", tagless_final_tests);
-      ("PolyVar --- полиморфные варианты", polyvar_tests);
-      ("Упр. 1: VariantMul --- добавить Mul", variant_mul_tests);
-      ("Упр. 2: TF_Pretty --- pretty_print", tf_pretty_tests);
-      ("Упр. 3: PolyVar Neg --- унарное отрицание", poly_neg_tests);
-      ("Упр. 4: Bool_Eval --- булев DSL (eval)", bool_eval_tests);
-      ("Упр. 4: Bool_Show --- булев DSL (show)", bool_show_tests);
-      ("Упр. 5: Combined_Show --- объединённый DSL", combined_show_tests);
+      ("Money --- умный конструктор", money_tests);
+      ("CardNumber --- умный конструктор", card_number_tests);
+      ("PaymentState --- конечный автомат", payment_state_tests);
+      ("PositiveInt --- упражнение 1", positive_int_tests);
+      ("Email --- упражнение 2", email_tests);
+      ("NonEmptyList --- упражнение 3", non_empty_list_tests);
+      ("TrafficLight --- упражнение 4", traffic_light_tests);
+      ("Form --- упражнение 5", form_tests);
+      ("FileHandle --- упражнение 6", file_handle_tests);
     ]

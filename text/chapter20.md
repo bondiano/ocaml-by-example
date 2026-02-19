@@ -1,25 +1,23 @@
-# Веб-разработка с Dream
+# Оптимизации в OCaml
 
 ## Цели главы
 
-В этой главе мы изучим веб-разработку на OCaml с использованием фреймворка **Dream** --- минималистичного, но мощного инструмента для создания серверных приложений:
+В этой главе мы изучим внутреннее устройство значений в рантайме OCaml и техники оптимизации, позволяющие писать быстрый и экономный по памяти код:
 
-- **Dream** --- философия «один плоский модуль», минималистичный API.
-- **Обработчики** (handlers) --- функции `request -> response Lwt.t`.
-- **Маршрутизация** --- `Dream.get`, `Dream.post`, параметры пути, области (scopes).
-- **Middleware** --- промежуточные обработчики для логирования, авторизации, таймингов.
-- **JSON API** --- работа с JSON через Yojson и `ppx_deriving_yojson` (из главы 10).
-- **Проект: TODO API** --- полноценный CRUD с хранением в памяти.
-- Сравнение с Haskell-фреймворками (Servant, Scotty).
+- **Представление значений в памяти** --- immediate vs boxed, структура блока (header word, tag, size).
+- **`[@@unboxed]` и `[@@immediate]`** --- аннотации для управления представлением типов.
+- **Hash-consing** --- разделение памяти между структурно равными значениями.
+- **Flambda** --- оптимизирующий бэкенд компилятора OCaml.
+- **Другие техники** --- `Bigarray`, специализация, минимизация аллокаций, замеры производительности.
+- **Проект** --- hash-consed AST с замером потребления памяти через `Gc.stat`.
 
-Dream построен поверх **Lwt** (глава 17), поэтому все обработчики возвращают `Lwt.t`. Если вы ещё не знакомы с промисами Lwt, рекомендуется сначала прочитать предыдущую главу.
+Эта глава будет полезна тем, кто хочет понять, как OCaml работает «под капотом», и научиться осознанно писать производительный код.
 
 ## Подготовка проекта
 
-Код этой главы находится в `exercises/chapter20`. Установите необходимые библиотеки:
+Код этой главы находится в `exercises/chapter20`. Для работы не требуются внешние библиотеки --- мы реализуем всё с нуля, используя только стандартную библиотеку:
 
 ```text
-$ opam install dream yojson ppx_deriving_yojson
 $ cd exercises/chapter20
 $ dune build
 ```
@@ -28,791 +26,737 @@ $ dune build
 
 ```lisp
 (library
- (name chapter20)
- (libraries dream yojson)
- (preprocess (pps ppx_deriving_yojson)))
+ (name chapter21))
 ```
 
-## Dream: философия
+## Представление значений в памяти
 
-Dream придерживается принципа **«один плоский модуль»**: весь API находится в модуле `Dream`. Нет глубоких иерархий модулей, нет сложных абстракций --- всё вызывается как `Dream.something`.
+Чтобы оптимизировать OCaml-код, нужно понимать, как значения представлены в памяти на уровне рантайма. OCaml использует единое представление `value` --- машинное слово (64 бита на современных платформах), которое может быть либо **immediate** (непосредственным), либо **указателем на блок в куче** (boxed).
 
-Это сознательный выбор автора фреймворка. Вместо того чтобы разбивать функциональность на десятки подмодулей, Dream предлагает одно пространство имён с понятными именами:
+### Боксирование (boxing): immediate vs boxed values
 
-- `Dream.run` --- запустить сервер.
-- `Dream.router` --- маршрутизация запросов.
-- `Dream.get`, `Dream.post`, `Dream.put`, `Dream.delete` --- HTTP-методы.
-- `Dream.html`, `Dream.json` --- формирование ответов.
-- `Dream.body` --- чтение тела запроса.
-- `Dream.param` --- извлечение параметров пути.
-- `Dream.logger` --- логирование запросов.
+**Immediate values** --- значения, которые помещаются прямо в машинное слово без аллокации в куче. В OCaml к ним относятся:
 
-## Hello World
+- **`int`** --- целые числа. Используются 63 бита (один бит занят тегом --- об этом ниже).
+- **`bool`** --- `false` представлен как `0`, `true` как `1` (с учётом тега).
+- **`unit`** --- представлен как `0`.
+- **`char`** --- код символа.
+- Варианты без данных (константные конструкторы) --- `None`, `[]`, конструкторы перечислений.
 
-Минимальное веб-приложение на Dream:
+Для отличия immediate-значений от указателей на блоки рантайм OCaml использует **младший бит**: у immediate-значений он установлен в `1`, у указателей --- в `0` (указатели всегда выровнены). Поэтому `int` хранит 63 бита, а не 64 --- один бит «украден» для тега.
 
 ```ocaml
-let () =
-  Dream.run
-  @@ Dream.logger
-  @@ Dream.router [
-    Dream.get "/" (fun _req ->
-      Dream.html "Hello, world!")
-  ]
+# Obj.is_int (Obj.repr 42);;
+- : bool = true
+
+# Obj.is_int (Obj.repr true);;
+- : bool = true
+
+# Obj.is_int (Obj.repr ());;
+- : bool = true
+
+# Obj.is_int (Obj.repr 'a');;
+- : bool = true
 ```
 
-Разберём каждую часть:
+**Boxed values** --- значения, для которых в куче выделяется блок памяти. К ним относятся:
 
-- `Dream.run` --- запускает HTTP-сервер (по умолчанию на порту 8080).
-- `Dream.logger` --- middleware, логирующий каждый запрос в консоль.
-- `Dream.router [...]` --- маршрутизатор, сопоставляющий URL с обработчиками.
-- `Dream.get "/" handler` --- маршрут для GET-запроса на корневой путь.
-- `Dream.html "Hello, world!"` --- ответ с типом `text/html`.
+- **`float`** --- 64 бита, не помещается в tagged word.
+- **Строки** (`string`).
+- **Записи** (`record`).
+- **Кортежи** (`tuple`).
+- **Варианты с данными** (`Some 42`, `x :: xs`).
+- **Массивы** (`array`).
+- **Ссылки** (`ref`).
 
-Оператор `@@` --- это применение функции (`f @@ x` эквивалентно `f x`). Цепочка `@@` читается сверху вниз: `Dream.run` принимает middleware-конвейер, который заканчивается роутером.
+```ocaml
+# Obj.is_int (Obj.repr 3.14);;
+- : bool = false
+
+# Obj.is_int (Obj.repr "hello");;
+- : bool = false
+
+# Obj.is_int (Obj.repr (1, 2));;
+- : bool = false
+
+# Obj.is_int (Obj.repr (Some 42));;
+- : bool = false
+```
+
+> **Для хаскеллистов.** В Haskell все значения по умолчанию «заворачиваются» (boxed) и ленивы. В OCaml, напротив, `int`, `bool`, `char` и `unit` --- immediate-значения. Это означает, что арифметика целых чисел и паттерн-матчинг по `bool` в OCaml не требуют обращения к куче --- всё происходит в регистрах. В Haskell аналогичной оптимизацией занимается GHC через unboxed types (`Int#`, `Bool#`) и strictness analysis, но в OCaml это поведение по умолчанию.
+
+### Структура блока (header word, tag, size)
+
+Каждый boxed-объект в куче представлен как **блок** --- непрерывная область памяти, начинающаяся с **заголовочного слова** (header word):
+
+```
++------------------+-------+----------+
+|    size (54 бит) | color | tag (8 бит) |
++------------------+-------+----------+
+|    field 0                           |
++--------------------------------------+
+|    field 1                           |
++--------------------------------------+
+|    ...                               |
++--------------------------------------+
+```
+
+- **size** (54 бита) --- количество полей (слов) в блоке.
+- **color** (2 бита) --- используется сборщиком мусора (GC) для пометки.
+- **tag** (8 бит) --- тип блока.
+
+Некоторые важные значения тега:
+
+| Tag | Значение |
+|-----|----------|
+| 0--245 | Обычные блоки (варианты с данными, записи, кортежи) |
+| 246 | Lazy |
+| 247 | Closure |
+| 248 | Object |
+| 249 | Infix |
+| 250 | Forward |
+| 251 | Abstract |
+| 252 | String |
+| 253 | Double (float) |
+| 254 | Double_array |
+| 255 | Custom |
+
+Для вариантных типов tag указывает номер конструктора (среди конструкторов с данными). Записи и кортежи всегда имеют tag = 0.
+
+```ocaml
+# Obj.tag (Obj.repr (1, 2, 3));;
+- : int = 0
+
+# Obj.size (Obj.repr (1, 2, 3));;
+- : int = 3
+
+# Obj.tag (Obj.repr 3.14);;
+- : int = 253
+
+# Obj.tag (Obj.repr "hello");;
+- : int = 252
+```
+
+> **Предупреждение.** Модуль `Obj` --- низкоуровневый и небезопасный. Используйте его только для изучения и отладки, но никогда в продакшн-коде.
+
+```admonish tip title="Для Python/TS-разработчиков"
+В Python **все** значения boxed --- даже `int` и `bool` являются объектами в куче с подсчётом ссылок. В JavaScript/TypeScript числа тоже обычно boxed (хотя V8 использует Smi-оптимизацию для малых целых). В OCaml `int`, `bool`, `char` и `unit` --- immediate-значения, которые хранятся прямо в машинном слове без аллокации. Это одна из причин, почему OCaml значительно быстрее Python на числовых задачах --- арифметика происходит в регистрах, без обращений к куче и без нагрузки на сборщик мусора.
+```
+
+## [@@unboxed] и [@@immediate]
+
+OCaml предоставляет две аннотации для управления представлением типов на уровне рантайма.
+
+### [@@unboxed]
+
+Аннотация `[@@unboxed]` применяется к типам-обёрткам --- записям или вариантам с ровно одним полем. Она говорит компилятору: «не создавай отдельный блок в куче, храни значение напрямую».
+
+```ocaml
+(* Без [@@unboxed] --- каждое значение Meters создаёт блок в куче *)
+type meters = Meters of float
+
+(* С [@@unboxed] --- Meters x представлен так же, как просто float *)
+type meters_unboxed = Meters_u of float [@@unboxed]
+```
+
+Проверим:
+
+```ocaml
+# Obj.is_int (Obj.repr (Meters 1.0));;
+- : bool = false  (* boxed --- блок-обёртка *)
+
+# Obj.tag (Obj.repr (Meters 1.0));;
+- : int = 0  (* обычный блок, содержащий float *)
+
+# Obj.size (Obj.repr (Meters 1.0));;
+- : int = 1  (* одно поле *)
+```
+
+С `[@@unboxed]` обёртка исчезает --- значение представлено как сам `float`:
+
+```ocaml
+# Obj.tag (Obj.repr (Meters_u 1.0));;
+- : int = 253  (* Double tag --- это просто float *)
+```
+
+То же работает для записей:
+
+```ocaml
+type positive_float = { value : float } [@@unboxed]
+```
+
+**Когда использовать:**
+
+- Типы-фантомы и newtype-обёртки, где обёртка нужна только для типовой безопасности:
+
+```ocaml
+type 'a id = Id of int [@@unboxed]
+
+type user
+type post
+
+let user_id : user id = Id 42
+let post_id : post id = Id 7
+```
+
+- Обёртки для FFI, где нужно контролировать представление.
+
+> **Для хаскеллистов.** `[@@unboxed]` --- аналог `newtype` в Haskell. `newtype Meters = Meters Double` не аллоцирует --- это просто `Double` в рантайме. В OCaml обычный `type meters = Meters of float` аллоцирует блок, и только `[@@unboxed]` убирает эту обёртку.
+
+### [@@immediate]
+
+Аннотация `[@@immediate]` утверждает, что все значения данного типа являются immediate (не требуют аллокации в куче). Это полезно для полиморфного кода, который может использовать более эффективные операции для immediate-типов.
+
+```ocaml
+type color = Red | Green | Blue [@@immediate]
+```
+
+Компилятор проверит, что все конструкторы `color` действительно не содержат данных. Если какой-то конструктор содержит данные, компиляция завершится ошибкой.
+
+```ocaml
+(* Ошибка компиляции: Named of string не immediate *)
+(* type bad = Named of string | Anonymous [@@immediate] *)
+```
+
+`[@@immediate]` часто используется в библиотеках для типов-перечислений, чтобы гарантировать отсутствие аллокаций при их использовании.
+
+## Hash-Consing
+
+### Идея: структурно равные значения разделяют память
+
+**Hash-consing** --- техника, при которой структурно равные значения представляются одним и тем же объектом в памяти. Вместо того чтобы создавать новое значение каждый раз, мы проверяем: «не существует ли уже такое же значение?» Если существует --- возвращаем его.
+
+Преимущества:
+
+1. **Экономия памяти** --- одинаковые поддеревья хранятся один раз.
+2. **Быстрое сравнение на равенство** --- вместо структурного сравнения `O(n)` достаточно сравнить указатели `O(1)`.
+3. **Быстрое хеширование** --- хеш вычисляется при создании и хранится в узле.
+
+### Почему OCaml знаменит Hash-Consing (Filliâtre)
+
+Hash-consing особенно популярен в OCaml-сообществе благодаря работам **Jean-Christophe Filliâtre** --- французского учёного, создавшего библиотеку `hashcons` и ряд формально верифицированных структур данных. Его статья *«Type-Safe Modular Hash-Consing»* (2006) стала классической.
+
+Причины, по которым hash-consing хорошо ложится на OCaml:
+
+- **Алгебраические типы данных** --- идеальны для представления деревьев и AST.
+- **Модульная система** --- позволяет создавать generic hash-consing через функторы.
+- **Сборщик мусора** --- weak-указатели (слабые ссылки) позволяют GC собирать неиспользуемые hash-consed значения.
+
+Hash-consing широко используется в:
+
+- **Символьных вычислениях** --- формальные доказательства, решатели SAT/SMT.
+- **Компиляторах** --- представление промежуточных языков (IR).
+- **BDD (Binary Decision Diagrams)** --- классический пример hash-consing.
+
+### Реализация с нуля (hash-таблица + smart constructors)
+
+Реализуем hash-consing вручную, используя стандартный `Hashtbl`. Идея проста:
+
+1. Каждому значению присваиваем **уникальный идентификатор** и **хеш**.
+2. Храним все созданные значения в **hash-таблице**.
+3. При создании нового значения сначала проверяем таблицу.
+
+```ocaml
+(** Обёрнутое значение с уникальным id и предвычисленным хешем. *)
+type 'a hcons = {
+  node : 'a;
+  id : int;
+  hkey : int;
+}
+```
+
+Здесь `node` --- само значение, `id` --- уникальный номер, `hkey` --- хеш-код. Благодаря `id` сравнение на равенство --- это просто `a.id = b.id`, то есть `O(1)`.
+
+### Пример: формулы пропозициональной логики
+
+Построим hash-consed представление для формул пропозициональной логики:
+
+```
+φ ::= Var(x) | And(φ, φ) | Or(φ, φ) | Not(φ) | True | False
+```
+
+Сначала определим тип формулы:
+
+```ocaml
+type formula_node =
+  | Var of string
+  | And of formula * formula
+  | Or of formula * formula
+  | Not of formula
+  | True
+  | False
+and formula = formula_node hcons
+```
+
+Тип `formula` --- это `formula_node hcons`, то есть узел с id и хешем. Обратите внимание на взаимную рекурсию: `formula_node` ссылается на `formula`, а `formula` определён через `formula_node`.
+
+Теперь создадим hash-таблицу и smart-конструкторы:
+
+```ocaml
+(** Глобальный счётчик для уникальных id. *)
+let next_id = ref 0
+
+(** Hash-таблица для хранения всех созданных формул.
+    Ключ --- formula_node, значение --- formula (обёрнутый узел). *)
+let formula_table : (formula_node, formula) Hashtbl.t = Hashtbl.create 251
+
+(** Создать или найти hash-consed значение. *)
+let hashcons (node : formula_node) : formula =
+  match Hashtbl.find_opt formula_table node with
+  | Some existing -> existing
+  | None ->
+    let id = !next_id in
+    incr next_id;
+    let hkey = Hashtbl.hash node in
+    let hc = { node; id; hkey } in
+    Hashtbl.add formula_table node hc;
+    hc
+```
+
+Smart-конструкторы --- единственный способ создания формул:
+
+```ocaml
+let mk_var x    = hashcons (Var x)
+let mk_and a b  = hashcons (And (a, b))
+let mk_or a b   = hashcons (Or (a, b))
+let mk_not a    = hashcons (Not a)
+let mk_true     = hashcons True
+let mk_false    = hashcons False
+```
+
+Проверим разделение памяти:
+
+```ocaml
+# let p = mk_var "p";;
+val p : formula = ...
+
+# let q = mk_var "q";;
+val q : formula = ...
+
+# let f1 = mk_and p q;;
+val f1 : formula = ...
+
+# let f2 = mk_and p q;;
+val f2 : formula = ...
+
+# f1.id = f2.id;;
+- : bool = true     (* тот же объект! *)
+
+# f1 == f2;;
+- : bool = true     (* физическое равенство *)
+```
+
+`f1` и `f2` --- это буквально один и тот же объект в памяти. Оператор `==` проверяет физическое (pointer) равенство, в отличие от `=`, который проверяет структурное равенство.
+
+### Когда использовать
+
+Hash-consing полезен, когда:
+
+- В программе много **структурно одинаковых значений** (деревья с общими поддеревьями).
+- Часто выполняется **сравнение на равенство** (hash-consing даёт `O(1)`).
+- Нужна **мемоизация** по структуре (хеш уже вычислен).
+- Работа с **символьными выражениями** --- формулы, AST, BDD.
+
+Hash-consing **не нужен**, если:
+
+- Значения уникальны (нет повторяющихся поддеревьев).
+- Overhead хеш-таблицы превышает экономию памяти.
+- Программа не сравнивает значения на равенство.
+
+```admonish tip title="Для Python/TS-разработчиков"
+Hash-consing похож на `sys.intern()` в Python для строк или на `String.intern()` в Java: одинаковые значения хранятся в одном экземпляре. В Python интернирование строк применяется автоматически для коротких строк и идентификаторов. В OCaml hash-consing реализуется вручную, но для произвольных структур данных --- не только строк. Это мощная оптимизация для компиляторов, SAT-солверов и символьных вычислений, где одинаковые поддеревья встречаются часто.
+```
+
+## Flambda
+
+### Что оптимизирует (inlining, unboxing, specialization)
+
+**Flambda** --- оптимизирующий бэкенд компилятора OCaml, выполняющий агрессивные преобразования промежуточного представления. Стандартный компилятор OCaml генерирует достаточно быстрый код, но Flambda может дать дополнительный прирост от 5% до 30% на вычислительно интенсивных задачах.
+
+Основные оптимизации Flambda:
+
+1. **Inlining (встраивание функций)** --- замена вызова функции её телом. Особенно эффективна для маленьких функций и замыканий.
+
+2. **Unboxing (удаление боксирования)** --- если функция принимает `float` и Flambda может доказать, что значение не «убежит», она хранит его в регистре, а не в куче.
+
+3. **Specialization (специализация)** --- создание специализированных версий полиморфных функций для конкретных типов.
+
+4. **Dead code elimination (удаление мёртвого кода)** --- удаление неиспользуемых вычислений.
+
+5. **Constant propagation (распространение констант)** --- вычисление константных выражений на этапе компиляции.
+
+### Как включить (opam switch)
+
+Flambda --- это **вариант компилятора**, а не флаг. Чтобы его использовать, нужно создать отдельный switch в opam:
 
 ```text
-$ dune exec ./main.exe
-18.02.2026 12:00:00.000       dream.log  INFO REQ 1 GET / 127.0.0.1:54321
-18.02.2026 12:00:00.001       dream.log  INFO REQ 1 200 in 1 us
+$ opam switch create 5.2.0+flambda --packages=ocaml-variants.5.2.0+options,ocaml-option-flambda
+$ eval $(opam env)
 ```
 
-## Обработчики
-
-Центральное понятие Dream --- **обработчик** (handler). Это функция, принимающая запрос и возвращающая ответ в контексте Lwt:
-
-```ocaml
-type handler = Dream.request -> Dream.response Lwt.t
-```
-
-Любая функция с такой сигнатурой может быть обработчиком. Вот несколько примеров:
-
-```ocaml
-(* Простой обработчик --- возвращает HTML *)
-let hello_handler _req =
-  Dream.html "Hello!"
-
-(* Обработчик с параметром запроса *)
-let greet_handler req =
-  let name = Dream.param req "name" in
-  Dream.html (Printf.sprintf "Привет, %s!" name)
-
-(* Обработчик, читающий тело запроса *)
-let echo_handler req =
-  let open Lwt.Syntax in
-  let* body = Dream.body req in
-  Dream.html (Printf.sprintf "Вы отправили: %s" body)
-```
-
-Обратите внимание на `let*` --- синтаксис let-операторов Lwt (из главы 17). `Dream.body req` возвращает `string Lwt.t`, поэтому мы используем `let*` для извлечения строки.
-
-### Формирование ответов
-
-Dream предоставляет несколько функций для создания ответов:
-
-```ocaml
-(* HTML-ответ со статусом 200 *)
-let _ = Dream.html "содержимое"
-
-(* JSON-ответ со статусом 200 *)
-let _ = Dream.json {|{"key": "value"}|}
-
-(* JSON-ответ с произвольным статусом *)
-let _ = Dream.json ~status:`Created {|{"id": 1}|}
-let _ = Dream.json ~status:`Not_Found {|{"error": "not found"}|}
-
-(* Пустой ответ *)
-let _ = Dream.empty `No_Content
-
-(* Ответ с произвольными заголовками *)
-let custom_response _req =
-  let response = Dream.response ~status:`OK "данные" in
-  Dream.set_header response "X-Custom" "value";
-  Lwt.return response
-```
-
-Статус-коды записываются как полиморфные варианты: `` `OK ``, `` `Created ``, `` `Not_Found ``, `` `Bad_Request ``, `` `Internal_Server_Error `` и так далее.
-
-## Маршрутизация
-
-Dream предоставляет функции для всех стандартных HTTP-методов:
-
-```ocaml
-Dream.router [
-  Dream.get    "/resource" get_handler;
-  Dream.post   "/resource" create_handler;
-  Dream.put    "/resource/:id" update_handler;
-  Dream.delete "/resource/:id" delete_handler;
-]
-```
-
-### Параметры пути
-
-Сегменты пути, начинающиеся с `:`, становятся **параметрами**. Их значения извлекаются через `Dream.param`:
-
-```ocaml
-Dream.get "/users/:id" (fun req ->
-  let id = Dream.param req "id" in
-  Dream.html (Printf.sprintf "Пользователь %s" id))
-```
-
-`Dream.param` возвращает `string`. Для преобразования в другие типы используйте стандартные функции:
-
-```ocaml
-Dream.get "/users/:id" (fun req ->
-  let id_str = Dream.param req "id" in
-  match int_of_string_opt id_str with
-  | Some id -> Dream.html (Printf.sprintf "Пользователь #%d" id)
-  | None -> Dream.json ~status:`Bad_Request {|{"error":"invalid id"}|})
-```
-
-### Области (scopes)
-
-`Dream.scope` группирует маршруты под общим префиксом:
-
-```ocaml
-Dream.router [
-  Dream.get "/" (fun _ -> Dream.html "Главная страница");
-
-  Dream.scope "/api" [] [
-    Dream.get "/status" (fun _ ->
-      Dream.json {|{"ok": true}|});
-
-    Dream.scope "/v1" [] [
-      Dream.get "/users" list_users_handler;
-      Dream.get "/users/:id" get_user_handler;
-    ];
-  ];
-]
-```
-
-Второй аргумент `Dream.scope` --- список middleware, применяемых ко всем маршрутам внутри области. Пустой список `[]` означает отсутствие дополнительных middleware.
-
-С этой конфигурацией:
-
-- `GET /` --- главная страница.
-- `GET /api/status` --- статус API.
-- `GET /api/v1/users` --- список пользователей.
-- `GET /api/v1/users/42` --- пользователь с id 42.
-
-## Запрос и ответ
-
-### Чтение запроса
-
-```ocaml
-(* Тело запроса (POST/PUT) *)
-let body : string Lwt.t = Dream.body req
-
-(* HTTP-метод *)
-let meth : Dream.method_ = Dream.method_ req
-
-(* Путь запроса *)
-let path : string = Dream.target req
-
-(* Заголовок *)
-let content_type : string option = Dream.header req "Content-Type"
-
-(* Query-параметры *)
-let page : string option = Dream.query req "page"
-```
-
-### Статус-коды
-
-Наиболее часто используемые статус-коды в REST API:
-
-```ocaml
-(* Успех *)
-`OK                    (* 200 *)
-`Created               (* 201 *)
-`No_Content            (* 204 *)
-
-(* Ошибки клиента *)
-`Bad_Request           (* 400 *)
-`Unauthorized          (* 401 *)
-`Forbidden             (* 403 *)
-`Not_Found             (* 404 *)
-
-(* Ошибки сервера *)
-`Internal_Server_Error (* 500 *)
-```
-
-## Middleware
-
-Middleware --- функция, которая **оборачивает** обработчик, добавляя логику до и/или после обработки запроса.
-
-Тип middleware в Dream:
-
-```ocaml
-type middleware = handler -> handler
-```
-
-То есть middleware принимает «внутренний» обработчик и возвращает «внешний» обработчик. Это позволяет строить конвейер обработки.
-
-### Встроенный middleware
-
-Dream предоставляет несколько готовых middleware:
-
-```ocaml
-let () =
-  Dream.run
-  @@ Dream.logger          (* логирование запросов *)
-  @@ Dream.router [ ... ]
-```
-
-`Dream.logger` выводит в консоль метод, путь, статус и время обработки каждого запроса.
-
-### Пользовательский middleware
-
-Напишем middleware для измерения времени обработки:
-
-```ocaml
-let timing_middleware inner_handler req =
-  let t0 = Unix.gettimeofday () in
-  let open Lwt.Syntax in
-  let* response = inner_handler req in
-  let dt = Unix.gettimeofday () -. t0 in
-  Dream.log "Request %s %s took %.3fs"
-    (Dream.method_to_string (Dream.method_ req))
-    (Dream.target req)
-    dt;
-  Lwt.return response
-```
-
-Использование:
-
-```ocaml
-let () =
-  Dream.run
-  @@ Dream.logger
-  @@ timing_middleware
-  @@ Dream.router [ ... ]
-```
-
-Middleware компонуются сверху вниз: сначала `Dream.logger`, затем `timing_middleware`, затем роутер. Запрос проходит через каждый слой по очереди.
-
-### Middleware для CORS
-
-Пример middleware, добавляющего CORS-заголовки:
-
-```ocaml
-let cors_middleware inner_handler req =
-  let open Lwt.Syntax in
-  let* response = inner_handler req in
-  Dream.set_header response "Access-Control-Allow-Origin" "*";
-  Dream.set_header response "Access-Control-Allow-Methods"
-    "GET, POST, PUT, DELETE";
-  Dream.set_header response "Access-Control-Allow-Headers" "Content-Type";
-  Lwt.return response
-```
-
-### Middleware для области
-
-Middleware можно применить только к определённой группе маршрутов через `Dream.scope`:
-
-```ocaml
-Dream.router [
-  Dream.get "/" public_handler;
-
-  Dream.scope "/admin" [auth_middleware] [
-    Dream.get "/dashboard" dashboard_handler;
-    Dream.get "/users" admin_users_handler;
-  ];
-]
-```
-
-Здесь `auth_middleware` применяется только к маршрутам внутри `/admin`.
-
-## JSON API с Yojson
-
-В главе 12 мы изучили `ppx_deriving_yojson` для автоматической сериализации. Теперь применим это для построения JSON API.
-
-Напомним ключевые моменты:
-
-```ocaml
-type todo = {
-  id : int;
-  title : string;
-  completed : bool;
-} [@@deriving yojson]
-```
-
-Аннотация `[@@deriving yojson]` генерирует:
-
-- `todo_to_yojson : todo -> Yojson.Safe.t` --- сериализация.
-- `todo_of_yojson : Yojson.Safe.t -> (todo, string) result` --- десериализация.
-
-**Важно:** `ppx_deriving_yojson` генерирует функции вида `t_to_yojson` / `t_of_yojson` (НЕ `yojson_of_t`). Это отличается от некоторых других ppx-расширений.
-
-### Вспомогательные функции
-
-Для удобной работы с JSON в обработчиках напишем хелперы:
-
-```ocaml
-(* Прочитать JSON из тела запроса *)
-let read_json_body req =
-  let open Lwt.Syntax in
-  let* body = Dream.body req in
-  try Lwt.return_ok (Yojson.Safe.from_string body)
-  with Yojson.Json_error msg -> Lwt.return_error msg
-
-(* Отправить JSON-ответ из Yojson.Safe.t *)
-let json_response ?(status = `OK) json =
-  Dream.json ~status (Yojson.Safe.to_string json)
-
-(* Отправить ошибку в формате JSON *)
-let json_error status message =
-  let body = Printf.sprintf {|{"error": "%s"}|} message in
-  Dream.json ~status body
-```
-
-## Проект: TODO API
-
-Соберём всё вместе и построим полноценный REST API для управления списком задач (todo-list). Это классический пример для изучения веб-фреймворков.
-
-### Типы данных
-
-```ocaml
-type todo = {
-  id : int;
-  title : string;
-  completed : bool;
-} [@@deriving yojson]
-
-type create_todo = {
-  title : string;
-} [@@deriving yojson]
-
-type update_todo = {
-  title : string option; [@default None]
-  completed : bool option; [@default None]
-} [@@deriving yojson]
-
-type todo_list = {
-  todos : todo list;
-  count : int;
-} [@@deriving to_yojson]
-```
-
-Тип `create_todo` описывает тело POST-запроса --- для создания задачи нужен только заголовок. Тип `update_todo` описывает тело PUT-запроса --- оба поля необязательные (обновляем только то, что передали). Атрибут `[@default None]` говорит ppx, что при отсутствии поля в JSON нужно подставить `None`.
-
-### Хранилище в памяти
-
-Используем мутабельную ссылку (из главы 8) как простое хранилище:
-
-```ocaml
-let todos : todo list ref = ref []
-let next_id : int ref = ref 1
-
-let add_todo title =
-  let todo = { id = !next_id; title; completed = false } in
-  todos := todo :: !todos;
-  next_id := !next_id + 1;
-  todo
-
-let find_todo id =
-  List.find_opt (fun t -> t.id = id) !todos
-
-let update_todo id ?title ?completed () =
-  let updated = List.map (fun t ->
-    if t.id = id then
-      { t with
-        title = (match title with Some s -> s | None -> t.title);
-        completed = (match completed with Some b -> b | None -> t.completed);
-      }
-    else t
-  ) !todos in
-  todos := updated;
-  find_todo id
-
-let delete_todo id =
-  let before = List.length !todos in
-  todos := List.filter (fun t -> t.id <> id) !todos;
-  List.length !todos < before
-```
-
-В реальном приложении вместо `ref` использовалась бы база данных, но для изучения фреймворка хранение в памяти вполне подходит.
-
-### Обработчик: список всех задач
-
-```ocaml
-(* GET /todos *)
-let list_todos_handler _req =
-  let all = List.rev !todos in
-  let response = { todos = all; count = List.length all } in
-  json_response (todo_list_to_yojson response)
-```
-
-`List.rev` --- потому что мы добавляем задачи в начало списка, а пользователь ожидает хронологический порядок.
-
-### Обработчик: создание задачи
-
-```ocaml
-(* POST /todos *)
-let create_todo_handler req =
-  let open Lwt.Syntax in
-  let* body = Dream.body req in
-  match Yojson.Safe.from_string body |> create_todo_of_yojson with
-  | Ok { title } ->
-    let todo = add_todo title in
-    json_response ~status:`Created (todo_to_yojson todo)
-  | Error msg ->
-    json_error `Bad_Request (Printf.sprintf "Invalid JSON: %s" msg)
-  | exception Yojson.Json_error msg ->
-    json_error `Bad_Request (Printf.sprintf "Malformed JSON: %s" msg)
-```
-
-Обратите внимание на обработку ошибок:
-
-- `Yojson.Json_error` --- строка не является валидным JSON.
-- `Error msg` --- JSON валиден, но не соответствует типу `create_todo`.
-
-### Обработчик: получение задачи по id
-
-```ocaml
-(* GET /todos/:id *)
-let get_todo_handler req =
-  let id_str = Dream.param req "id" in
-  match int_of_string_opt id_str with
-  | None ->
-    json_error `Bad_Request "id must be an integer"
-  | Some id ->
-    match find_todo id with
-    | Some todo -> json_response (todo_to_yojson todo)
-    | None -> json_error `Not_Found (Printf.sprintf "Todo %d not found" id)
-```
-
-### Обработчик: обновление задачи
-
-```ocaml
-(* PUT /todos/:id *)
-let update_todo_handler req =
-  let open Lwt.Syntax in
-  let id_str = Dream.param req "id" in
-  match int_of_string_opt id_str with
-  | None ->
-    json_error `Bad_Request "id must be an integer"
-  | Some id ->
-    match find_todo id with
-    | None ->
-      json_error `Not_Found (Printf.sprintf "Todo %d not found" id)
-    | Some _existing ->
-      let* body = Dream.body req in
-      (match Yojson.Safe.from_string body |> update_todo_of_yojson with
-       | Ok { title; completed } ->
-         (match update_todo id ?title ?completed () with
-          | Some updated -> json_response (todo_to_yojson updated)
-          | None -> json_error `Internal_Server_Error "update failed")
-       | Error msg ->
-         json_error `Bad_Request (Printf.sprintf "Invalid JSON: %s" msg)
-       | exception Yojson.Json_error msg ->
-         json_error `Bad_Request (Printf.sprintf "Malformed JSON: %s" msg))
-```
-
-Обработчик обновления --- самый сложный, потому что требует:
-
-1. Проверить валидность `id`.
-2. Убедиться, что задача существует.
-3. Прочитать и разобрать тело запроса.
-4. Применить обновление.
-
-### Обработчик: удаление задачи
-
-```ocaml
-(* DELETE /todos/:id *)
-let delete_todo_handler req =
-  let id_str = Dream.param req "id" in
-  match int_of_string_opt id_str with
-  | None ->
-    json_error `Bad_Request "id must be an integer"
-  | Some id ->
-    if delete_todo id then
-      Dream.empty `No_Content
-    else
-      json_error `Not_Found (Printf.sprintf "Todo %d not found" id)
-```
-
-При успешном удалении возвращаем `204 No Content` --- стандартная практика для DELETE-запросов.
-
-### Сборка приложения
-
-```ocaml
-let () =
-  Dream.run
-  @@ Dream.logger
-  @@ cors_middleware
-  @@ Dream.router [
-    Dream.get    "/todos"     list_todos_handler;
-    Dream.post   "/todos"     create_todo_handler;
-    Dream.get    "/todos/:id" get_todo_handler;
-    Dream.put    "/todos/:id" update_todo_handler;
-    Dream.delete "/todos/:id" delete_todo_handler;
-  ]
-```
-
-### Тестирование с curl
+Проверить, что Flambda включена:
 
 ```text
-$ curl http://localhost:8080/todos
-{"todos":[],"count":0}
-
-$ curl -X POST http://localhost:8080/todos \
-  -H "Content-Type: application/json" \
-  -d '{"title":"Купить молоко"}'
-{"id":1,"title":"Купить молоко","completed":false}
-
-$ curl -X POST http://localhost:8080/todos \
-  -H "Content-Type: application/json" \
-  -d '{"title":"Написать код"}'
-{"id":2,"title":"Написать код","completed":false}
-
-$ curl http://localhost:8080/todos
-{"todos":[{"id":1,"title":"Купить молоко","completed":false},
-          {"id":2,"title":"Написать код","completed":false}],
- "count":2}
-
-$ curl http://localhost:8080/todos/1
-{"id":1,"title":"Купить молоко","completed":false}
-
-$ curl -X PUT http://localhost:8080/todos/1 \
-  -H "Content-Type: application/json" \
-  -d '{"completed":true}'
-{"id":1,"title":"Купить молоко","completed":true}
-
-$ curl -X DELETE http://localhost:8080/todos/2
-(пустой ответ, статус 204)
-
-$ curl http://localhost:8080/todos/999
-{"error":"Todo 999 not found"}
+$ ocamlopt -config | grep flambda
+flambda: true
 ```
 
-## HTML-шаблоны
-
-Помимо JSON API, Dream поддерживает серверный рендеринг HTML. Для простых случаев достаточно `Dream.html` с форматированием строк:
+Или из кода:
 
 ```ocaml
-let page_handler _req =
-  Dream.html
-    (Printf.sprintf
-       {|<!DOCTYPE html>
-<html>
-<head><title>TODO</title></head>
-<body>
-  <h1>Мои задачи</h1>
-  <ul>%s</ul>
-</body>
-</html>|}
-       (List.rev !todos
-        |> List.map (fun t ->
-             Printf.sprintf "<li>%s %s</li>"
-               (if t.completed then "&#10003;" else "&#9744;")
-               t.title)
-        |> String.concat "\n    "))
+# Sys.ocaml_release.suffix;;
+- : string option = Some "+flambda"
 ```
 
-Для более сложных шаблонов Dream предлагает встроенный **шаблонизатор** на основе PPX, позволяющий писать HTML прямо в OCaml-файлах с интерполяцией. Однако его детальное рассмотрение выходит за рамки этой главы --- мы сосредоточимся на API-серверах.
+### Аннотации [@inline always], [@unrolled]
 
-## Расширенные возможности Dream
+Flambda учитывает аннотации, помогающие компилятору принимать решения об оптимизациях:
 
-### Обработка ошибок
-
-Dream позволяет настроить глобальную обработку ошибок через параметр `~error_handler`:
+**`[@inline always]`** --- принудительное встраивание функции:
 
 ```ocaml
-let error_handler _error _debug_info suggested_response =
-  let status = Dream.status suggested_response in
-  let code = Dream.status_to_int status in
-  let body = Printf.sprintf {|{"error": "HTTP %d"}|} code in
-  Dream.json ~status body
+let[@inline always] add x y = x + y
+```
+
+**`[@inline never]`** --- запрет встраивания (полезно для отладки):
+
+```ocaml
+let[@inline never] expensive_computation x = ...
+```
+
+**`[@unrolled n]`** --- развёртка рекурсивной функции на `n` шагов:
+
+```ocaml
+let[@unrolled 3] rec sum = function
+  | [] -> 0
+  | x :: xs -> x + sum xs
+```
+
+Это превратит первые 3 итерации в прямой код без вызовов.
+
+**`[@specialise always]`** --- специализация полиморфной функции:
+
+```ocaml
+let[@specialise always] map f = function
+  | [] -> []
+  | x :: xs -> f x :: map f xs
+```
+
+> **Для хаскеллистов.** Аннотации Flambda похожи на прагмы GHC: `{-# INLINE #-}`, `{-# SPECIALISE #-}`. Разница в том, что GHC применяет инлайнинг и специализацию гораздо агрессивнее по умолчанию, а в OCaml без Flambda оптимизации минимальны.
+
+## Другие техники
+
+### Bigarray
+
+`Bigarray` --- модуль стандартной библиотеки для работы с массивами, хранящимися вне кучи OCaml. Это полезно для:
+
+- **Числовых вычислений** --- элементы хранятся как обычные C-значения (unboxed float, int32, int64).
+- **Взаимодействия с C** --- `Bigarray` можно передавать в C-функции без копирования.
+- **Избежания давления на GC** --- GC не сканирует `Bigarray`.
+
+```ocaml
+# open Bigarray;;
+
+# let arr = Array1.create float64 c_layout 1000;;
+val arr : (float, float64_elt, c_layout) Array1.t = <abstr>
+
+# Array1.set arr 0 3.14;;
+- : unit = ()
+
+# Array1.get arr 0;;
+- : float = 3.14
+```
+
+### Специализация
+
+Полиморфные функции в OCaml работают через uniform representation --- все значения имеют размер одного слова. Это означает, что `Array.map` для `int array` и `float array` использует один и тот же код, но для `float array` каждое обращение к элементу требует boxing/unboxing.
+
+Для числовых вычислений лучше использовать специализированные модули:
+
+```ocaml
+(* Вместо полиморфного Array.map *)
+let sum_float (arr : float array) =
+  let n = Array.length arr in
+  let acc = ref 0.0 in
+  for i = 0 to n - 1 do
+    acc := !acc +. Array.unsafe_get arr i
+  done;
+  !acc
+```
+
+### Минимизация аллокаций
+
+Каждая аллокация в куче --- это работа для сборщика мусора. Несколько приёмов для минимизации:
+
+1. **Используйте `int` вместо `float`, где возможно** --- `int` immediate и не аллоцируется.
+
+2. **Мутабельные записи вместо создания новых** --- вместо `{ r with x = 42 }` иногда лучше `r.x <- 42`.
+
+3. **`Buffer` вместо конкатенации строк** --- `"a" ^ "b" ^ "c"` создаёт промежуточные строки.
+
+4. **Избегайте лишних замыканий** --- каждое замыкание с захваченными переменными аллоцируется.
+
+### Замеры
+
+Для замера производительности используйте модуль `Gc` и системные функции:
+
+```ocaml
+(** Замер времени выполнения. *)
+let time_it label f =
+  let t0 = Sys.time () in
+  let result = f () in
+  let dt = Sys.time () -. t0 in
+  Printf.printf "%s: %.4f сек\n" label dt;
+  result
+
+(** Замер аллокаций через Gc.stat. *)
+let measure_alloc f =
+  Gc.full_major ();
+  let before = Gc.stat () in
+  let result = f () in
+  let after = Gc.stat () in
+  let alloc_words =
+    after.Gc.minor_words -. before.Gc.minor_words
+    +. after.Gc.major_words -. before.Gc.major_words
+  in
+  Printf.printf "Аллоцировано: %.0f слов (%.0f КБ)\n"
+    alloc_words (alloc_words *. 8.0 /. 1024.0);
+  result
+```
+
+`Gc.stat` возвращает запись с множеством полезных полей:
+
+```ocaml
+# let st = Gc.stat ();;
+val st : Gc.stat = ...
+
+# st.Gc.minor_words;;
+- : float = ...    (* слов аллоцировано в минорной куче *)
+
+# st.Gc.major_words;;
+- : float = ...    (* слов аллоцировано в мажорной куче *)
+
+# st.Gc.live_words;;
+- : int = ...      (* живых слов в текущий момент *)
+
+# st.Gc.heap_words;;
+- : int = ...      (* общий размер кучи в словах *)
+```
+
+## Проект: hash-consed AST
+
+Создадим hash-consed AST для арифметических выражений и измерим экономию памяти по сравнению с обычным представлением.
+
+### Обычный AST
+
+```ocaml
+(** Обычное (не hash-consed) арифметическое выражение. *)
+type expr =
+  | Num of int
+  | Var of string
+  | Add of expr * expr
+  | Mul of expr * expr
+```
+
+### Hash-consed AST
+
+```ocaml
+(** Обёртка hash-consing. *)
+type 'a hcons = {
+  node : 'a;
+  id : int;
+  hkey : int;
+}
+
+(** Узел hash-consed выражения. *)
+type hc_expr_node =
+  | HNum of int
+  | HVar of string
+  | HAdd of hc_expr * hc_expr
+  | HMul of hc_expr * hc_expr
+and hc_expr = hc_expr_node hcons
+```
+
+Smart-конструкторы:
+
+```ocaml
+let hc_next_id = ref 0
+let hc_table : (hc_expr_node, hc_expr) Hashtbl.t = Hashtbl.create 251
+
+let hc_make (node : hc_expr_node) : hc_expr =
+  match Hashtbl.find_opt hc_table node with
+  | Some existing -> existing
+  | None ->
+    let id = !hc_next_id in
+    incr hc_next_id;
+    let hkey = Hashtbl.hash node in
+    let hc = { node; id; hkey } in
+    Hashtbl.add hc_table node hc;
+    hc
+
+let hc_num n     = hc_make (HNum n)
+let hc_var x     = hc_make (HVar x)
+let hc_add a b   = hc_make (HAdd (a, b))
+let hc_mul a b   = hc_make (HMul (a, b))
+```
+
+### Вычисление
+
+```ocaml
+(** Вычисление обычного выражения. *)
+let rec eval_expr env = function
+  | Num n -> n
+  | Var x -> (match List.assoc_opt x env with Some v -> v | None -> 0)
+  | Add (a, b) -> eval_expr env a + eval_expr env b
+  | Mul (a, b) -> eval_expr env a * eval_expr env b
+
+(** Вычисление hash-consed выражения. *)
+let rec eval_hc_expr env (e : hc_expr) =
+  match e.node with
+  | HNum n -> n
+  | HVar x -> (match List.assoc_opt x env with Some v -> v | None -> 0)
+  | HAdd (a, b) -> eval_hc_expr env a + eval_hc_expr env b
+  | HMul (a, b) -> eval_hc_expr env a * eval_hc_expr env b
+```
+
+### Замер памяти
+
+Построим выражение с большим количеством разделяемых поддеревьев и сравним потребление памяти:
+
+```ocaml
+(** Построение глубокого дерева с разделяемыми поддеревьями.
+    f(0) = Var "x"
+    f(n) = Add(f(n-1), f(n-1))
+
+    Без hash-consing: 2^n узлов.
+    С hash-consing: n+1 узлов.  *)
+let rec build_shared_tree n =
+  if n = 0 then Num 1
+  else
+    let sub = build_shared_tree (n - 1) in
+    Add (sub, sub)
+
+let rec build_shared_hc n =
+  if n = 0 then hc_num 1
+  else
+    let sub = build_shared_hc (n - 1) in
+    hc_add sub sub
 
 let () =
-  Dream.run ~error_handler
-  @@ Dream.logger
-  @@ Dream.router [ ... ]
+  let n = 20 in
+
+  Gc.full_major ();
+  let before = Gc.stat () in
+  let _tree = build_shared_tree n in
+  Gc.full_major ();
+  let after = Gc.stat () in
+  Printf.printf "Обычный AST (n=%d): live_words = %d\n"
+    n (after.Gc.live_words - before.Gc.live_words);
+
+  Gc.full_major ();
+  let before2 = Gc.stat () in
+  let _hc_tree = build_shared_hc n in
+  Gc.full_major ();
+  let after2 = Gc.stat () in
+  Printf.printf "Hash-consed AST (n=%d): live_words = %d\n"
+    n (after2.Gc.live_words - before2.Gc.live_words)
 ```
 
-### Query-параметры
+В обычном AST `build_shared_tree 20` создаёт дерево, которое выглядит как 2^20 = ~1 миллион узлов (хотя OCaml физически разделит поддеревья через `let sub = ...`). С hash-consing создаётся ровно 21 уникальный узел --- по одному на каждый уровень.
+
+> **Важная тонкость:** в OCaml `let sub = build_shared_tree (n-1) in Add (sub, sub)` уже создаёт физическое разделение --- оба поля `Add` указывают на один и тот же объект `sub`. Однако без hash-consing **отдельные** вызовы `build_shared_tree` с одинаковым `n` создадут **разные** объекты. Hash-consing гарантирует глобальное разделение.
+
+### Проверка физического равенства
 
 ```ocaml
-(* GET /todos?completed=true&page=2 *)
-let filtered_handler req =
-  let completed_filter =
-    match Dream.query req "completed" with
-    | Some "true" -> Some true
-    | Some "false" -> Some false
-    | _ -> None
-  in
-  let all = List.rev !todos in
-  let filtered = match completed_filter with
-    | Some c -> List.filter (fun t -> t.completed = c) all
-    | None -> all
-  in
-  let response = { todos = filtered; count = List.length filtered } in
-  json_response (todo_list_to_yojson response)
+# let a = build_shared_hc 5;;
+# let b = build_shared_hc 5;;
+# a == b;;
+- : bool = true   (* один и тот же объект --- hash-consing *)
+
+# let c = build_shared_tree 5;;
+# let d = build_shared_tree 5;;
+# c == d;;
+- : bool = false   (* разные объекты --- обычный AST *)
+# c = d;;
+- : bool = true    (* но структурно равны *)
 ```
-
-### Настройка порта и хоста
-
-```ocaml
-let () =
-  Dream.run
-    ~port:3000
-    ~interface:"0.0.0.0"
-  @@ Dream.logger
-  @@ Dream.router [ ... ]
-```
-
-По умолчанию Dream слушает на `localhost:8080`. Параметр `~interface:"0.0.0.0"` позволяет принимать соединения с любого адреса.
-
-## Сравнение с Haskell
-
-| Аспект | OCaml (Dream) | Haskell (Servant) | Haskell (Scotty) |
-|--------|--------------|-------------------|------------------|
-| Стиль маршрутизации | Обычные функции | Типы-уровни (Type-level DSL) | Паттерн-матчинг |
-| Типобезопасность маршрутов | Нет (строки) | Полная (типы) | Нет (строки) |
-| JSON | ppx_deriving_yojson | aeson + Generic | aeson + Generic |
-| Именование кодеков | `t_to_yojson`, `t_of_yojson` | `toJSON`, `parseJSON` | `toJSON`, `parseJSON` |
-| Async-модель | Lwt (промисы) | IO + Warp | IO + Warp |
-| Middleware | `handler -> handler` | Servant combinators | Scotty middleware |
-| Генерация клиента | Нет | Из типов маршрутов | Нет |
-| Документация API | Ручная | Из типов (Swagger) | Ручная |
-| Порог входа | Низкий | Высокий | Низкий |
-
-**Servant** --- уникальный фреймворк, где маршруты описываются на уровне типов:
-
-```haskell
--- Haskell Servant: маршруты как типы
-type API =
-       "todos" :> Get '[JSON] [Todo]
-  :<|> "todos" :> ReqBody '[JSON] CreateTodo :> Post '[JSON] Todo
-  :<|> "todos" :> Capture "id" Int :> Get '[JSON] Todo
-```
-
-Из такого описания Servant генерирует сервер, клиент и документацию. Это мощно, но требует глубокого понимания type-level программирования.
-
-**Scotty** ближе к Dream по духу --- простой, процедурный API:
-
-```haskell
--- Haskell Scotty: похоже на Dream
-main = scotty 8080 $ do
-  get "/todos" $ json todos
-  post "/todos" $ do
-    body <- jsonData
-    json (createTodo body)
-```
-
-Dream занимает аналогичную нишу в экосистеме OCaml: простой фреймворк для быстрого старта, не требующий продвинутых знаний системы типов.
 
 ## Упражнения
 
 Решения пишите в `test/my_solutions.ml`. Проверяйте: `dune runtest`.
 
-1. **(Лёгкое)** Напишите обработчик `health_handler`, который возвращает JSON-ответ `{"status": "ok"}`.
+1. **(Лёгкое)** Создайте unboxed-тип обёртку `positive_float` с конструктором `Pos` и аннотацией `[@@unboxed]`. Напишите функцию `mk_positive : float -> positive_float option`, которая возвращает `Some (Pos x)`, если `x > 0.0`, и `None` иначе. Также напишите функцию `get_value : positive_float -> float`.
 
     ```ocaml
-    val health_handler : Dream.request -> Dream.response Lwt.t
+    type positive_float = Pos of float [@@unboxed]
+    val mk_positive : float -> positive_float option
+    val get_value : positive_float -> float
     ```
 
-    Обработчик должен возвращать ответ со статусом 200 и телом `{"status":"ok"}`.
-
-    *Подсказка:* используйте `Dream.json`.
-
-2. **(Среднее)** Реализуйте **чистую** функцию пагинации `paginate`, которая принимает список, номер страницы и размер страницы и возвращает соответствующий срез:
+2. **(Среднее)** Реализуйте hash-consing для бинарных деревьев:
 
     ```ocaml
-    val paginate : page:int -> per_page:int -> 'a list -> 'a list
+    type tree_node = Leaf | Node of hc_tree * hc_tree
+    and hc_tree = tree_node hcons
     ```
 
-    Нумерация страниц начинается с 1. Если страница выходит за пределы списка, верните пустой список. Если `page < 1` или `per_page < 1`, верните пустой список.
+    Напишите smart-конструкторы `mk_leaf` и `mk_node`, а также функцию `tree_size : hc_tree -> int`, возвращающую количество узлов в дереве (считая каждый уникальный узел один раз --- используйте `id` для отслеживания).
 
-    Примеры:
-    - `paginate ~page:1 ~per_page:2 [1;2;3;4;5]` -> `[1;2]`
-    - `paginate ~page:2 ~per_page:2 [1;2;3;4;5]` -> `[3;4]`
-    - `paginate ~page:3 ~per_page:2 [1;2;3;4;5]` -> `[5]`
-    - `paginate ~page:4 ~per_page:2 [1;2;3;4;5]` -> `[]`
+3. **(Среднее)** Добавьте функцию `simplify` к hash-consed AST арифметических выражений. Функция должна упрощать выражения по правилам:
 
-    *Подсказка:* используйте комбинацию `List.filteri` или ручную рекурсию с `List.nth`.
-
-3. **(Среднее)** Реализуйте **чистую** функцию `search_todos`, которая фильтрует список задач по подстроке в заголовке (без учёта регистра):
+    - `0 + x = x`, `x + 0 = x`
+    - `0 * x = 0`, `x * 0 = 0`
+    - `1 * x = x`, `x * 1 = x`
 
     ```ocaml
-    type todo = { id : int; title : string; completed : bool }
-
-    val search_todos : query:string -> todo list -> todo list
+    val simplify : hc_expr -> hc_expr
     ```
 
-    Примеры:
-    - `search_todos ~query:"молоко" [...]` --- возвращает задачи, содержащие «молоко» в заголовке.
-    - `search_todos ~query:"" [...]` --- возвращает все задачи (пустой запрос не фильтрует).
+    Результат тоже должен быть hash-consed.
 
-    *Подсказка:* используйте `String.lowercase_ascii` для регистронезависимого поиска. Для проверки вхождения подстроки можно написать вспомогательную функцию через `String.length` и `String.sub`, или воспользоваться `Str` / ручной рекурсией.
-
-4. **(Сложное)** Реализуйте middleware `auth_middleware`, который проверяет наличие и корректность Bearer-токена в заголовке `Authorization`:
+4. **(Среднее)** Напишите функцию `count_unique_nodes : hc_expr -> int`, которая подсчитывает количество уникальных узлов в hash-consed выражении (используя `id` для отслеживания посещённых узлов). Сравните результат с `count_nodes_regular : expr -> int` --- подсчётом всех узлов в обычном AST (считая повторы).
 
     ```ocaml
-    val auth_middleware : string -> Dream.middleware
+    val count_unique_nodes : hc_expr -> int
+    val count_nodes_regular : expr -> int
     ```
 
-    Middleware принимает секретный токен и возвращает middleware-функцию. Логика:
-
-    - Если заголовок `Authorization` отсутствует --- вернуть 401 с `{"error":"missing authorization header"}`.
-    - Если заголовок не начинается с `"Bearer "` --- вернуть 401 с `{"error":"invalid authorization scheme"}`.
-    - Если токен не совпадает с ожидаемым --- вернуть 403 с `{"error":"invalid token"}`.
-    - Если всё верно --- передать запрос внутреннему обработчику.
-
-    Пример использования:
+5. **(Сложное)** Реализуйте hash-consed формулы пропозициональной логики:
 
     ```ocaml
-    Dream.scope "/api" [auth_middleware "secret-token-123"] [
-      Dream.get "/data" data_handler;
-    ]
+    type prop_node =
+      | PVar of string
+      | PAnd of hc_prop * hc_prop
+      | POr of hc_prop * hc_prop
+      | PNot of hc_prop
+      | PTrue
+      | PFalse
+    and hc_prop = prop_node hcons
     ```
 
-    *Подсказка:* используйте `Dream.header req "Authorization"` для чтения заголовка и `String.length` / `String.sub` для разбора значения.
+    Напишите:
+    - Smart-конструкторы.
+    - Функцию `nnf : hc_prop -> hc_prop` --- преобразование в **негативную нормальную форму** (NNF), где отрицания применяются только к переменным.
+      - `Not (And (a, b))` -> `Or (Not a, Not b)` (закон Де Моргана)
+      - `Not (Or (a, b))` -> `And (Not a, Not b)` (закон Де Моргана)
+      - `Not (Not a)` -> `a` (двойное отрицание)
+      - `Not True` -> `False`, `Not False` -> `True`
+    - Функцию `eval_prop : (string -> bool) -> hc_prop -> bool` --- вычисление формулы при данном назначении переменных.
 
 ## Заключение
 
 В этой главе мы:
 
-- Познакомились с Dream --- минималистичным веб-фреймворком для OCaml.
-- Изучили обработчики (`request -> response Lwt.t`) и маршрутизацию.
-- Написали пользовательские middleware для таймингов и CORS.
-- Построили полноценный CRUD API для списка задач с JSON-сериализацией.
-- Освоили обработку ошибок в обработчиках: невалидный JSON, несуществующие ресурсы, некорректные параметры.
-- Сравнили Dream с Haskell-фреймворками Servant и Scotty.
+- Изучили, как OCaml представляет значения в памяти: immediate-значения (int, bool, char, unit) хранятся прямо в машинном слове, а boxed-значения (float, строки, записи, кортежи) --- в блоках в куче.
+- Разобрали структуру блока в куче: заголовочное слово с тегом, размером и битами для GC.
+- Освоили аннотации `[@@unboxed]` для устранения обёрток и `[@@immediate]` для гарантии immediate-представления.
+- Реализовали hash-consing с нуля --- технику разделения памяти между структурно равными значениями, дающую `O(1)` сравнение и экономию памяти.
+- Познакомились с Flambda --- оптимизирующим бэкендом OCaml, его аннотациями для управления инлайнингом и специализацией.
+- Построили hash-consed AST и измерили разницу в потреблении памяти через `Gc.stat`.
 
-### Итоги основного курса
+Понимание внутреннего представления значений --- ключ к написанию эффективного OCaml-кода. В большинстве случаев рантайм OCaml достаточно быстр «из коробки», но для числовых вычислений, компиляторов и символьных систем описанные в этой главе техники могут дать значительный прирост производительности.
 
-Эта глава завершает основной курс книги «OCaml на примерах». За 20 глав мы прошли путь от базового синтаксиса до построения веб-сервера:
-
-- **Главы 1--5** заложили основу: типы, функции, рекурсия, алгебраические типы, `map` и свёртки.
-- **Глава 6** раскрыла модульную систему OCaml --- сигнатуры, функторы, инкапсуляция.
-- **Глава 7** научила обработке ошибок через `option`, `result` и let-операторы.
-- **Глава 8** познакомила с мутабельным состоянием и прямыми эффектами.
-- **Глава 9** раскрыла проектирование через типы --- smart constructors и state machines.
-- **Глава 10** исследовала Expression Problem и разные способы его решения.
-- **Глава 11** открыла мир конкурентного программирования с Eio и доменами OCaml 5.
-- **Глава 12** связала OCaml с внешним миром через FFI и JSON.
-- **Глава 13** показала обработчики эффектов --- одну из главных новинок OCaml 5.
-- **Глава 14** продемонстрировала графику с raylib.
-- **Глава 15** научила генеративному тестированию --- автоматическому поиску контрпримеров.
-- **Глава 16** раскрыла парсер-комбинаторы (Angstrom) и GADT для типобезопасных DSL.
-- **Глава 17** показала создание CLI-приложений с Cmdliner.
-- **Глава 18** погрузила в метапрограммирование через ppx.
-- **Глава 19** познакомила с промисами и Lwt --- асинхронным программированием в стиле колбэков.
-- **Глава 20** (эта глава) соединила всё вместе: JSON, Lwt, мутабельное состояние --- в веб-сервере на Dream.
-
-В следующих главах мы рассмотрим продвинутые темы --- оптимизации и рекурсивные схемы.
-
-### Что дальше
-
-За пределами этой книги остаётся множество тем для изучения:
-
-- **Базы данных** --- Caqti для SQL, Irmin для Git-подобного хранилища.
-- **ORM и миграции** --- Petrol, OCaml-migrate.
-- **WebSocket** --- Dream поддерживает WebSocket из коробки.
-- **GraphQL** --- библиотека ocaml-graphql-server.
-- **Формальная верификация** --- OCaml тесно связан с Coq и F*.
-- **Компиляция в JavaScript** --- js_of_ocaml и Melange позволяют писать фронтенд на OCaml.
-- **Развёртывание** --- Docker-контейнеры, MirageOS unikernels, статическая линковка.
-
-Надеемся, что эта книга дала вам прочную основу для дальнейшего изучения OCaml и функционального программирования. Удачи в ваших проектах!
+```admonish info title="Real World OCaml"
+Подробнее о внутреннем устройстве рантайма OCaml, сборщике мусора и профилировании --- в главах [Memory Representation of Values](https://dev.realworldocaml.org/runtime-memory-layout.html) и [Understanding the Garbage Collector](https://dev.realworldocaml.org/garbage-collector.html) книги Real World OCaml.
+```
