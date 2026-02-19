@@ -1,0 +1,8 @@
+[book]
+title = "OCaml by Example"
+language = "ru"
+authors = ["OCaml by Example contributors"]
+src = "text"
+
+[build]
+build-dir = "output"

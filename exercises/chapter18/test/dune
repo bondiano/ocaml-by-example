@@ -1,0 +1,4 @@
+(test
+ (name test_chapter18)
+ (libraries chapter18 dream lwt lwt.unix yojson alcotest)
+ (preprocess (pps ppx_deriving_yojson)))

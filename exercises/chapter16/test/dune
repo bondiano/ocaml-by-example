@@ -1,0 +1,4 @@
+(test
+ (name test_chapter16)
+ (libraries chapter16 alcotest)
+ (preprocess (pps ppx_deriving.show ppx_deriving.eq)))

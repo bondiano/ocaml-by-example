@@ -1,0 +1,3 @@
+(library
+ (name chapter13)
+ (libraries qcheck-core))

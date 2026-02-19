@@ -1,0 +1,11 @@
+# OCaml / Dune
+_build/
+_opam/
+*.install
+
+# mdBook output
+output/
+
+# OS
+.DS_Store
+Thumbs.db
