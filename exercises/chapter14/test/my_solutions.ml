@@ -1,30 +1,26 @@
 (** Здесь вы можете писать свои решения упражнений. *)
+open Chapter14.Game
 
-(** Упражнение 1: Парсер списка целых чисел "[1, 2, 3]". *)
-let int_list_parser : int list Angstrom.t =
-  Angstrom.fail "todo"
+(** Упражнение 1: Отражение вектора от горизонтальной поверхности. *)
+let reflect_horizontal (_v : vec2) : vec2 =
+  failwith "todo"
 
-(** Упражнение 2: Парсер key=value пар "key=value". *)
-let key_value_parser : (string * string) Angstrom.t =
-  Angstrom.fail "todo"
+(** Упражнение 2: Отражение вектора от вертикальной поверхности. *)
+let reflect_vertical (_v : vec2) : vec2 =
+  failwith "todo"
 
-(** Упражнение 3: GADT --- добавить оператор Not для bool expr. *)
-type _ extended_expr =
-  | Int : int -> int extended_expr
-  | Bool : bool -> bool extended_expr
-  | Add : int extended_expr * int extended_expr -> int extended_expr
-  | Not : bool extended_expr -> bool extended_expr
-  | Gt : int extended_expr * int extended_expr -> bool extended_expr
+(** Упражнение 3: Проверка столкновения круга и прямоугольника. *)
+let circle_rect_collide (_c : circle) (_r : rect) : bool =
+  failwith "todo"
 
-let eval_extended : type a. a extended_expr -> a = function
-  | _ -> failwith "todo"
+(** Упражнение 4: Обновление позиции с гравитацией. *)
+type entity = {
+  pos : vec2;
+  vel : vec2;
+  gravity : float;
+}
 
-(** Упражнение 4: Парсер арифметических выражений с [+] и [*]. *)
-let arith_parser : int Angstrom.t =
-  Angstrom.fail "todo"
-
-(** Упражнение: Matching Brackets — проверка парности скобок. *)
-let matching_brackets (_s : string) : bool = failwith "todo"
-
-(** Упражнение: Word Count — подсчёт слов в строке. *)
-let word_count (_s : string) : (string * int) list = failwith "todo"
+let update_entity (dt : float) (e : entity) : entity =
+  ignore dt;
+  ignore e;
+  failwith "todo"

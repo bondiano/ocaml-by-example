@@ -1,3 +1,3 @@
 (library
  (name chapter15)
- (libraries cmdliner))
+ (libraries qcheck-core))

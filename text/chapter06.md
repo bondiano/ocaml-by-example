@@ -276,6 +276,152 @@ module IntTable = Hashtbl.Make(struct
 end)
 ```
 
+## Полугруппы и моноиды
+
+Модульная система OCaml позволяет естественно выразить алгебраические абстракции. Две из самых полезных --- **полугруппа** (semigroup) и **моноид** (monoid).
+
+### Полугруппа: тип с ассоциативной операцией
+
+```ocaml
+module type Semigroup = sig
+  type t
+  val combine : t -> t -> t
+end
+```
+
+Полугруппа --- это тип `t` с операцией `combine`, которая ассоциативна: `combine (combine a b) c = combine a (combine b c)`. Примеры:
+
+```ocaml
+module IntSum : Semigroup with type t = int = struct
+  type t = int
+  let combine = ( + )
+end
+
+module IntProduct : Semigroup with type t = int = struct
+  type t = int
+  let combine = ( * )
+end
+
+module StringConcat : Semigroup with type t = string = struct
+  type t = string
+  let combine = ( ^ )
+end
+```
+
+Обратите внимание: для `int` мы определили **два** модуля-полугруппы --- суммирование и умножение. В Haskell для этого потребовались бы newtype-обёртки (`Sum`, `Product`). В OCaml модули позволяют иметь несколько реализаций для одного типа без каких-либо обёрток.
+
+### Моноид: полугруппа с нейтральным элементом
+
+```ocaml
+module type Monoid = sig
+  include Semigroup
+  val empty : t
+end
+```
+
+Моноид расширяет полугруппу нейтральным элементом `empty`: `combine empty x = x` и `combine x empty = x`.
+
+```ocaml
+module IntSumMonoid : Monoid with type t = int = struct
+  type t = int
+  let combine = ( + )
+  let empty = 0
+end
+
+module IntProductMonoid : Monoid with type t = int = struct
+  type t = int
+  let combine = ( * )
+  let empty = 1
+end
+
+module StringMonoid : Monoid with type t = string = struct
+  type t = string
+  let combine = ( ^ )
+  let empty = ""
+end
+
+module ListMonoid (A : sig type t end) : Monoid with type t = A.t list = struct
+  type t = A.t list
+  let combine = ( @ )
+  let empty = []
+end
+```
+
+### `concat_all` через first-class module
+
+Моноид позволяет свернуть **любой** список значений в одно:
+
+```ocaml
+let concat_all (type a) (module M : Monoid with type t = a) (lst : a list) : a =
+  List.fold_left M.combine M.empty lst
+```
+
+```text
+# concat_all (module IntSumMonoid) [1; 2; 3; 4];;
+- : int = 10
+
+# concat_all (module IntProductMonoid) [1; 2; 3; 4];;
+- : int = 24
+
+# concat_all (module StringMonoid) ["hello"; " "; "world"];;
+- : string = "hello world"
+```
+
+Одна функция `concat_all` работает с любым моноидом. Модуль передаётся как значение первого класса.
+
+### `OptionMonoid` --- функтор: из Semigroup делаем Monoid
+
+Из любой полугруппы можно построить моноид, обернув тип в `option`: нейтральный элемент --- `None`, а `combine` объединяет значения внутри `Some`:
+
+```ocaml
+module OptionMonoid (S : Semigroup) : Monoid with type t = S.t option = struct
+  type t = S.t option
+  let empty = None
+  let combine a b =
+    match a, b with
+    | None, x | x, None -> x
+    | Some x, Some y -> Some (S.combine x y)
+end
+```
+
+```text
+# module OptIntMax = OptionMonoid(struct
+    type t = int
+    let combine = max
+  end);;
+
+# OptIntMax.combine (Some 3) (Some 5);;
+- : int option = Some 5
+
+# OptIntMax.combine None (Some 5);;
+- : int option = Some 5
+
+# OptIntMax.empty;;
+- : int option = None
+```
+
+Даже если `max` не имеет нейтрального элемента (наименьшего `int` не существует), `OptionMonoid` добавляет его через `None`.
+
+### Сравнение с Haskell
+
+В Haskell моноид --- это класс типов:
+
+```haskell
+-- Haskell
+class Monoid a where
+  mempty  :: a
+  mappend :: a -> a -> a
+
+-- Проблема: для int нужны newtype
+newtype Sum = Sum Int
+instance Monoid Sum where ...
+
+newtype Product = Product Int
+instance Monoid Product where ...
+```
+
+В OCaml модульный подход устраняет необходимость в newtype-обёртках. `IntSumMonoid` и `IntProductMonoid` --- это просто разные модули, оба с `type t = int`. Нет ограничения «один инстанс на тип».
+
 ## `open` и `include`
 
 ### `open`
@@ -573,7 +719,23 @@ let result = Sync_service.process "hello"
 
     *Подсказка:* используйте `include` для включения `IntSet`.
 
-5. **(Сложное)** Custom Set --- реализуйте параметрический модуль множества `MakeCustomSet(Elt : ORDERED)` с операциями `empty`, `add`, `mem`, `remove`, `elements`, `size`, `union`, `inter`, `diff`, `is_empty`. Внутреннее представление --- отсортированный список.
+5. **(Среднее)** Реализуйте полугруппу `First` --- `combine` всегда возвращает первый аргумент. Затем создайте `OptionMonoid(First)` и проверьте, что `concat_all` на списке `option` возвращает первый `Some`.
+
+    ```ocaml
+    module First : Semigroup with type t = string
+    ```
+
+    *Подсказка:* `let combine a _b = a`.
+
+6. **(Среднее)** Реализуйте `concat_all` --- функцию, которая принимает модуль `Monoid` как значение первого класса и сворачивает список.
+
+    ```ocaml
+    val concat_all : (module Monoid with type t = 'a) -> 'a list -> 'a
+    ```
+
+    *Подсказка:* используйте `(type a)` и `List.fold_left`.
+
+7. **(Сложное)** Custom Set --- реализуйте параметрический модуль множества `MakeCustomSet(Elt : ORDERED)` с операциями `empty`, `add`, `mem`, `remove`, `elements`, `size`, `union`, `inter`, `diff`, `is_empty`. Внутреннее представление --- отсортированный список.
 
     ```ocaml
     module type ORDERED = sig
@@ -607,6 +769,7 @@ let result = Sync_service.process "hello"
 - Познакомились с сигнатурами и абстрактными типами для инкапсуляции.
 - Разобрали функторы --- параметризованные модули, аналог generics на уровне модулей.
 - Узнали о модулях первого класса --- передаче модулей как значений.
+- Изучили полугруппы и моноиды --- алгебраические абстракции через модули.
 - Научились использовать `open` и `include` для композиции модулей.
 - Сравнили модульный подход OCaml с классами типов Haskell.
 

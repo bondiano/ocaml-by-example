@@ -1,503 +1,411 @@
-# Обработчики эффектов
+# Конкурентность с Eio
 
 ## Цели главы
 
-В этой главе мы изучим **обработчики эффектов** (effect handlers) --- экспериментальную, но мощную возможность OCaml 5. Обработчики эффектов позволяют описывать побочные эффекты как значения, а затем интерпретировать их произвольным образом:
+В этой главе мы изучим конкурентное и параллельное программирование в OCaml 5 с использованием библиотеки **Eio** --- прямой стиль (direct-style) вместо промисов и колбэков:
 
-- **Алгебраические эффекты** --- что это и зачем.
-- **Объявление эффектов** --- расширяемый тип `Effect.t`.
-- **Выполнение эффектов** --- `Effect.perform`.
-- **Глубокие обработчики** --- `Effect.Deep.try_with` и `Effect.Deep.match_with`.
-- **Продолжения** --- `Effect.Deep.continue`.
-- **Поверхностные обработчики** --- `Effect.Shallow`.
-- **Композиция обработчиков** --- вложенные `try_with`.
-- **Сравнение** с трансформерами монад из Haskell.
-- **Проект**: интерпретатор с логированием и состоянием.
+- **Домены** (domains) --- настоящий параллелизм на нескольких ядрах.
+- **Файберы** (fibers) --- легковесная конкурентность внутри домена.
+- **Eio** --- библиотека прямого стиля для конкурентного ввода-вывода.
+- **Структурированная конкурентность** --- все задачи завершаются до выхода из scope.
+- **Каналы** (`Eio.Stream`) --- безопасная коммуникация между файберами.
+- **Таймауты** и отмена операций.
+- Сравнение с Lwt и Async.
 
 ## Подготовка проекта
 
-Код этой главы находится в `exercises/chapter11`. Обработчики эффектов встроены в стандартную библиотеку OCaml 5, дополнительные пакеты не нужны:
+Код этой главы находится в `exercises/chapter11`. Этой главе нужны дополнительные библиотеки:
 
 ```text
+$ opam install eio eio_main
 $ cd exercises/chapter11
 $ dune build
 ```
 
-## Что такое алгебраические эффекты
+## OCaml 5 и многоядерность
 
-Представьте, что вы хотите написать функцию, которая использует состояние (чтение и запись переменной). В императивных языках вы просто используете мутабельную переменную. В чисто функциональных --- монаду State. Но что, если бы вы могли:
+OCaml 5 --- историческое обновление языка, добавившее поддержку параллелизма. До OCaml 5 существовал глобальный мьютекс (GIL), не позволявший выполнять OCaml-код на нескольких ядрах одновременно.
 
-1. **Описать** эффект --- «я хочу прочитать состояние» или «я хочу записать новое значение».
-2. **Выполнить** эффект в коде, не зная, как он будет обработан.
-3. **Интерпретировать** эффект на уровне вызывающего кода --- решить, хранить ли состояние в `ref`, в файле или в базе данных.
+OCaml 5 предлагает два уровня конкурентности:
 
-Именно это и дают **алгебраические эффекты**. Эффект --- это операция, объявленная программистом, но не имеющая встроенной реализации. Реализацию предоставляет **обработчик** (handler), оборачивающий вычисление.
+1. **Домены** (domains) --- потоки уровня ОС для настоящего параллелизма.
+2. **Effect handlers** --- механизм для реализации легковесной конкурентности (файберов).
 
-Алгебраические эффекты можно рассматривать как обобщение исключений: исключение прерывает вычисление, а эффект **приостанавливает** его, позволяя обработчику передать значение обратно и **возобновить** выполнение.
+## Домены
 
-## Объявление эффектов
-
-В OCaml 5 эффекты объявляются через расширяемый тип `Effect.t`:
-
-```ocaml
-type _ Effect.t += Get : int Effect.t
-type _ Effect.t += Set : int -> unit Effect.t
-```
-
-Здесь мы объявили два эффекта:
-
-- `Get` --- запрос текущего значения состояния (возвращает `int`).
-- `Set v` --- установка нового значения (возвращает `unit`).
-
-Тип `'a Effect.t` параметризован типом возвращаемого значения: `Get` возвращает `int`, а `Set` возвращает `unit`.
-
-Синтаксис `+=` означает, что мы **расширяем** существующий тип --- можно добавлять новые эффекты в разных модулях.
-
-## Выполнение эффектов
-
-Для выполнения эффекта используется `Effect.perform`:
-
-```ocaml
-let state_example () =
-  let x = Effect.perform Get in
-  Effect.perform (Set (x + 10));
-  let y = Effect.perform Get in
-  x + y
-```
-
-Эта функция:
-
-1. Читает текущее состояние в `x`.
-2. Устанавливает новое значение `x + 10`.
-3. Читает обновлённое состояние в `y`.
-4. Возвращает `x + y`.
-
-Обратите внимание: в этом коде **нет** ни `ref`, ни монад, ни аргументов для передачи состояния. Код выглядит как обычные вызовы функций. Но если вызвать `state_example ()` без обработчика, мы получим исключение `Unhandled`.
-
-## Глубокие обработчики: `try_with`
-
-Простейший способ обработать эффекты --- `Effect.Deep.try_with`:
-
-```ocaml
-let run_state (init : int) (f : unit -> 'a) : 'a =
-  let state = ref init in
-  Effect.Deep.try_with f ()
-    { effc = fun (type a) (eff : a Effect.t) ->
-        match eff with
-        | Get -> Some (fun (k : (a, _) Effect.Deep.continuation) ->
-            Effect.Deep.continue k !state)
-        | Set v -> Some (fun (k : (a, _) Effect.Deep.continuation) ->
-            state := v;
-            Effect.Deep.continue k ())
-        | _ -> None }
-```
-
-Разберём по частям:
-
-- `Effect.Deep.try_with f ()` --- вызывает `f ()` и перехватывает эффекты.
-- `{ effc = ... }` --- запись-обработчик с одним полем `effc`.
-- `effc` получает эффект и возвращает `Some handler` если знает, как его обработать, или `None`, чтобы передать вверх по стеку.
-- `fun (type a) (eff : a Effect.t)` --- локально-абстрактный тип, необходимый для GADT-паттерн-матчинга.
-- `Effect.Deep.continue k value` --- возобновляет приостановленное вычисление, передавая `value` как результат `perform`.
-
-Проверим:
+Домен (domain) --- единица параллелизма. Каждый домен выполняется на отдельном ядре процессора:
 
 ```ocaml
 let () =
-  let result = run_state 5 state_example in
-  Printf.printf "Результат: %d\n" result
-  (* Результат: 20 *)
-  (* 5 + (5 + 10) = 20 *)
-```
-
-### Как это работает
-
-1. `state_example` вызывает `perform Get`.
-2. Вычисление приостанавливается, управление передаётся обработчику.
-3. Обработчик видит `Get`, читает `!state` (= 5) и вызывает `continue k 5`.
-4. Вычисление возобновляется: `x = 5`.
-5. `perform (Set 15)` --- обработчик записывает `state := 15` и вызывает `continue k ()`.
-6. `perform Get` --- обработчик возвращает `!state` (= 15), `y = 15`.
-7. Результат: `5 + 15 = 20`.
-
-## Глубокие обработчики: `match_with`
-
-`Effect.Deep.match_with` --- более полная форма обработчика, позволяющая перехватывать не только эффекты, но и нормальное завершение и исключения:
-
-```ocaml
-let run_fail (f : unit -> 'a) : ('a, string) result =
-  Effect.Deep.match_with f ()
-    { retc = (fun x -> Ok x);
-      exnc = (fun e -> raise e);
-      effc = fun (type a) (eff : a Effect.t) ->
-        match eff with
-        | Fail msg -> Some (fun (_k : (a, _) Effect.Deep.continuation) ->
-            Error msg)
-        | _ -> None }
-```
-
-Три поля:
-
-- `retc` --- вызывается при нормальном возвращении значения из `f`.
-- `exnc` --- вызывается при выбросе исключения.
-- `effc` --- вызывается при выполнении эффекта (как в `try_with`).
-
-Обратите внимание: в обработчике `Fail` мы **не вызываем** `continue k`. Это означает, что вычисление прерывается --- продолжение отбрасывается. Это безопасно и корректно: если продолжение не используется, оно просто собирается сборщиком мусора.
-
-### Разница между `try_with` и `match_with`
-
-| | `try_with` | `match_with` |
-|---|---|---|
-| Нормальное значение | Возвращается as-is | Передаётся в `retc` |
-| Исключение | Пробрасывается | Передаётся в `exnc` |
-| Эффект | Обрабатывается `effc` | Обрабатывается `effc` |
-
-Используйте `try_with`, когда вам нужно только перехватить эффекты. Используйте `match_with`, когда нужно трансформировать результат (например, обернуть в `Result`).
-
-## Продолжения подробнее
-
-Продолжение (continuation) `k` --- это «оставшаяся часть вычисления» после точки `perform`. Это первоклассное значение, которое можно:
-
-- **Возобновить один раз** с помощью `Effect.Deep.continue k value`.
-- **Прервать** с помощью `Effect.Deep.discontinue k exn` (бросить исключение в точке `perform`).
-- **Не использовать** вовсе (как в примере с `Fail`).
-
-Важное ограничение: продолжение глубокого обработчика можно использовать **только один раз** (one-shot). Попытка вызвать `continue` дважды приведёт к исключению `Continuation_already_resumed`.
-
-```ocaml
-(* discontinue --- прервать вычисление с исключением *)
-| Fail msg -> Some (fun (k : (a, _) Effect.Deep.continuation) ->
-    Effect.Deep.discontinue k (Failure msg))
-```
-
-## Эффект Log: накопление сообщений
-
-Создадим эффект для логирования:
-
-```ocaml
-type _ Effect.t += Log : string -> unit Effect.t
-
-let run_log (f : unit -> 'a) : 'a * string list =
-  let logs = ref [] in
-  let result = Effect.Deep.try_with f ()
-    { effc = fun (type a) (eff : a Effect.t) ->
-        match eff with
-        | Log msg -> Some (fun (k : (a, _) Effect.Deep.continuation) ->
-            logs := msg :: !logs;
-            Effect.Deep.continue k ())
-        | _ -> None }
-  in
-  (result, List.rev !logs)
-```
-
-Использование:
-
-```ocaml
-let log_example () =
-  Effect.perform (Log "start");
-  let result = 2 + 3 in
-  Effect.perform (Log (Printf.sprintf "result = %d" result));
-  Effect.perform (Log "done");
-  result
-
-let () =
-  let (value, logs) = run_log log_example in
-  Printf.printf "Значение: %d\n" value;
-  List.iter (Printf.printf "  Лог: %s\n") logs
-  (* Значение: 5
-     Лог: start
-     Лог: result = 5
-     Лог: done *)
-```
-
-Функция `log_example` не знает, куда пишутся логи --- в список, в файл, в `/dev/null`. Это решает обработчик.
-
-## Композиция обработчиков
-
-Одно из главных преимуществ эффектов --- обработчики легко **компонуются** через вложенность:
-
-```ocaml
-let combined_example () =
-  Effect.perform (Log "начинаем");
-  let x = Effect.perform Get in
-  Effect.perform (Log (Printf.sprintf "текущее значение: %d" x));
-  Effect.perform (Set (x * 2));
-  let y = Effect.perform Get in
-  Effect.perform (Log (Printf.sprintf "новое значение: %d" y));
-  y
-
-let () =
-  let (result, logs) = run_log (fun () ->
-    run_state 7 combined_example
+  let d = Domain.spawn (fun () ->
+    Printf.printf "Домен: %d\n" (Domain.self () :> int)
   ) in
-  Printf.printf "Результат: %d\n" result;
-  List.iter (Printf.printf "  %s\n") logs
-  (* Результат: 14
-     начинаем
-     текущее значение: 7
-     новое значение: 14 *)
+  Printf.printf "Основной домен\n";
+  Domain.join d
 ```
 
-Здесь `run_state` обрабатывает `Get`/`Set`, а `run_log` обрабатывает `Log`. Порядок вложенности определяет, какой обработчик перехватывает какие эффекты: внутренний (`run_state`) видит эффекты первым, но пропускает `Log` наверх через `_ -> None`.
+`Domain.spawn f` запускает функцию `f` в новом домене. `Domain.join d` ожидает завершения домена и возвращает результат.
 
-### Порядок вложенности
-
-Обработчики работают как стек. Когда эффект не обработан (`None`), он передаётся следующему обработчику вверх по стеку:
-
-```
-run_log        <-- обрабатывает Log, пропускает остальное
-  run_state    <-- обрабатывает Get/Set, пропускает остальное
-    f ()       <-- выполняет perform Get, Set, Log
-```
-
-Если поменять порядок, всё будет работать так же, потому что каждый обработчик реагирует только на «свои» эффекты.
-
-## Поверхностные обработчики
-
-OCaml предоставляет два вида обработчиков:
-
-- **Глубокие** (`Effect.Deep`) --- обработчик автоматически переустанавливается после каждого `continue`. Это значит, что один вызов `try_with` обработает **все** вхождения эффекта.
-- **Поверхностные** (`Effect.Shallow`) --- обработчик срабатывает **один раз**. После `continue` нужно явно указать следующий обработчик.
+### Параллельное вычисление
 
 ```ocaml
-let run_state_shallow (init : int) (f : unit -> 'a) : 'a =
-  let state = ref init in
-  let fiber = Effect.Shallow.fiber f in
-  let handler = {
-    Effect.Shallow.retc = Fun.id;
-    exnc = raise;
-    effc = fun (type a) (eff : a Effect.t) ->
-      match eff with
-      | Get -> Some (fun (k : (a, _) Effect.Shallow.continuation) ->
-          Effect.Shallow.continue_with k !state handler)
-      | Set v -> Some (fun (k : (a, _) Effect.Shallow.continuation) ->
-          state := v;
-          Effect.Shallow.continue_with k () handler)
-      | _ -> None
-  } in
-  (* Здесь handler --- рекурсивная привязка, требуется let rec *)
-  Effect.Shallow.continue_with fiber () handler
-```
-
-На практике поверхностные обработчики нужны реже. Они полезны, когда:
-
-- Нужно менять поведение обработчика между вызовами.
-- Реализуется корутина или генератор, где каждый `yield` требует другой логики.
-
-В большинстве случаев используйте **глубокие** обработчики --- они проще и удобнее.
-
-## Сравнение с трансформерами монад (Haskell)
-
-Если вы знакомы с Haskell, сравним подходы:
-
-### Haskell: трансформеры монад
-
-```haskell
--- Haskell
-type App a = StateT Int (WriterT [String] IO) a
-
-example :: App Int
-example = do
-  tell ["начинаем"]
-  x <- get
-  tell ["текущее значение: " ++ show x]
-  put (x * 2)
-  y <- get
-  tell ["новое значение: " ++ show y]
-  return y
-```
-
-### OCaml: обработчики эффектов
-
-```ocaml
-(* OCaml *)
-let example () =
-  Effect.perform (Log "начинаем");
-  let x = Effect.perform Get in
-  Effect.perform (Log (Printf.sprintf "текущее значение: %d" x));
-  Effect.perform (Set (x * 2));
-  let y = Effect.perform Get in
-  Effect.perform (Log (Printf.sprintf "новое значение: %d" y));
-  y
-```
-
-| Аспект | Трансформеры монад | Обработчики эффектов |
-|--------|-------------------|---------------------|
-| Синтаксис | `do`-нотация, `lift` | Обычный код + `perform` |
-| Композиция | Стек трансформеров, порядок важен | Вложенные обработчики |
-| Производительность | Накладные расходы от boxing | Оптимизировано в рантайме |
-| Типобезопасность | Полная (тип монады отражает эффекты) | Частичная (необработанный эффект --- рантайм-ошибка) |
-| Расширяемость | Новый эффект = новый трансформер + `lift` | Новый эффект = новый конструктор |
-
-Главное преимущество обработчиков эффектов --- **отсутствие `lift`**. В Haskell при добавлении нового трансформера в стек нужно обновлять все вызовы. В OCaml каждый эффект независим.
-
-Главный недостаток --- **отсутствие статической проверки**: компилятор не предупредит, если вы забыли обработать эффект. Вы узнаете об этом только в рантайме.
-
-## Когда использовать обработчики эффектов
-
-Используйте эффекты, когда:
-
-- Нужно **инжектировать зависимости** --- функция выполняет `perform`, а обработчик решает, как реализовать операцию (реальная БД vs мок в тестах).
-- Нужна **интерпретация вычислений** --- один и тот же код можно запустить с разными обработчиками (логирование в файл vs в память).
-- Реализуете **конкурентность** --- Eio использует эффекты для файберов.
-
-Не используйте эффекты, когда:
-
-- Достаточно **простого аргумента** --- передать функцию-логгер проще, чем объявлять эффект.
-- Нужна **статическая гарантия** обработки --- `Result` и `Option` проверяются компилятором, эффекты --- нет.
-- Код должен быть **совместим** со старыми версиями OCaml (< 5.0).
-
-## Проект: мини-интерпретатор с эффектами
-
-Объединим все идеи в проекте --- простом интерпретаторе выражений, использующем состояние и логирование через эффекты.
-
-Модуль `lib/effects.ml` содержит:
-
-### Эффект State
-
-```ocaml
-type _ Effect.t += Get : int Effect.t
-type _ Effect.t += Set : int -> unit Effect.t
-
-let run_state (init : int) (f : unit -> 'a) : 'a =
-  let state = ref init in
-  Effect.Deep.try_with f ()
-    { effc = fun (type a) (eff : a Effect.t) ->
-        match eff with
-        | Get -> Some (fun (k : (a, _) Effect.Deep.continuation) ->
-            Effect.Deep.continue k !state)
-        | Set v -> Some (fun (k : (a, _) Effect.Deep.continuation) ->
-            state := v;
-            Effect.Deep.continue k ())
-        | _ -> None }
-```
-
-### Эффект Log
-
-```ocaml
-type _ Effect.t += Log : string -> unit Effect.t
-
-let run_log (f : unit -> 'a) : 'a * string list =
-  let logs = ref [] in
-  let result = Effect.Deep.try_with f ()
-    { effc = fun (type a) (eff : a Effect.t) ->
-        match eff with
-        | Log msg -> Some (fun (k : (a, _) Effect.Deep.continuation) ->
-            logs := msg :: !logs;
-            Effect.Deep.continue k ())
-        | _ -> None }
-  in
-  (result, List.rev !logs)
-```
-
-### Примеры использования
-
-```ocaml
-let state_example () =
-  let x = Effect.perform Get in
-  Effect.perform (Set (x + 10));
-  let y = Effect.perform Get in
-  x + y
-
-let log_example () =
-  Effect.perform (Log "start");
-  let result = 2 + 3 in
-  Effect.perform (Log (Printf.sprintf "result = %d" result));
-  Effect.perform (Log "done");
-  result
-
-let combined_example () =
-  Effect.perform (Log "начинаем");
-  let x = Effect.perform Get in
-  Effect.perform (Log (Printf.sprintf "текущее значение: %d" x));
-  Effect.perform (Set (x * 2));
-  let y = Effect.perform Get in
-  Effect.perform (Log (Printf.sprintf "новое значение: %d" y));
-  y
-```
-
-Запуск:
-
-```ocaml
-(* State: начальное значение 5 *)
-let () =
-  let result = run_state 5 state_example in
-  Printf.printf "state_example: %d\n" result
-  (* state_example: 20 *)
-
-(* Log: накопление сообщений *)
-let () =
-  let (value, logs) = run_log log_example in
-  Printf.printf "log_example: %d, logs: [%s]\n"
-    value (String.concat "; " logs)
-  (* log_example: 5, logs: [start; result = 5; done] *)
-
-(* Композиция State + Log *)
-let () =
-  let (result, logs) = run_log (fun () ->
-    run_state 7 combined_example
+let parallel_sum arr =
+  let n = Array.length arr in
+  let mid = n / 2 in
+  let d = Domain.spawn (fun () ->
+    let sum = ref 0 in
+    for i = 0 to mid - 1 do sum := !sum + arr.(i) done;
+    !sum
   ) in
-  Printf.printf "combined: %d, logs: [%s]\n"
-    result (String.concat "; " logs)
-  (* combined: 14, logs: [начинаем; текущее значение: 7; новое значение: 14] *)
+  let sum2 = ref 0 in
+  for i = mid to n - 1 do sum2 := !sum2 + arr.(i) done;
+  Domain.join d + !sum2
 ```
+
+Массив делится пополам, каждая половина суммируется в своём домене параллельно.
+
+### Ограничения доменов
+
+- Доменов должно быть **мало** (по числу ядер). Создание домена --- дорогая операция.
+- Для тысяч конкурентных задач используйте **файберы**.
+
+## Eio: конкурентность прямого стиля
+
+**Eio** --- библиотека для конкурентного ввода-вывода, использующая effect handlers OCaml 5. Её главное преимущество --- **прямой стиль**: код выглядит как обычный последовательный, без промисов, монад или колбэков.
+
+### Сравнение подходов
+
+```ocaml
+(* Lwt (промисы, старый стиль) *)
+let fetch_lwt url =
+  let open Lwt.Syntax in
+  let* response = Http.get url in
+  let* body = Http.read_body response in
+  Lwt.return (String.length body)
+
+(* Eio (прямой стиль, новый стиль) *)
+let fetch_eio url =
+  let response = Http.get url in
+  let body = Http.read_body response in
+  String.length body
+```
+
+В Eio нет `let*`, `>>=`, `Lwt.return` --- код читается как обычный последовательный код, но при этом файберы корректно переключаются при ожидании I/O.
+
+### Запуск Eio
+
+Любая Eio-программа начинается с `Eio_main.run`:
+
+```ocaml
+let () =
+  Eio_main.run @@ fun env ->
+  let stdout = Eio.Stdenv.stdout env in
+  Eio.Flow.copy_string "Привет, Eio!\n" stdout
+```
+
+`Eio_main.run` инициализирует event loop и передаёт `env` --- окружение с доступом к файловой системе, сети, стандартному вводу-выводу и часам.
+
+### Окружение `env`
+
+| Функция | Описание |
+|---------|----------|
+| `Eio.Stdenv.stdout env` | Стандартный вывод |
+| `Eio.Stdenv.stdin env` | Стандартный ввод |
+| `Eio.Stdenv.stderr env` | Стандартный вывод ошибок |
+| `Eio.Stdenv.clock env` | Часы (для таймаутов и sleep) |
+| `Eio.Stdenv.fs env` | Файловая система |
+| `Eio.Stdenv.net env` | Сетевой стек |
+
+Передача `env` через аргументы вместо глобальных функций --- это **dependency injection**: тесты могут подставить моковое окружение.
+
+## Файберы
+
+Файбер (fiber) --- легковесный «зелёный поток», работающий внутри домена. В отличие от доменов, файберы дёшевы --- можно запустить тысячи.
+
+### `Eio.Fiber.both`
+
+`Eio.Fiber.both` запускает две функции конкурентно и ждёт завершения обеих:
+
+```ocaml
+let () =
+  Eio_main.run @@ fun _env ->
+  Eio.Fiber.both
+    (fun () -> traceln "Файбер A: начал"; traceln "Файбер A: закончил")
+    (fun () -> traceln "Файбер B: начал"; traceln "Файбер B: закончил")
+```
+
+`traceln` --- отладочный вывод Eio (потокобезопасный, в отличие от `Printf.printf`).
+
+### `Eio.Fiber.all` и `Eio.Fiber.any`
+
+```ocaml
+(* Запустить все задачи конкурентно, дождаться завершения всех *)
+Eio.Fiber.all [
+  (fun () -> task1 ());
+  (fun () -> task2 ());
+  (fun () -> task3 ());
+]
+
+(* Запустить все, вернуть результат первой завершившейся *)
+Eio.Fiber.any [
+  (fun () -> task1 ());
+  (fun () -> task2 ());
+]
+```
+
+`Fiber.all` ждёт **все** задачи. `Fiber.any` возвращает результат **первой** завершившейся и отменяет остальные.
+
+### `Eio.Fiber.fork`
+
+Для запуска файбера в фоне используется `Fiber.fork` внутри `Switch`:
+
+```ocaml
+let () =
+  Eio_main.run @@ fun _env ->
+  Eio.Switch.run @@ fun sw ->
+  Eio.Fiber.fork ~sw (fun () ->
+    traceln "Фоновый файбер"
+  );
+  traceln "Основной файбер"
+```
+
+## Структурированная конкурентность
+
+**Switch** --- ключевая абстракция Eio для управления временем жизни файберов:
+
+```ocaml
+Eio.Switch.run @@ fun sw ->
+  Eio.Fiber.fork ~sw (fun () -> task1 ());
+  Eio.Fiber.fork ~sw (fun () -> task2 ());
+  (* Switch.run не вернётся, пока оба файбера не завершатся *)
+```
+
+Правила:
+
+1. Все файберы, созданные внутри `Switch.run`, **должны завершиться** до выхода.
+2. Если один файбер бросает исключение --- остальные **отменяются**.
+3. Нельзя «забыть» файбер --- нет утечек горутин/промисов.
+
+Это называется **структурированная конкурентность** --- время жизни конкурентных задач привязано к лексической области видимости.
+
+## Каналы: `Eio.Stream`
+
+`Eio.Stream` --- потокобезопасная очередь для коммуникации между файберами:
+
+```ocaml
+let () =
+  Eio_main.run @@ fun _env ->
+  let stream = Eio.Stream.create 10 in  (* буфер на 10 элементов *)
+  Eio.Fiber.both
+    (fun () ->
+      for i = 1 to 5 do
+        Eio.Stream.add stream i;
+        traceln "Отправил: %d" i
+      done)
+    (fun () ->
+      for _ = 1 to 5 do
+        let v = Eio.Stream.take stream in
+        traceln "Получил: %d" v
+      done)
+```
+
+- `Eio.Stream.create n` --- создать канал с буфером размера `n`. Если `n = 0` --- синхронный канал (отправитель блокируется до получения).
+- `Eio.Stream.add stream v` --- отправить значение (блокируется, если буфер полон).
+- `Eio.Stream.take stream` --- получить значение (блокируется, если буфер пуст).
+
+### Паттерн Producer-Consumer
+
+```ocaml
+let producer stream n =
+  for i = 1 to n do
+    Eio.Stream.add stream (Some i)
+  done;
+  Eio.Stream.add stream None  (* сигнал завершения *)
+
+let consumer stream =
+  let rec loop acc =
+    match Eio.Stream.take stream with
+    | None -> List.rev acc
+    | Some v -> loop (v :: acc)
+  in
+  loop []
+```
+
+## Таймауты и отмена
+
+### `Eio.Time.sleep`
+
+```ocaml
+let () =
+  Eio_main.run @@ fun env ->
+  let clock = Eio.Stdenv.clock env in
+  traceln "Начало";
+  Eio.Time.sleep clock 1.0;
+  traceln "Прошла 1 секунда"
+```
+
+### Таймаут с `Fiber.any`
+
+```ocaml
+let with_timeout clock seconds f =
+  Eio.Fiber.any [
+    (fun () -> Some (f ()));
+    (fun () -> Eio.Time.sleep clock seconds; None);
+  ]
+```
+
+Если `f` завершается за `seconds` секунд --- возвращает `Some result`. Иначе --- `None`, а `f` отменяется.
+
+## Сравнение Eio с Lwt и Async
+
+| Аспект | Lwt | Async | Eio |
+|--------|-----|-------|-----|
+| Стиль | Монадический (`>>=`) | Монадический (`>>=`) | Прямой |
+| Параллелизм | Нет (1 ядро) | Нет (1 ядро) | Да (домены) |
+| Механизм | Промисы | Deferred | Effect handlers |
+| Структурированность | Нет | Нет | Да (Switch) |
+| Зрелость | Высокая | Высокая | Растущая |
+
+Eio --- будущее конкурентности в OCaml. Lwt и Async остаются для обратной совместимости.
+
+## Проект: конкурентные вычисления
+
+Модуль `lib/concurrent.ml` демонстрирует базовые паттерны конкурентности с Eio.
+
+### Параллельный map
+
+```ocaml
+let parallel_map f lst =
+  Eio.Fiber.List.map f lst
+```
+
+`Eio.Fiber.List.map` выполняет `f` для каждого элемента конкурентно (в отдельных файберах) и собирает результаты в том же порядке.
+
+### Параллельная свёртка
+
+```ocaml
+let parallel_sum lst =
+  let results = Eio.Fiber.List.map (fun x -> x) lst in
+  List.fold_left ( + ) 0 results
+```
+
+## Buf_read и сетевое взаимодействие
+
+До сих пор мы работали с файберами, каналами и таймаутами. Но Eio также предоставляет удобные средства для **буферизованного чтения** данных из потоков и **сетевого взаимодействия**.
+
+### Buf_read --- буферизованное чтение
+
+`Eio.Buf_read` оборачивает поток (`flow`) в буфер и позволяет читать данные построчно, побайтово или по произвольным разделителям. Это аналог `Buffered_reader` в других языках:
+
+```ocaml
+let read_http_status flow =
+  let buf = Eio.Buf_read.of_flow flow ~max_size:4096 in
+  let status_line = Eio.Buf_read.line buf in
+  status_line
+```
+
+`Eio.Buf_read.of_flow flow ~max_size:n` создаёт буферизованный читатель с ограничением буфера в `n` байт. `Eio.Buf_read.line buf` читает одну строку (до `\n`).
+
+Основные функции `Buf_read`:
+
+| Функция | Описание |
+|---------|----------|
+| `Eio.Buf_read.line buf` | Прочитать строку до `\n` |
+| `Eio.Buf_read.take n buf` | Прочитать ровно `n` байт |
+| `Eio.Buf_read.at_end_of_input buf` | Проверить, достигнут ли конец потока |
+| `Eio.Buf_read.any_char buf` | Прочитать один символ |
+
+### Custom-парсеры для бинарных протоколов
+
+`Buf_read` позволяет создавать собственные комбинаторы для чтения бинарных данных. Например, целые числа разной ширины:
+
+```ocaml
+module R = struct
+  include Eio.Buf_read
+  let int8 = map (Fun.flip String.get_int8 0) (take 1)
+  let int16_be = map (Fun.flip String.get_int16_be 0) (take 2)
+end
+```
+
+Здесь `take n` читает `n` байт как строку, а `map f parser` применяет функцию `f` к результату парсера. Такой подход удобен для реализации бинарных протоколов (например, чтение заголовков пакетов).
+
+### Networking --- сетевое взаимодействие
+
+Eio предоставляет модуль `Eio.Net` для работы с TCP/UDP. Сетевой стек доступен через `Eio.Stdenv.net env`.
+
+#### TCP-клиент
+
+```ocaml
+let tcp_client ~net ~host ~port =
+  let addr = `Tcp (Eio.Net.Ipaddr.V4.loopback, port) in
+  Eio.Net.connect net addr |> fun flow ->
+  let buf = Eio.Buf_read.of_flow flow ~max_size:4096 in
+  Eio.Flow.copy_string "GET / HTTP/1.0\r\n\r\n" flow;
+  Eio.Buf_read.line buf
+```
+
+Разберём по шагам:
+
+1. `Eio.Net.connect net addr` --- устанавливает TCP-соединение и возвращает `flow`.
+2. `Eio.Flow.copy_string ... flow` --- отправляет данные в поток.
+3. `Eio.Buf_read.of_flow flow` --- оборачивает поток для буферизованного чтения.
+4. `Eio.Buf_read.line buf` --- читает строку ответа.
+
+#### Адреса
+
+Eio поддерживает несколько видов адресов:
+
+- `` `Tcp (ip, port) `` --- TCP-соединение.
+- `Eio.Net.Ipaddr.V4.loopback` --- `127.0.0.1`.
+- `Eio.Net.Ipaddr.V6.loopback` --- `::1`.
+
+Обратите внимание: `net` передаётся как аргумент (dependency injection), что позволяет подставить мок-сеть в тестах.
 
 ## Упражнения
 
 Решения пишите в `test/my_solutions.ml`. Проверяйте: `dune runtest`.
 
-1. **(Среднее)** Реализуйте эффект `Emit` для испускания целых чисел. Напишите обработчик `run_emit`, который собирает все испущенные значения в список.
+Все упражнения этой главы выполняются внутри `Eio_main.run`. Тесты оборачивают ваши функции в Eio-окружение.
+
+1. **(Среднее)** Реализуйте функцию `parallel_fib`, которая вычисляет N-й и M-й числа Фибоначчи параллельно, используя `Eio.Fiber.both`, и возвращает их сумму.
 
     ```ocaml
-    type _ Effect.t += Emit : int -> unit Effect.t
-
-    val run_emit : (unit -> 'a) -> 'a * int list
+    val parallel_fib : int -> int -> int
     ```
 
-    *Подсказка:* по аналогии с `run_log`, но собирайте `int` вместо `string`.
+    *Подсказка:* напишите обычную функцию `fib n` и используйте `Eio.Fiber.both` с `ref` для сбора результатов.
 
-2. **(Среднее)** Реализуйте эффект `Ask` для чтения из окружения (паттерн Reader). Напишите обработчик `run_reader`, который передаёт строку-окружение при каждом `Ask`.
+2. **(Среднее)** Реализуйте функцию `concurrent_map`, которая применяет функцию к каждому элементу списка конкурентно, используя `Eio.Fiber.List.map`.
 
     ```ocaml
-    type _ Effect.t += Ask : string Effect.t
-
-    val run_reader : string -> (unit -> 'a) -> 'a
+    val concurrent_map : ('a -> 'b) -> 'a list -> 'b list
     ```
 
-    *Подсказка:* по аналогии с `Get`, но значение никогда не меняется.
-
-3. **(Сложное)** Реализуйте функцию `count_and_emit`, которая использует одновременно эффекты `State` (из библиотеки) и `Emit` (из упражнения 1). Функция должна для каждого `i` от 1 до `n` прибавить `i` к состоянию и испустить новое значение.
+3. **(Среднее)** Реализуйте паттерн producer-consumer: функцию `produce_consume`, где producer отправляет числа от 1 до n в `Eio.Stream`, а consumer суммирует их.
 
     ```ocaml
-    val count_and_emit : int -> unit
+    val produce_consume : int -> int
     ```
 
-    При начальном состоянии 0 и `n = 3`:
-    - `i=1`: состояние = 0+1 = 1, emit 1
-    - `i=2`: состояние = 1+2 = 3, emit 3
-    - `i=3`: состояние = 3+3 = 6, emit 6
-    - Результат: `[1; 3; 6]`
+    *Подсказка:* используйте `Eio.Stream.create`, `Eio.Fiber.both`, `Some`/`None` как сигнал завершения.
 
-4. **(Сложное)** Реализуйте эффект `Fail` для обработки ошибок. Напишите обработчик `run_fail`, который возвращает `Ok value` при нормальном завершении и `Error msg` при выполнении `Fail msg`.
+4. **(Среднее)** Реализуйте функцию `race`, которая запускает список функций конкурентно и возвращает результат первой завершившейся.
 
     ```ocaml
-    type _ Effect.t += Fail : string -> 'a Effect.t
-
-    val run_fail : (unit -> 'a) -> ('a, string) result
+    val race : (unit -> 'a) list -> 'a
     ```
 
-    *Подсказка:* используйте `Effect.Deep.match_with` с `retc`, `exnc` и `effc`. В обработчике `Fail` **не вызывайте** `continue` --- просто верните `Error msg`.
+    *Подсказка:* используйте `Eio.Fiber.any`.
 
 ## Заключение
 
 В этой главе мы:
 
-- Познакомились с алгебраическими эффектами --- механизмом для описания и интерпретации побочных эффектов.
-- Научились объявлять эффекты через расширяемый тип `Effect.t`.
-- Изучили глубокие обработчики (`try_with` и `match_with`) и продолжения.
-- Реализовали эффекты State и Log.
-- Научились компоновать обработчики через вложенность.
-- Сравнили обработчики эффектов с трансформерами монад из Haskell.
-- Узнали о поверхностных обработчиках и когда они полезны.
+- Познакомились с доменами --- единицей параллелизма OCaml 5.
+- Изучили Eio --- библиотеку прямого стиля для конкурентности.
+- Разобрали файберы и структурированную конкурентность через `Switch`.
+- Научились использовать каналы (`Eio.Stream`) для коммуникации.
+- Познакомились с таймаутами и отменой операций.
+- Сравнили Eio с Lwt и Async.
 
-В следующей главе мы изучим графику с raylib --- создание окна, рисование фигур и обработку ввода.
+В следующей главе мы изучим FFI --- взаимодействие OCaml с кодом на C и работу с JSON.

@@ -76,6 +76,17 @@ end = struct
     |> List.fold_left (fun acc x -> add x acc) empty
 end
 
+(** First semigroup. *)
+module First : Chapter06.Monoid.Semigroup with type t = string = struct
+  type t = string
+  let combine a _b = a
+end
+
+(** concat_all через first-class module. *)
+let concat_all (type a) (module M : Chapter06.Monoid.Monoid with type t = a)
+    (lst : a list) : a =
+  List.fold_left M.combine M.empty lst
+
 (** Custom Set — Exercism Hard. *)
 module type ORDERED = sig
   type t

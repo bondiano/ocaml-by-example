@@ -202,6 +202,72 @@ let custom_set_tests =
       check (list int) "removed" [2] (TestCustomSet.elements s));
   ]
 
+let monoid_lib_tests =
+  let open Alcotest in
+  let open Chapter06.Monoid in
+  [
+    test_case "IntSumMonoid concat_all" `Quick (fun () ->
+      check int "sum" 10
+        (concat_all (module IntSumMonoid) [1; 2; 3; 4]));
+    test_case "IntProductMonoid concat_all" `Quick (fun () ->
+      check int "product" 24
+        (concat_all (module IntProductMonoid) [1; 2; 3; 4]));
+    test_case "StringMonoid concat_all" `Quick (fun () ->
+      check string "concat" "hello world"
+        (concat_all (module StringMonoid) ["hello"; " "; "world"]));
+    test_case "concat_all пустой список" `Quick (fun () ->
+      check int "empty" 0
+        (concat_all (module IntSumMonoid) []));
+    test_case "OptionMonoid combine" `Quick (fun () ->
+      let module OM = OptionMonoid(struct
+        type t = int
+        let combine = ( + )
+      end) in
+      check (option int) "some+some" (Some 5)
+        (OM.combine (Some 2) (Some 3));
+      check (option int) "none+some" (Some 3)
+        (OM.combine None (Some 3));
+      check (option int) "some+none" (Some 2)
+        (OM.combine (Some 2) None);
+      check (option int) "none+none" None
+        (OM.combine None None));
+  ]
+
+let first_semigroup_tests =
+  let open Alcotest in
+  [
+    test_case "First combine" `Quick (fun () ->
+      check string "first" "a"
+        (My_solutions.First.combine "a" "b"));
+    test_case "OptionMonoid(First) concat_all" `Quick (fun () ->
+      let module OM = Chapter06.Monoid.OptionMonoid(My_solutions.First) in
+      check (option string) "first some"
+        (Some "a")
+        (Chapter06.Monoid.concat_all (module OM)
+           [None; Some "a"; Some "b"; None]));
+    test_case "OptionMonoid(First) все None" `Quick (fun () ->
+      let module OM = Chapter06.Monoid.OptionMonoid(My_solutions.First) in
+      check (option string) "all none"
+        None
+        (Chapter06.Monoid.concat_all (module OM) [None; None; None]));
+  ]
+
+let concat_all_tests =
+  let open Alcotest in
+  [
+    test_case "concat_all сложение" `Quick (fun () ->
+      check int "sum" 15
+        (My_solutions.concat_all
+           (module Chapter06.Monoid.IntSumMonoid) [1; 2; 3; 4; 5]));
+    test_case "concat_all строки" `Quick (fun () ->
+      check string "strings" "abc"
+        (My_solutions.concat_all
+           (module Chapter06.Monoid.StringMonoid) ["a"; "b"; "c"]));
+    test_case "concat_all пустой" `Quick (fun () ->
+      check int "empty" 0
+        (My_solutions.concat_all (module Chapter06.Monoid.IntSumMonoid) []));
+  ]
+
 let () =
   Alcotest.run "Chapter 06"
     [
@@ -214,5 +280,8 @@ let () =
       ("ExtendedIntSet --- расширенное множество", extended_set_tests);
       ("User — modules-as-types", user_tests);
       ("IO-agnostic — синхронный сервис", io_agnostic_tests);
+      ("Monoid — библиотека моноидов", monoid_lib_tests);
+      ("First — полугруппа", first_semigroup_tests);
+      ("concat_all — свёртка через моноид", concat_all_tests);
       ("Custom Set — параметрический модуль", custom_set_tests);
     ]

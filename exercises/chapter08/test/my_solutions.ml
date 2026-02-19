@@ -67,6 +67,23 @@ module LRU = struct
   let size (_cache : ('k, 'v) t) : int = failwith "todo"
 end
 
+(** Упражнение 7: Logger FC/IS --- Functional Core. *)
+module LoggerPure = struct
+  let add (_msgs : string list) (_msg : string) : string list = failwith "todo"
+  let count (_msgs : string list) : int = failwith "todo"
+  let messages (_msgs : string list) : string list = failwith "todo"
+end
+
+(** Logger FC/IS --- Imperative Shell. *)
+module LoggerShell = struct
+  type t = { mutable msgs : string list }
+  let create () : t = failwith "todo"
+  let log (_l : t) (_msg : string) : unit = failwith "todo"
+  let messages (_l : t) : string list = failwith "todo"
+  let count (_l : t) : int = failwith "todo"
+  let clear (_l : t) : unit = failwith "todo"
+end
+
 (** Упражнение: Bowling — подсчёт очков в боулинге. *)
 module Bowling = struct
   type t = {

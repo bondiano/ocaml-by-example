@@ -230,6 +230,32 @@ let lru_tests =
       check int "size" 2 (My_solutions.LRU.size cache));
   ]
 
+let logger_fcis_tests =
+  let open Alcotest in
+  [
+    test_case "LoggerPure.add" `Quick (fun () ->
+      let msgs = My_solutions.LoggerPure.add [] "hello" in
+      check (list string) "one msg" ["hello"]
+        (My_solutions.LoggerPure.messages msgs));
+    test_case "LoggerPure.count" `Quick (fun () ->
+      let msgs = My_solutions.LoggerPure.add
+          (My_solutions.LoggerPure.add [] "a") "b" in
+      check int "count" 2 (My_solutions.LoggerPure.count msgs));
+    test_case "LoggerShell create и log" `Quick (fun () ->
+      let l = My_solutions.LoggerShell.create () in
+      My_solutions.LoggerShell.log l "first";
+      My_solutions.LoggerShell.log l "second";
+      check (list string) "messages" ["first"; "second"]
+        (My_solutions.LoggerShell.messages l));
+    test_case "LoggerShell count и clear" `Quick (fun () ->
+      let l = My_solutions.LoggerShell.create () in
+      My_solutions.LoggerShell.log l "a";
+      My_solutions.LoggerShell.log l "b";
+      check int "count" 2 (My_solutions.LoggerShell.count l);
+      My_solutions.LoggerShell.clear l;
+      check int "after clear" 0 (My_solutions.LoggerShell.count l));
+  ]
+
 let bowling_tests =
   let open Alcotest in
   [
@@ -283,5 +309,6 @@ let () =
       ("WeakCache --- кеш на слабых ссылках", weak_cache_tests);
       ("Robot --- уникальные имена", robot_tests);
       ("LRU кеш", lru_tests);
+      ("Logger FC/IS", logger_fcis_tests);
       ("Bowling --- боулинг", bowling_tests);
     ]

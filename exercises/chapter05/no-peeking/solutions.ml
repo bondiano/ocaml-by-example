@@ -139,6 +139,25 @@ let rle_decode s =
   ) s;
   Buffer.contents buf
 
+(** Traverse option. *)
+let traverse_option f lst =
+  List.fold_right
+    (fun x acc ->
+      match f x, acc with
+      | Some v, Some vs -> Some (v :: vs)
+      | _ -> None)
+    lst (Some [])
+
+(** Traverse result. *)
+let traverse_result f lst =
+  List.fold_right
+    (fun x acc ->
+      match f x, acc with
+      | Ok v, Ok vs -> Ok (v :: vs)
+      | Error e, _ -> Error e
+      | _, Error e -> Error e)
+    lst (Ok [])
+
 (** List Ops — реализация стандартных операций вручную. *)
 module List_ops = struct
   let rec length = function

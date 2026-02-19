@@ -53,6 +53,18 @@ end = struct
   let inter _s1 _s2 = failwith "todo"
 end
 
+(** Упражнение 5: First semigroup. *)
+module First : Chapter06.Monoid.Semigroup with type t = string = struct
+  type t = string
+  let combine _a _b = failwith "todo"
+end
+
+(** Упражнение 6: concat_all через first-class module. *)
+let concat_all (type a) (module M : Chapter06.Monoid.Monoid with type t = a)
+    (_lst : a list) : a =
+  ignore (module M : Chapter06.Monoid.Monoid with type t = a);
+  failwith "todo"
+
 (** Упражнение: Custom Set — множество через модуль с сигнатурой. *)
 module type ORDERED = sig
   type t

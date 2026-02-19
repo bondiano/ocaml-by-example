@@ -1,27 +1,17 @@
 (** Здесь вы можете писать свои решения упражнений. *)
 
-(** Упражнение 1: Эффект Emit --- испускание значений. *)
-type _ Effect.t += Emit : int -> unit Effect.t
-
-let run_emit (f : unit -> 'a) : 'a * int list =
-  ignore f;
+(** Упражнение 1: Параллельное вычисление двух чисел Фибоначчи. *)
+let parallel_fib (_n : int) (_m : int) : int =
   failwith "todo"
 
-(** Упражнение 2: Эффект Reader --- чтение из окружения. *)
-type _ Effect.t += Ask : string Effect.t
+(** Упражнение 2: Конкурентный map. *)
+let concurrent_map : ('a -> 'b) -> 'a list -> 'b list =
+  fun _f _lst -> failwith "todo"
 
-let run_reader (env : string) (f : unit -> 'a) : 'a =
-  ignore (env, f);
+(** Упражнение 3: Producer-consumer с суммированием. *)
+let produce_consume (_n : int) : int =
   failwith "todo"
 
-(** Упражнение 3: Композиция State + Emit. *)
-let count_and_emit (n : int) : unit =
-  ignore n;
-  failwith "todo"
-
-(** Упражнение 4: Эффект Fail с обработкой ошибок. *)
-type _ Effect.t += Fail : string -> 'a Effect.t
-
-let run_fail (f : unit -> 'a) : ('a, string) result =
-  ignore f;
+(** Упражнение 4: Гонка --- результат первой завершившейся функции. *)
+let race (_tasks : (unit -> 'a) list) : 'a =
   failwith "todo"

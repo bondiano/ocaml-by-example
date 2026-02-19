@@ -1,4 +1,3 @@
 (library
  (name chapter18)
- (libraries dream yojson)
- (preprocess (pps ppx_deriving_yojson)))
+ (preprocess (pps ppx_deriving.show ppx_deriving.eq)))

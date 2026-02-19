@@ -1,26 +1,89 @@
 (** Здесь вы можете писать свои решения упражнений. *)
 
-(** Упражнение 1: Ручная конвертация product -> JSON. *)
-type product = {
-  title : string;
-  price : float;
-  in_stock : bool;
-}
+(** Упражнение 1: Добавить Mul к вариантному типу. *)
+module VariantMul = struct
+  type expr =
+    | Int of int
+    | Add of expr * expr
+    | Mul of expr * expr
 
-let product_to_json (_p : product) : Yojson.Safe.t =
-  failwith "todo"
+  let eval = function
+    | Int _n -> failwith "todo"
+    | Add (_a, _b) -> failwith "todo"
+    | Mul (_a, _b) -> failwith "todo"
 
-(** Упражнение 2: Ручная конвертация JSON -> product. *)
-let product_of_json (_json : Yojson.Safe.t) : (product, string) result =
-  failwith "todo"
+  let show = function
+    | Int _n -> failwith "todo"
+    | Add (_a, _b) -> failwith "todo"
+    | Mul (_a, _b) -> failwith "todo"
+end
 
-(** Упражнение 3: Преобразование списка JSON-объектов --- извлечь имена. *)
-let extract_names (_json : Yojson.Safe.t) : string list =
-  failwith "todo"
+(** Упражнение 2: Tagless Final pretty_print. *)
+module TF_Pretty : Chapter10.Expr.EXPR with type t = string = struct
+  type t = string
+  let int_ (_n : int) : t = failwith "todo"
+  let add (_a : t) (_b : t) : t = failwith "todo"
+end
 
-(** Упражнение 4: ppx --- тип с автоматической сериализацией. *)
-type config = {
-  host : string;
-  port : int;
-  debug : bool;
-} [@@deriving yojson]
+(** Упражнение 3: Полиморфные варианты с Neg. *)
+type neg_expr = [ `Int of int | `Add of neg_expr * neg_expr | `Neg of neg_expr ]
+
+let eval_neg (e : neg_expr) : int =
+  match e with
+  | `Int _n -> failwith "todo"
+  | `Add (_a, _b) -> failwith "todo"
+  | `Neg _a -> failwith "todo"
+
+let show_neg (e : neg_expr) : string =
+  match e with
+  | `Int _n -> failwith "todo"
+  | `Add (_a, _b) -> failwith "todo"
+  | `Neg _a -> failwith "todo"
+
+(** Упражнение 4: Tagless Final для булевых выражений. *)
+module type BOOL_EXPR = sig
+  type t
+  val bool_ : bool -> t
+  val and_ : t -> t -> t
+  val or_ : t -> t -> t
+  val not_ : t -> t
+end
+
+module Bool_Eval : BOOL_EXPR with type t = bool = struct
+  type t = bool
+  let bool_ (_b : bool) : t = failwith "todo"
+  let and_ (_a : t) (_b : t) : t = failwith "todo"
+  let or_ (_a : t) (_b : t) : t = failwith "todo"
+  let not_ (_a : t) : t = failwith "todo"
+end
+
+module Bool_Show : BOOL_EXPR with type t = string = struct
+  type t = string
+  let bool_ (_b : bool) : t = failwith "todo"
+  let and_ (_a : t) (_b : t) : t = failwith "todo"
+  let or_ (_a : t) (_b : t) : t = failwith "todo"
+  let not_ (_a : t) : t = failwith "todo"
+end
+
+(** Упражнение 5: Объединённый DSL. *)
+module type COMBINED_EXPR = sig
+  type t
+  val int_ : int -> t
+  val add : t -> t -> t
+  val bool_ : bool -> t
+  val and_ : t -> t -> t
+  val or_ : t -> t -> t
+  val not_ : t -> t
+  val eq : t -> t -> t
+end
+
+module Combined_Show : COMBINED_EXPR with type t = string = struct
+  type t = string
+  let int_ (_n : int) : t = failwith "todo"
+  let add (_a : t) (_b : t) : t = failwith "todo"
+  let bool_ (_b : bool) : t = failwith "todo"
+  let and_ (_a : t) (_b : t) : t = failwith "todo"
+  let or_ (_a : t) (_b : t) : t = failwith "todo"
+  let not_ (_a : t) : t = failwith "todo"
+  let eq (_a : t) (_b : t) : t = failwith "todo"
+end

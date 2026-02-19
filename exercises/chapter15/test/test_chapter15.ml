@@ -1,164 +1,103 @@
-open Chapter15.Brain_games
-
-(* --- Вспомогательная функция --- *)
-
-let string_contains haystack needle =
-  let nlen = String.length needle in
-  let hlen = String.length haystack in
-  if nlen > hlen then false
-  else
-    let rec check i =
-      if i > hlen - nlen then false
-      else if String.sub haystack i nlen = needle then true
-      else check (i + 1)
-    in
-    check 0
+open Chapter15.Properties
 
 (* --- Тесты библиотеки --- *)
 
-let helper_tests =
+let bst_unit_tests =
   let open Alcotest in
   [
-    test_case "gcd 12 8" `Quick (fun () ->
-      check int "gcd" 4 (gcd 12 8));
-    test_case "gcd 7 3" `Quick (fun () ->
-      check int "gcd" 1 (gcd 7 3));
-    test_case "gcd 100 25" `Quick (fun () ->
-      check int "gcd" 25 (gcd 100 25));
-    test_case "is_prime 2" `Quick (fun () ->
-      check bool "prime" true (is_prime 2));
-    test_case "is_prime 7" `Quick (fun () ->
-      check bool "prime" true (is_prime 7));
-    test_case "is_prime 4" `Quick (fun () ->
-      check bool "not prime" false (is_prime 4));
-    test_case "is_prime 1" `Quick (fun () ->
-      check bool "not prime" false (is_prime 1));
-    test_case "random_int range" `Quick (fun () ->
-      Random.self_init ();
-      let n = random_int 5 10 in
-      check bool "in range" true (n >= 5 && n <= 10));
+    test_case "bst_of_list sorted" `Quick (fun () ->
+      let tree = bst_of_list [3; 1; 4; 1; 5; 9] in
+      let sorted = bst_to_sorted_list tree in
+      check (list int) "sorted" [1; 3; 4; 5; 9] sorted);
+    test_case "bst_mem" `Quick (fun () ->
+      let tree = bst_of_list [3; 1; 4] in
+      check bool "mem 3" true (bst_mem 3 tree);
+      check bool "mem 1" true (bst_mem 1 tree);
+      check bool "mem 2" false (bst_mem 2 tree));
+    test_case "is_sorted" `Quick (fun () ->
+      check bool "sorted" true (is_sorted [1; 2; 3; 4]);
+      check bool "not sorted" false (is_sorted [1; 3; 2]));
+    test_case "encode_pair / decode_pair" `Quick (fun () ->
+      let p = (42, "hello") in
+      check (option (pair int string)) "roundtrip" (Some p)
+        (decode_pair (encode_pair p)));
   ]
 
-let game_structure_tests =
-  let open Alcotest in
+(* Библиотечные property-тесты *)
+let lib_property_tests =
   [
-    test_case "even_game generates round" `Quick (fun () ->
-      Random.self_init ();
-      let r = even_game.generate_round () in
-      check bool "answer is yes or no" true
-        (r.correct_answer = "yes" || r.correct_answer = "no"));
-    test_case "calc_game generates round" `Quick (fun () ->
-      Random.self_init ();
-      let r = calc_game.generate_round () in
-      check bool "answer is a number" true
-        (match int_of_string_opt r.correct_answer with Some _ -> true | None -> false));
-    test_case "gcd_game generates round" `Quick (fun () ->
-      Random.self_init ();
-      let r = gcd_game.generate_round () in
-      check bool "answer is a number" true
-        (match int_of_string_opt r.correct_answer with Some _ -> true | None -> false));
-    test_case "progression_game generates round" `Quick (fun () ->
-      Random.self_init ();
-      let r = progression_game.generate_round () in
-      check bool "question has .." true
-        (string_contains r.question ".."));
-    test_case "prime_game generates round" `Quick (fun () ->
-      Random.self_init ();
-      let r = prime_game.generate_round () in
-      check bool "answer is yes or no" true
-        (r.correct_answer = "yes" || r.correct_answer = "no"));
+    QCheck_alcotest.to_alcotest
+      (QCheck.Test.make ~name:"bst inorder sorted" ~count:200
+         QCheck.(list small_int)
+         (fun lst ->
+            let tree = bst_of_list lst in
+            is_sorted (bst_to_sorted_list tree)));
+    QCheck_alcotest.to_alcotest
+      (QCheck.Test.make ~name:"bst size <= input" ~count:200
+         QCheck.(list small_int)
+         (fun lst ->
+            let tree = bst_of_list lst in
+            let sorted = bst_to_sorted_list tree in
+            List.length sorted <= List.length lst));
   ]
 
 (* --- Тесты упражнений --- *)
 
-let balance_game_tests =
-  let open Alcotest in
+let exercise_property_tests =
   [
-    test_case "balance_game generates round" `Quick (fun () ->
-      Random.self_init ();
-      let r = My_solutions.balance_game.generate_round () in
-      check bool "answer is +, - or *" true
-        (r.correct_answer = "+" || r.correct_answer = "-" || r.correct_answer = "*"));
-    test_case "balance_game answer is correct" `Quick (fun () ->
-      Random.self_init ();
-      for _ = 1 to 20 do
-        let r = My_solutions.balance_game.generate_round () in
-        let parts = String.split_on_char ' ' r.question in
-        match parts with
-        | [a_s; "?"; b_s; "="; c_s] ->
-          let a = int_of_string a_s and b = int_of_string b_s and c = int_of_string c_s in
-          let expected = match r.correct_answer with
-            | "+" -> a + b | "-" -> a - b | "*" -> a * b | _ -> -99999
-          in
-          check int "correct" c expected
-        | _ -> fail (Printf.sprintf "bad question format: %s" r.question)
-      done);
+    QCheck_alcotest.to_alcotest My_solutions.prop_rev_involution;
+    QCheck_alcotest.to_alcotest My_solutions.prop_sort_sorted;
+    QCheck_alcotest.to_alcotest My_solutions.prop_bst_membership;
+    QCheck_alcotest.to_alcotest My_solutions.prop_codec_roundtrip;
   ]
 
-let run_game_result_tests =
+let binary_search_tests =
   let open Alcotest in
-  let simple_game = {
-    description = "test";
-    generate_round = (fun () -> { question = "2 + 2"; correct_answer = "4" })
-  } in
   [
-    test_case "all correct" `Quick (fun () ->
-      check bool "win" true
-        (My_solutions.run_game_result simple_game ~rounds:3 ["4"; "4"; "4"]));
-    test_case "wrong answer" `Quick (fun () ->
-      check bool "lose" false
-        (My_solutions.run_game_result simple_game ~rounds:3 ["4"; "5"; "4"]));
-    test_case "not enough answers" `Quick (fun () ->
-      check bool "lose" false
-        (My_solutions.run_game_result simple_game ~rounds:3 ["4"]));
+    test_case "найден" `Quick (fun () ->
+      check (option int) "found" (Some 2)
+        (My_solutions.binary_search [|1; 3; 5; 7; 9|] 5));
+    test_case "не найден" `Quick (fun () ->
+      check (option int) "not found" None
+        (My_solutions.binary_search [|1; 3; 5; 7; 9|] 4));
+    test_case "первый элемент" `Quick (fun () ->
+      check (option int) "first" (Some 0)
+        (My_solutions.binary_search [|1; 3; 5; 7; 9|] 1));
+    test_case "последний элемент" `Quick (fun () ->
+      check (option int) "last" (Some 4)
+        (My_solutions.binary_search [|1; 3; 5; 7; 9|] 9));
+    test_case "пустой массив" `Quick (fun () ->
+      check (option int) "empty" None
+        (My_solutions.binary_search [||] 1));
   ]
 
-let make_game_tests =
+let bst_tests =
   let open Alcotest in
   [
-    test_case "make_game creates game" `Quick (fun () ->
-      let g = My_solutions.make_game
-        ~description:"test game"
-        ~generate:(fun () -> ("what is 1+1?", "2"))
-      in
-      check string "description" "test game" g.description;
-      let r = g.generate_round () in
-      check string "question" "what is 1+1?" r.question;
-      check string "answer" "2" r.correct_answer);
-  ]
-
-let factor_game_tests =
-  let open Alcotest in
-  [
-    test_case "factor_game generates round" `Quick (fun () ->
-      Random.self_init ();
-      let r = My_solutions.factor_game.generate_round () in
-      let n = int_of_string r.question in
-      let factors = String.split_on_char ' ' r.correct_answer
-        |> List.map int_of_string in
-      let product = List.fold_left ( * ) 1 factors in
-      check int "product equals n" n product;
-      check bool "all prime" true
-        (List.for_all is_prime factors));
-    test_case "factor_game various" `Quick (fun () ->
-      Random.self_init ();
-      for _ = 1 to 20 do
-        let r = My_solutions.factor_game.generate_round () in
-        let n = int_of_string r.question in
-        let factors = String.split_on_char ' ' r.correct_answer
-          |> List.map int_of_string in
-        let product = List.fold_left ( * ) 1 factors in
-        check int "product" n product
-      done);
+    test_case "insert и mem" `Quick (fun () ->
+      let tree = My_solutions.BST.empty
+        |> My_solutions.BST.insert 5
+        |> My_solutions.BST.insert 3
+        |> My_solutions.BST.insert 7 in
+      check bool "mem 5" true (My_solutions.BST.mem 5 tree);
+      check bool "mem 3" true (My_solutions.BST.mem 3 tree);
+      check bool "mem 4" false (My_solutions.BST.mem 4 tree));
+    test_case "to_sorted_list" `Quick (fun () ->
+      let tree = My_solutions.BST.empty
+        |> My_solutions.BST.insert 5
+        |> My_solutions.BST.insert 3
+        |> My_solutions.BST.insert 7
+        |> My_solutions.BST.insert 1 in
+      check (list int) "sorted" [1; 3; 5; 7]
+        (My_solutions.BST.to_sorted_list tree));
   ]
 
 let () =
-  Alcotest.run "Chapter 15"
+  Alcotest.run "Chapter 13"
     [
-      ("helpers --- вспомогательные функции", helper_tests);
-      ("games --- структура игр", game_structure_tests);
-      ("balance --- угадай оператор", balance_game_tests);
-      ("run_game_result --- чистая логика", run_game_result_tests);
-      ("make_game --- конструктор игры", make_game_tests);
-      ("factor --- разложение на множители", factor_game_tests);
+      ("bst --- бинарное дерево поиска", bst_unit_tests);
+      ("lib_properties --- свойства библиотеки", lib_property_tests);
+      ("exercises --- свойства упражнений", exercise_property_tests);
+      ("Binary Search", binary_search_tests);
+      ("BST — бинарное дерево поиска", bst_tests);
     ]

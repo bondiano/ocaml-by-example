@@ -1,507 +1,684 @@
-# Промисы и Lwt
+# CLI-приложения с Cmdliner
 
 ## Цели главы
 
-В этой главе мы изучим **Lwt** --- библиотеку конкурентности на основе промисов, и сравним её с Eio из главы 9:
+В этой главе мы научимся создавать полноценные **CLI-приложения** (Command-Line Interface) на OCaml с помощью библиотеки **Cmdliner**. Мы изучим:
 
-- **Промисы** (`'a Lwt.t`) --- отложенные вычисления, которые завершатся в будущем.
-- **Монадический стиль** --- `bind`, `>>=`, `let*` для цепочек асинхронных операций.
-- **Конкурентные примитивы** --- `Lwt.both`, `Lwt.all`, `Lwt.pick`, `Lwt.choose`.
-- **Lwt_io и Lwt_unix** --- асинхронный ввод-вывод и системные вызовы.
-- **Lwt_stream** --- асинхронные потоки данных.
-- **Сравнение Eio и Lwt** --- когда использовать какую библиотеку.
+- **Декларативное определение** аргументов, опций и подкоманд.
+- **Интерактивный ввод** --- чтение данных от пользователя через `read_line`.
+- **Модульную архитектуру** игры --- типы `round` и `game`, движок с циклом раундов.
+- **Проект Brain Games** --- 5 математических мини-игр, объединённых в одно CLI-приложение с подкомандами.
 
 ## Подготовка проекта
 
-Код этой главы находится в `exercises/chapter17`. Для работы с Lwt нужно установить библиотеку:
+Код этой главы находится в `exercises/chapter17`. Для работы потребуется библиотека Cmdliner:
 
 ```text
-$ opam install lwt
+$ opam install cmdliner
 $ cd exercises/chapter17
 $ dune build
 ```
 
-В файле `dune` проекта укажите зависимости:
+В `dune`-файле библиотеки указана зависимость от `cmdliner`:
 
 ```text
 (library
  (name chapter17)
- (libraries lwt lwt.unix))
+ (libraries cmdliner))
 ```
 
-Пакет `lwt.unix` предоставляет привязки к системным вызовам: работу с файлами, сетью, таймерами и процессами.
+## Cmdliner: декларативные CLI
 
-## Зачем Lwt, если есть Eio?
+[Cmdliner](https://erratique.ch/software/cmdliner) --- библиотека для построения CLI-приложений в декларативном стиле. Вместо ручного разбора `Sys.argv` вы описываете **что** ваша программа принимает, а Cmdliner берёт на себя парсинг, валидацию, генерацию справки (`--help`) и обработку ошибок.
 
-В главе 9 мы изучили Eio --- библиотеку прямого стиля, основанную на effect handlers OCaml 5. Eio лучше спроектирована, но зачем тогда изучать Lwt?
+Три ключевых понятия Cmdliner:
 
-Ответ --- **экосистема**. Lwt существует с 2008 года и стала основой огромного количества OCaml-проектов:
+- **`Arg`** --- описание одного аргумента или опции (тип, значение по умолчанию, имя, документация).
+- **`Term`** --- комбинация функции и её аргументов. Term связывает чистую функцию с аргументами командной строки.
+- **`Cmd`** --- команда с именем, документацией и привязанным Term. Команды можно группировать в подкоманды.
 
-- **Dream** --- самый популярный веб-фреймворк OCaml.
-- **Cohttp** --- HTTP-библиотека.
-- **Irmin** --- распределённая база данных (Git-like).
-- **Tezos** --- блокчейн-платформа.
+Философия Cmdliner --- **аппликативный стиль**: вы описываете аргументы как отдельные значения, а затем комбинируете их с функцией через оператор `$`. Это похоже на аппликативные парсеры в Haskell.
 
-Eio --- будущее конкурентности в OCaml, но Lwt --- настоящее экосистемы. Чтобы использовать Dream или Cohttp, нужно понимать Lwt.
+## Простая команда
 
-## Промисы: отложенные вычисления
-
-Центральный тип Lwt --- `'a Lwt.t`. Это **промис**: значение типа `'a`, которое, возможно, ещё не вычислено. Промис может быть в одном из трёх состояний: **resolved** (готов), **pending** (ожидает) или **rejected** (ошибка).
-
-### Создание промисов
+Начнём с минимального примера --- программы, которая приветствует пользователя по имени:
 
 ```ocaml
-(* Lwt.return : 'a -> 'a Lwt.t --- уже завершённый промис *)
-let x : int Lwt.t = Lwt.return 42
+open Cmdliner
 
-(* Lwt.fail : exn -> 'a Lwt.t --- промис с ошибкой *)
-let err : int Lwt.t = Lwt.fail (Failure "что-то пошло не так")
+let name =
+  let doc = "Name to greet." in
+  Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME" ~doc)
+
+let hello name =
+  Printf.printf "Hello, %s!\n" name
+
+let cmd =
+  let doc = "Say hello" in
+  let info = Cmd.info "hello" ~doc in
+  Cmd.v info Term.(const hello $ name)
+
+let () = exit (Cmd.eval cmd)
 ```
 
-### Привязка: `Lwt.bind` и `>>=`
+Разберём по частям:
 
-```ocaml
-(* Lwt.bind : 'a Lwt.t -> ('a -> 'b Lwt.t) -> 'b Lwt.t *)
-let y : string Lwt.t =
-  Lwt.bind x (fun n -> Lwt.return (string_of_int n))
+- `Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME" ~doc)` --- позиционный аргумент на позиции 0, тип `string`, обязательный (`required`). `~docv:"NAME"` задаёт имя аргумента в справке.
+- `Term.(const hello $ name)` --- применяем функцию `hello` к аргументу `name`. Оператор `$` --- это аппликативное применение: левая часть --- функция в контексте Term, правая --- аргумент в контексте Term.
+- `Cmd.v info term` --- создаёт команду из метаинформации и терма.
+- `Cmd.eval cmd` --- запускает команду, парсит аргументы, вызывает функцию и возвращает код выхода.
+
+Запуск:
+
+```text
+$ ./hello World
+Hello, World!
+
+$ ./hello --help
+NAME
+       hello - Say hello
+
+SYNOPSIS
+       hello [OPTION]... NAME
+
+ARGUMENTS
+       NAME (required)
+           Name to greet.
 ```
 
-`Lwt.bind p f` --- когда промис `p` завершится со значением `v`, вызвать `f v`. Если `p` завершился ошибкой --- `f` не вызывается, ошибка пробрасывается дальше.
+Cmdliner автоматически генерирует справку, обрабатывает `--help` и `--version`, и выдаёт понятные сообщения об ошибках при неправильных аргументах.
 
-Оператор `>>=` --- инфиксный синоним `Lwt.bind`:
+## Аргументы и опции
+
+Cmdliner различает **позиционные аргументы** и **именованные опции**:
+
+### Позиционные аргументы
 
 ```ocaml
-open Lwt.Infix
+(* Обязательный строковый аргумент на позиции 0 *)
+let name =
+  Arg.(required & pos 0 (some string) None & info [] ~docv:"NAME" ~doc:"Name")
 
-let z : int Lwt.t = x >>= fun n -> Lwt.return (n + 1)
-
-(* Цепочка вычислений *)
-let pipeline =
-  Lwt.return "42"
-  >>= fun s -> Lwt.return (int_of_string s)
-  >>= fun n -> Lwt.return (n * 2)
-  >>= fun n -> Lwt.return (string_of_int n)
-(* pipeline : string Lwt.t, результат --- "84" *)
+(* Необязательный аргумент с значением по умолчанию *)
+let greeting =
+  Arg.(value & pos 1 string "Hello" & info [] ~docv:"GREETING" ~doc:"Greeting word")
 ```
 
-### Отображение: `Lwt.map` и `>|=`
+- `required` --- аргумент обязателен, программа завершится с ошибкой, если его не указать.
+- `value` --- аргумент необязателен, используется значение по умолчанию.
+- `pos N type default` --- позиционный аргумент на позиции N.
+
+### Флаги (булевы опции)
 
 ```ocaml
-(* Lwt.map : ('a -> 'b) -> 'a Lwt.t -> 'b Lwt.t *)
-let w : string Lwt.t = Lwt.map string_of_int x
-
-(* >|= --- инфиксный map *)
-let w2 = x >|= fun n -> string_of_int n
-let doubled = x >|= fun n -> n * 2
+let verbose =
+  let doc = "Enable verbose output." in
+  Arg.(value & flag & info ["v"; "verbose"] ~doc)
 ```
 
-Разница: в `>>=` функция возвращает `'b Lwt.t`, а в `>|=` --- просто `'b`. Используйте `>|=` для чистых преобразований.
+Флаг --- опция без значения. `info ["v"; "verbose"]` означает, что опция принимается как `-v` или `--verbose`. Если флаг указан, значение --- `true`, иначе --- `false`.
 
-## Let-операторы
-
-Цепочки `>>=` быстро становятся нечитаемыми. **Let-операторы**, знакомые из главы 7, делают код линейным:
+### Опции со значениями
 
 ```ocaml
-open Lwt.Syntax
-
-(* let* = Lwt.bind *)
-let example1 () =
-  let* a = Lwt.return 10 in
-  let* b = Lwt.return 20 in
-  Lwt.return (a + b)
-
-(* let+ = Lwt.map --- для последнего шага *)
-let example2 () =
-  let+ n = Lwt.return 42 in
-  n * 2
-(* example2 () : int Lwt.t, результат --- 84 *)
-
-(* and* = Lwt.both --- конкурентное выполнение *)
-let example3 () =
-  let* a = Lwt.return 10
-  and* b = Lwt.return 20 in
-  Lwt.return (a + b)
+let rounds =
+  let doc = "Number of rounds." in
+  Arg.(value & opt int 3 & info ["r"; "rounds"] ~doc ~docv:"N")
 ```
 
-Обратите внимание на `and*`: в отличие от последовательного `let*`, конструкция `let* ... and* ...` запускает оба вычисления **конкурентно**.
+`opt int 3` --- опция типа `int` со значением по умолчанию `3`. Пользователь может указать `-r 5` или `--rounds=5`.
 
-Let-операторы --- рекомендуемый современный стиль. Они делают код похожим на обычный последовательный, что упрощает чтение и отладку.
+### Комбинирование аргументов
 
-## Запуск Lwt
-
-Для выполнения промисов нужен **event loop**. Функция `Lwt_main.run` запускает его и блокируется до завершения:
+Несколько аргументов комбинируются через оператор `$`:
 
 ```ocaml
-let () =
-  Lwt_main.run (
-    let open Lwt.Syntax in
-    let* () = Lwt_io.printl "Привет из Lwt!" in
-    let* () = Lwt_io.printl "Event loop запущен." in
-    Lwt.return ()
-  )
+let greet verbose rounds name =
+  if verbose then Printf.printf "[DEBUG] Starting with %d rounds\n" rounds;
+  for _ = 1 to rounds do
+    Printf.printf "Hello, %s!\n" name
+  done
+
+let cmd =
+  let info = Cmd.info "greet" ~doc:"Greet someone multiple times" in
+  Cmd.v info Term.(const greet $ verbose $ rounds $ name)
 ```
 
-`Lwt_main.run` вызывается ровно один раз, на верхнем уровне программы. В отличие от Eio, где `Eio_main.run` передаёт окружение `env`, в Lwt модули `Lwt_io` и `Lwt_unix` доступны глобально --- удобнее для старта, но хуже для тестирования.
+Порядок аргументов в `const f $ a $ b $ c` должен соответствовать порядку параметров функции `f`. Это аппликативный стиль: `const f $ a $ b` эквивалентно `f a b`, но каждый аргумент парсится из командной строки.
 
-## Конкурентные примитивы
+## Подкоманды
 
-### `Lwt.both`
-
-Запустить два промиса конкурентно и дождаться обоих:
+Для приложений с несколькими режимами работы (как `git commit`, `git push`) Cmdliner поддерживает **подкоманды** через `Cmd.group`:
 
 ```ocaml
-let* (a, b) = Lwt.both
-  (Lwt_unix.sleep 1.0 >|= fun () -> "результат A")
-  (Lwt_unix.sleep 1.5 >|= fun () -> "результат B")
-(* Общее время --- ~1.5 секунды, а не 2.5 *)
+let even_cmd =
+  let info = Cmd.info "even" ~doc:"Is the number even?" in
+  Cmd.v info Term.(const run_even $ rounds)
+
+let calc_cmd =
+  let info = Cmd.info "calc" ~doc:"Calculate the expression" in
+  Cmd.v info Term.(const run_calc $ rounds)
+
+let gcd_cmd =
+  let info = Cmd.info "gcd" ~doc:"Find the GCD" in
+  Cmd.v info Term.(const run_gcd $ rounds)
+
+let group =
+  let doc = "Brain Games --- математические мини-игры" in
+  let info = Cmd.info "brain-games" ~doc in
+  Cmd.group info [even_cmd; calc_cmd; gcd_cmd]
+
+let () = exit (Cmd.eval group)
 ```
 
-### `Lwt.all`
+Теперь программа поддерживает подкоманды:
 
-Запустить список промисов конкурентно и дождаться всех:
-
-```ocaml
-let* results = Lwt.all [task1; task2; task3]
-(* results : 'a list --- в том же порядке *)
+```text
+$ brain-games even --rounds 5
+$ brain-games calc
+$ brain-games gcd -r 10
+$ brain-games --help
 ```
 
-### `Lwt.pick`
+`Cmd.group` принимает метаинформацию и список подкоманд. При запуске без подкоманды выводится справка со списком доступных подкоманд.
 
-Вернуть результат первого завершившегося и **отменить** остальные:
+## Генерация случайных чисел
+
+Для генерации вопросов в мини-играх нам понадобятся случайные числа. Стандартная библиотека OCaml предоставляет модуль `Random`:
 
 ```ocaml
-let with_timeout seconds task =
-  Lwt.pick [
-    (task >|= fun r -> Some r);
-    (Lwt_unix.sleep seconds >|= fun () -> None);
-  ]
+(* Инициализация генератора *)
+Random.self_init ()
+
+(* Случайное число от 0 до n-1 *)
+Random.int 100   (* 0..99 *)
+
+(* Случайное число в диапазоне [lo, hi] *)
+let random_int lo hi =
+  lo + Random.int (hi - lo + 1)
 ```
 
-Отменённые промисы получают исключение `Lwt.Canceled`.
+Функция `Random.self_init ()` инициализирует генератор системным источником энтропии. Без инициализации генератор будет выдавать одну и ту же последовательность при каждом запуске.
 
-### `Lwt.choose`
+Вспомогательная функция `random_int lo hi` генерирует случайное целое число в **замкнутом** диапазоне `[lo, hi]`. Мы используем её во всех играх для генерации чисел, операторов и индексов.
 
-Как `Lwt.pick`, но **не отменяет** остальные промисы. Используйте, когда побочные эффекты остальных важны.
+## Взаимодействие с пользователем
 
-### Сводная таблица
+CLI-игра требует диалога с пользователем: задать вопрос, прочитать ответ, проверить и вывести результат.
 
-| Функция | Ожидает | Отмена остальных |
-|---------|---------|------------------|
-| `Lwt.both` | Оба | Нет |
-| `Lwt.all` | Все | Нет |
-| `Lwt.pick` | Первый | Да |
-| `Lwt.choose` | Первый | Нет |
-
-## Lwt_io
-
-Модуль `Lwt_io` предоставляет асинхронный буферизированный ввод-вывод:
+Для чтения ввода используем `read_line`:
 
 ```ocaml
-open Lwt.Syntax
-
-(* Вывод *)
-let* () = Lwt_io.printl "с переводом строки" in
-let* () = Lwt_io.printlf "форматированный: %d + %d = %d" 2 3 5 in
-
-(* Ввод *)
-let* line = Lwt_io.read_line Lwt_io.stdin in
-Lwt_io.printlf "Вы ввели: %s" line
+Printf.printf "Как вас зовут? ";
+let name = read_line () in
+Printf.printf "Привет, %s!\n" name
 ```
 
-### Работа с файлами
+`read_line ()` читает одну строку из `stdin` (до символа новой строки). Если ввод закончился (EOF), функция бросает исключение `End_of_file`.
+
+Паттерн "вопрос --- ответ --- проверка" выглядит так:
 
 ```ocaml
-(* Чтение файла целиком *)
-let read_file path =
-  Lwt_io.with_file ~mode:Input path (fun ic -> Lwt_io.read ic)
+let ask_question question correct_answer =
+  Printf.printf "Вопрос: %s\n" question;
+  Printf.printf "Ваш ответ: ";
+  let answer = read_line () in
+  if String.lowercase_ascii answer = String.lowercase_ascii correct_answer then (
+    Printf.printf "Верно!\n";
+    true)
+  else (
+    Printf.printf "'%s' --- неправильный ответ ;(. Правильный ответ: '%s'.\n"
+      answer correct_answer;
+    false)
+```
 
-(* Запись в файл *)
-let write_file path content =
-  Lwt_io.with_file ~mode:Output path (fun oc -> Lwt_io.write oc content)
+Сравнение через `String.lowercase_ascii` делает проверку нечувствительной к регистру --- пользователь может ввести "Yes", "YES" или "yes".
 
-(* Построчное чтение *)
-let read_lines path =
-  Lwt_io.with_file ~mode:Input path (fun ic ->
-    let rec loop acc =
-      Lwt.catch
-        (fun () ->
-          let* line = Lwt_io.read_line ic in
-          loop (line :: acc))
-        (function
-          | End_of_file -> Lwt.return (List.rev acc)
-          | exn -> Lwt.fail exn)
+## Модульная архитектура игры
+
+Все пять игр следуют одному и тому же паттерну: задай вопрос, получи ответ, проверь. Отличаются только способ генерации вопроса и правильный ответ. Этот паттерн удобно выразить через типы:
+
+```ocaml
+type round = { question : string; correct_answer : string }
+type game = { description : string; generate_round : unit -> round }
+```
+
+- `round` --- один раунд: вопрос и правильный ответ.
+- `game` --- игра: текстовое описание правил и функция генерации раунда.
+
+Тип `game` --- по сути, **стратегия**: он инкапсулирует поведение (генерацию вопросов), не фиксируя конкретную логику. Каждая мини-игра --- это значение типа `game` с собственным `generate_round`.
+
+### Движок игры
+
+Движок --- функция `run_game`, которая принимает имя игры, описание и количество раундов, а затем проводит интерактивную сессию:
+
+```ocaml
+let run_game name game ~rounds =
+  Printf.printf "Добро пожаловать в %s!\n" name;
+  Printf.printf "%s\n" game.description;
+  Printf.printf "Как вас зовут? ";
+  let user_name = read_line () in
+  Printf.printf "Привет, %s!\n" user_name;
+  let rec loop i =
+    if i > rounds then (
+      Printf.printf "Поздравляю, %s!\n" user_name;
+      true)
+    else
+      let r = game.generate_round () in
+      Printf.printf "Вопрос: %s\n" r.question;
+      Printf.printf "Ваш ответ: ";
+      let answer = read_line () in
+      if String.lowercase_ascii answer = String.lowercase_ascii r.correct_answer then (
+        Printf.printf "Верно!\n";
+        loop (i + 1))
+      else (
+        Printf.printf "'%s' --- неправильный ответ ;(. Правильный ответ: '%s'.\n"
+          answer r.correct_answer;
+        Printf.printf "Попробуем ещё раз, %s!\n" user_name;
+        false)
+  in
+  loop 1
+```
+
+Логика движка:
+
+1. Приветствие и запрос имени.
+2. Цикл из `rounds` раундов. В каждом раунде:
+   - Генерируем раунд через `game.generate_round ()`.
+   - Показываем вопрос и читаем ответ.
+   - Если ответ верный --- переходим к следующему раунду.
+   - Если неверный --- игра заканчивается поражением.
+3. Если все раунды пройдены --- поздравляем игрока.
+
+Функция возвращает `bool`: `true` --- победа, `false` --- поражение. Это позволяет использовать результат для кода выхода программы.
+
+## Проект: Brain Games
+
+Теперь построим полноценное CLI-приложение --- **Brain Games** --- с пятью мини-играми, каждая из которых доступна как подкоманда.
+
+### Вспомогательные функции
+
+Прежде чем описывать игры, определим две полезные функции --- НОД и проверку на простоту:
+
+```ocaml
+let rec gcd a b =
+  if b = 0 then a else gcd b (a mod b)
+```
+
+Алгоритм Евклида: рекурсивно заменяем пару `(a, b)` на `(b, a mod b)`, пока `b` не станет `0`. Результат --- `a`.
+
+```ocaml
+let is_prime n =
+  if n < 2 then false
+  else
+    let rec check i =
+      if i * i > n then true
+      else if n mod i = 0 then false
+      else check (i + 1)
     in
-    loop []
-  )
+    check 2
 ```
 
-`Lwt_io.with_file` автоматически закрывает файл после завершения, даже при ошибках.
+Простое пробное деление: проверяем делимость на все числа от 2 до `sqrt(n)`. Если ни одно не делит `n` --- число простое.
 
-## Lwt_unix
+### Игра 1: brain-even
 
-Модуль `Lwt_unix` предоставляет асинхронные обёртки над системными вызовами:
+Задача: определить, является ли число чётным. Ответ --- "yes" или "no".
 
 ```ocaml
-(* Таймер --- уступает управление event loop *)
-let* () = Lwt_unix.sleep 1.0 in
-Lwt_io.printl "Прошла секунда!"
-
-(* Запуск внешней команды *)
-let* status = Lwt_unix.system "echo hello" in
-match status with
-| Unix.WEXITED 0 -> Lwt.return_ok ()
-| Unix.WEXITED n -> Lwt.return_error (Printf.sprintf "exit code: %d" n)
-| _ -> Lwt.return_error "сигнал"
+let even_game : game =
+  { description = "Ответьте 'yes', если число чётное, иначе --- 'no'.";
+    generate_round = (fun () ->
+      let n = random_int 1 100 in
+      { question = string_of_int n;
+        correct_answer = if n mod 2 = 0 then "yes" else "no" })
+  }
 ```
 
-**Важно:** `Unix.sleep` блокирует весь поток (и event loop), а `Lwt_unix.sleep` уступает управление, позволяя другим промисам выполняться. Никогда не используйте блокирующие вызовы внутри Lwt.
+Пример сессии:
 
-## Lwt_stream
+```text
+$ brain-games even
+Добро пожаловать в Brain Even!
+Ответьте 'yes', если число чётное, иначе --- 'no'.
+Как вас зовут? Алексей
+Привет, Алексей!
+Вопрос: 42
+Ваш ответ: yes
+Верно!
+Вопрос: 17
+Ваш ответ: no
+Верно!
+Вопрос: 88
+Ваш ответ: yes
+Верно!
+Поздравляю, Алексей!
+```
 
-`Lwt_stream` --- асинхронные потоки данных с поддержкой конкурентности:
+### Игра 2: brain-calc
+
+Задача: вычислить результат арифметического выражения с операторами `+`, `-`, `*`.
 
 ```ocaml
-(* Создание из push-функции *)
-let stream, push = Lwt_stream.create ()
-(* push : 'a option -> unit *)
-(* Some x --- отправить значение, None --- закрыть поток *)
+let calc_game : game =
+  let ops = [| "+"; "-"; "*" |] in
+  { description = "Вычислите результат выражения.";
+    generate_round = (fun () ->
+      let a = random_int 1 50 in
+      let b = random_int 1 50 in
+      let op = ops.(Random.int 3) in
+      let result = match op with
+        | "+" -> a + b
+        | "-" -> a - b
+        | "*" -> a * b
+        | _ -> assert false
+      in
+      { question = Printf.sprintf "%d %s %d" a op b;
+        correct_answer = string_of_int result })
+  }
+```
+
+Массив `ops` содержит строковые представления операторов. Конструкция `ops.(Random.int 3)` выбирает случайный оператор. `match op with` вычисляет результат. Ветка `| _ -> assert false` нужна для полноты сопоставления --- на практике она недостижима.
+
+### Игра 3: brain-gcd
+
+Задача: найти наибольший общий делитель двух чисел.
+
+```ocaml
+let gcd_game : game =
+  { description = "Найдите наибольший общий делитель.";
+    generate_round = (fun () ->
+      let a = random_int 2 100 in
+      let b = random_int 2 100 in
+      { question = Printf.sprintf "%d %d" a b;
+        correct_answer = string_of_int (gcd a b) })
+  }
+```
+
+Вопрос --- два числа через пробел, ответ --- их НОД. Используем функцию `gcd`, определённую выше.
+
+### Игра 4: brain-progression
+
+Задача: найти пропущенный элемент в арифметической прогрессии.
+
+```ocaml
+let progression_game : game =
+  { description = "Какое число пропущено в прогрессии?";
+    generate_round = (fun () ->
+      let start = random_int 1 50 in
+      let step = random_int 2 10 in
+      let len = 10 in
+      let hidden_idx = Random.int len in
+      let hidden_value = start + hidden_idx * step in
+      let seq = List.init len (fun i ->
+        if i = hidden_idx then ".."
+        else string_of_int (start + i * step))
+      in
+      { question = String.concat " " seq;
+        correct_answer = string_of_int hidden_value })
+  }
+```
+
+`List.init len f` создаёт список длины `len`, где элемент с индексом `i` вычисляется как `f i`. Скрытый элемент заменяется на `".."`. `String.concat " "` объединяет элементы через пробел.
+
+Пример:
+
+```text
+Вопрос: 5 8 11 .. 17 20 23 26 29 32
+Ваш ответ: 14
+Верно!
+```
+
+### Игра 5: brain-prime
+
+Задача: определить, является ли число простым.
+
+```ocaml
+let prime_game : game =
+  { description = "Ответьте 'yes', если число простое, иначе --- 'no'.";
+    generate_round = (fun () ->
+      let n = random_int 2 100 in
+      { question = string_of_int n;
+        correct_answer = if is_prime n then "yes" else "no" })
+  }
+```
+
+Аналогична `even_game`, но вместо проверки на чётность используется `is_prime`.
+
+### Сборка CLI-приложения
+
+Объединим все игры в одно приложение с подкомандами:
+
+```ocaml
+open Cmdliner
+
+let rounds =
+  let doc = "Number of rounds." in
+  Arg.(value & opt int 3 & info ["r"; "rounds"] ~doc ~docv:"N")
+
+let make_cmd name game =
+  let run rounds =
+    Random.self_init ();
+    let ok = Brain_games.run_game name game ~rounds in
+    if not ok then exit 1
+  in
+  let info = Cmd.info (String.lowercase_ascii name) ~doc:game.description in
+  Cmd.v info Term.(const run $ rounds)
 
 let () =
-  push (Some 1);
-  push (Some 2);
-  push (Some 3);
-  push None
+  let doc = "Brain Games --- математические мини-игры" in
+  let info = Cmd.info "brain-games" ~doc ~version:"1.0.0" in
+  let cmds = [
+    make_cmd "Brain Even" Brain_games.even_game;
+    make_cmd "Brain Calc" Brain_games.calc_game;
+    make_cmd "Brain GCD" Brain_games.gcd_game;
+    make_cmd "Brain Progression" Brain_games.progression_game;
+    make_cmd "Brain Prime" Brain_games.prime_game;
+  ] in
+  exit (Cmd.eval (Cmd.group info cmds))
 ```
 
-### Потребление и преобразование
+Функция `make_cmd` --- фабрика: она принимает имя и значение типа `game`, а возвращает `Cmd.t`. Это устраняет дублирование --- без неё пришлось бы писать пять почти одинаковых определений команд.
 
-```ocaml
-open Lwt.Syntax
+Запуск:
 
-let* items = Lwt_stream.to_list stream        (* все элементы *)
-let* sum = Lwt_stream.fold ( + ) stream 0     (* свёртка *)
-let* () = Lwt_stream.iter_s                    (* итерация с Lwt *)
-  (fun x -> Lwt_io.printlf "Элемент: %d" x) stream
+```text
+$ brain-games --help
+NAME
+       brain-games - Brain Games --- математические мини-игры
 
-(* Преобразование *)
-let doubled = Lwt_stream.map (fun x -> x * 2) stream
-let evens = Lwt_stream.filter (fun x -> x mod 2 = 0) stream
+COMMANDS
+       brain-calc
+           Вычислите результат выражения.
+       brain-even
+           Ответьте 'yes', если число чётное, иначе --- 'no'.
+       brain-gcd
+           Найдите наибольший общий делитель.
+       brain-prime
+           Ответьте 'yes', если число простое, иначе --- 'no'.
+       brain-progression
+           Какое число пропущено в прогрессии?
+
+$ brain-games brain-even -r 5
 ```
 
-### Паттерн Producer-Consumer
+## Конвертеры аргументов
+
+Cmdliner поддерживает собственные конвертеры типов для аргументов. Встроенные конвертеры --- `string`, `int`, `float`, `bool`, `file`. Можно создать свой:
 
 ```ocaml
-let producer_consumer () =
-  let open Lwt.Syntax in
-  let stream, push = Lwt_stream.create () in
-  let producer =
-    let* () = Lwt_list.iter_s (fun i ->
-      let* () = Lwt_unix.sleep 0.1 in
-      push (Some i); Lwt.return ()
-    ) [1; 2; 3; 4; 5] in
-    push None; Lwt.return ()
+let difficulty_conv =
+  let parse s = match String.lowercase_ascii s with
+    | "easy" -> Ok 3
+    | "medium" -> Ok 5
+    | "hard" -> Ok 10
+    | _ -> Error (`Msg (Printf.sprintf "unknown difficulty: %s" s))
   in
-  let consumer = Lwt_stream.fold ( + ) stream 0 in
-  let* ((), sum) = Lwt.both producer consumer in
-  Lwt_io.printlf "Сумма: %d" sum
+  let pp fmt n = Format.fprintf fmt "%d rounds" n in
+  Arg.conv (parse, pp)
+
+let rounds =
+  let doc = "Difficulty level: easy, medium, hard." in
+  Arg.(value & opt difficulty_conv 3 & info ["d"; "difficulty"] ~doc ~docv:"LEVEL")
 ```
 
-## Сравнение Eio и Lwt
+`Arg.conv (parse, pp)` создаёт конвертер из пары функций:
+- `parse : string -> ('a, [`Msg of string]) result` --- парсинг строки.
+- `pp : Format.formatter -> 'a -> unit` --- отображение значения (для справки).
 
-### Таблица различий
+Теперь пользователь может писать `--difficulty easy` вместо `--rounds 3`.
 
-| Аспект | Eio | Lwt |
-|--------|-----|-----|
-| Стиль | Прямой (direct-style) | Монадический (promise) |
-| Синтаксис | Обычный OCaml-код | `let*`, `>>=`, `>|=` |
-| Конкурентность | `Fiber.both`, `Fiber.all` | `Lwt.both`, `Lwt.all` |
-| Отмена | Структурированная (Switch) | `Lwt.cancel` (неструктурированная) |
-| Параллелизм | Домены (многоядерность) | Нет (один поток) |
-| Производительность | Выше (без аллокаций промисов) | Ниже (каждая операция аллоцирует) |
-| Экосистема | Растущая | Зрелая (Dream, Cohttp, Irmin) |
+## Обработка ошибок в Cmdliner
 
-### Код бок о бок
-
-Конкурентное чтение двух файлов:
+Cmdliner различает несколько типов ошибок:
 
 ```ocaml
-(* === Eio === *)
-let read_both_eio env =
-  let fs = Eio.Stdenv.fs env in
-  let (a, b) = Eio.Fiber.pair
-    (fun () -> Eio.Path.(load (fs / "a.txt")))
-    (fun () -> Eio.Path.(load (fs / "b.txt")))
-  in
-  a ^ "\n" ^ b
+(* Cmd.eval возвращает int --- код выхода:
+   0 --- успех
+   124 --- ошибка командной строки (неверные аргументы)
+   125 --- внутренняя ошибка
+   По конвенции, 1 --- ошибка приложения *)
 
-(* === Lwt === *)
-let read_both_lwt () =
-  let open Lwt.Syntax in
-  let read p = Lwt_io.with_file ~mode:Input p Lwt_io.read in
-  let* (a, b) = Lwt.both (read "a.txt") (read "b.txt") in
-  Lwt.return (a ^ "\n" ^ b)
+let run rounds name =
+  if rounds <= 0 then (
+    Printf.eprintf "Error: rounds must be positive\n";
+    1)  (* код выхода 1 --- ошибка приложения *)
+  else (
+    Printf.printf "Playing %d rounds with %s\n" rounds name;
+    0)  (* код выхода 0 --- успех *)
+
+let cmd =
+  let info = Cmd.info "game" in
+  Cmd.v info Term.(const run $ rounds $ name)
+
+let () = exit (Cmd.eval cmd)
 ```
 
-В Eio код выглядит как обычный синхронный, а в Lwt каждая операция обёрнута в промис.
+Для ошибок валидации аргументов (до запуска основной функции) Cmdliner автоматически выводит сообщение и возвращает код 124. Для ошибок приложения (внутри основной функции) используйте ненулевой код выхода.
 
-### Когда что выбирать
+## Сравнение с Haskell
 
-Используйте **Lwt**, когда работаете с Dream, Cohttp или существующей Lwt-кодовой базой, либо нужна поддержка OCaml < 5.
+В Haskell для построения CLI используется библиотека **optparse-applicative**. Оба подхода основаны на аппликативном стиле, но есть различия:
 
-Используйте **Eio**, когда начинаете новый проект на OCaml 5+, нужен параллелизм или структурированная конкурентность.
+| Аспект | OCaml (Cmdliner) | Haskell (optparse-applicative) |
+|--------|-------------------|-------------------------------|
+| Стиль определения | Термы и аргументы: `Term.(const f $ a $ b)` | Аппликативные парсеры: `f <$> a <*> b` |
+| Подкоманды | `Cmd.group info [cmd1; cmd2]` | `subparser (command "name" info)` |
+| Позиционные аргументы | `Arg.(pos 0 string "")` | `argument str (metavar "NAME")` |
+| Опции | `Arg.(opt int 3 & info ["r"])` | `option auto (long "rounds" <> value 3)` |
+| Автокомплит | Встроен (bash/zsh/fish) | Через `completer` |
+| Генерация man pages | Встроена | Через `optparse-applicative` |
+| Типобезопасность | Полная --- типы выводятся из аргументов | Полная --- типы выводятся из парсера |
+| Мутация состояния | Через `ref` или аргументы | Через `IO` |
 
-Библиотека `lwt_eio` позволяет запускать Lwt-промисы внутри Eio и наоборот, упрощая постепенную миграцию.
+Общий паттерн одинаков: **определить чистую функцию, описать аргументы декларативно, связать их аппликативным стилем**. Разница --- в синтаксисе и именах комбинаторов.
 
-## Проект: конкурентный обработчик
+В Haskell:
 
-Модуль `lib/concurrent_processor.ml` демонстрирует конкурентную обработку задач с ограничением параллелизма:
+```haskell
+greet :: Bool -> Int -> String -> IO ()
+greet verbose rounds name = ...
+
+opts :: Parser (IO ())
+opts = greet
+  <$> switch (long "verbose" <> short 'v' <> help "Verbose output")
+  <*> option auto (long "rounds" <> short 'r' <> value 3 <> help "Rounds")
+  <*> argument str (metavar "NAME")
+```
+
+В OCaml:
 
 ```ocaml
-let process_with_limit ~max_concurrent tasks =
-  let open Lwt.Syntax in
-  let sem = Lwt_mutex.create () in
-  let count = ref 0 in
-  let wait_slot () =
-    let rec try_acquire () =
-      if !count < max_concurrent then begin
-        incr count; Lwt.return ()
-      end else
-        Lwt.pause () >>= fun () -> try_acquire ()
-    in
-    Lwt_mutex.with_lock sem try_acquire
-  in
-  let release_slot () =
-    Lwt_mutex.with_lock sem (fun () -> decr count; Lwt.return ())
-  in
-  Lwt_list.map_p (fun task ->
-    let* () = wait_slot () in
-    Lwt.finalize (fun () -> task ()) release_slot
-  ) tasks
+let greet verbose rounds name = ...
+
+let cmd =
+  Cmd.v info Term.(const greet $ verbose $ rounds $ name)
 ```
 
-Этот паттерн используется для ограничения числа одновременных HTTP-запросов, обращений к базе данных или файловых операций.
+Структура идентична: `const/pure` оборачивает функцию, `$/<*>` применяет аргументы.
 
-## Продвинутые паттерны Lwt
+## Структура проекта упражнений
 
-Рассмотрим несколько продвинутых паттернов, которые часто встречаются в реальных Lwt-приложениях.
+Откройте директорию `exercises/chapter17`:
 
-### `Lwt_switch` --- управление ресурсами
-
-`Lwt_switch` предоставляет RAII-подобный механизм для автоматического освобождения ресурсов при выходе из scope:
-
-```ocaml
-let with_resource () =
-  Lwt_switch.with_switch @@ fun switch ->
-  let* conn = connect ~switch uri in
-  (* conn автоматически закрывается при выходе из scope *)
-  use conn
+```text
+chapter17/
+├── dune-project
+├── lib/
+│   ├── dune
+│   └── brain_games.ml         <- типы, движок, 5 игр, вспомогательные функции
+├── test/
+│   ├── dune
+│   ├── test_chapter17.ml      <- тесты
+│   └── my_solutions.ml        <- ваши решения
+└── no-peeking/
+    └── solutions.ml            <- эталонные решения
 ```
 
-При создании ресурса (соединения, файла, подписки) вы регистрируете его в `switch`. Когда `Lwt_switch.with_switch` завершается (нормально или с ошибкой), все зарегистрированные ресурсы освобождаются в обратном порядке.
-
-### TCP client/server
-
-Lwt предоставляет модуль `Lwt_io` для работы с TCP-соединениями. Вот пример TCP-клиента:
-
-```ocaml
-(* TCP-клиент *)
-let tcp_client host port =
-  let open Lwt.Syntax in
-  let addr = Unix.(ADDR_INET (inet_addr_of_string host, port)) in
-  Lwt_io.with_connection addr (fun (ic, oc) ->
-    let* () = Lwt_io.write_line oc "Hello" in
-    Lwt_io.read_line ic)
-```
-
-`Lwt_io.with_connection` устанавливает TCP-соединение и передаёт пару каналов `(ic, oc)` --- input channel и output channel. Соединение автоматически закрывается при выходе.
-
-### Timeout через `Lwt.pick` (race pattern)
-
-Распространённый паттерн --- ограничение времени выполнения операции:
-
-```ocaml
-let with_timeout seconds task =
-  Lwt.pick [
-    task;
-    (let* () = Lwt_unix.sleep seconds in
-     Lwt.fail_with "timeout");
-  ]
-```
-
-`Lwt.pick` запускает оба промиса конкурентно. Если `task` завершается первой --- возвращает её результат. Если первым завершается таймер --- бросает исключение `Failure "timeout"`, а `task` отменяется.
-
-### Never-promise
-
-Промис, который никогда не разрешится:
-
-```ocaml
-let never : _ Lwt.t = fst (Lwt.wait ())
-(* Полезно для серверов: Lwt_main.run never *)
-```
-
-`Lwt.wait ()` возвращает пару `(promise, resolver)`. Если не использовать `resolver`, промис остаётся в состоянии `pending` навсегда. Это полезно для серверов, которые должны работать бесконечно: `Lwt_main.run never` запускает event loop и никогда не возвращается.
-
-### Direct-style (Lwt 6+ с OCaml 5)
-
-С появлением OCaml 5 и effect handlers, Lwt движется к прямому стилю. В экспериментальных версиях Lwt 6 появляется поддержка `spawn`/`await`:
-
-```ocaml
-(* Будущее Lwt: direct-style через spawn/await *)
-(* spawn @@ fun () ->
-     let line = await @@ Lwt_io.read_line Lwt_io.stdin in
-     await @@ Lwt_io.write_line Lwt_io.stdout line *)
-```
-
-Пока что это экспериментальная фича в Lwt 6. Для нового кода без привязки к Lwt-экосистеме лучше использовать Eio (глава 9). Но для постепенной миграции существующих Lwt-проектов direct-style API может стать мостом между двумя мирами.
+Библиотека `lib/brain_games.ml` содержит типы `round` и `game`, функцию `run_game`, вспомогательные функции (`random_int`, `gcd`, `is_prime`) и все пять игр. Тесты проверяют как библиотечный код, так и ваши решения упражнений.
 
 ## Упражнения
 
-Решения пишите в `test/my_solutions.ml`. Проверяйте: `dune runtest`.
+Решения пишите в файле `test/my_solutions.ml`. После каждого упражнения запускайте `dune runtest`, чтобы проверить ответ.
 
-Все упражнения работают внутри `Lwt_main.run`. Тесты оборачивают ваши функции в Lwt-окружение.
-
-1. **(Лёгкое)** Реализуйте функцию `sequential_map`, которая применяет асинхронную функцию к каждому элементу списка **последовательно** и возвращает список результатов.
+1. **(Лёгкое)** Реализуйте игру `balance_game` --- "угадай оператор". Даётся выражение вида `a ? b = c`, где `?` --- неизвестный оператор (`+`, `-` или `*`). Игрок должен угадать оператор.
 
     ```ocaml
-    val sequential_map : ('a -> 'b Lwt.t) -> 'a list -> 'b list Lwt.t
+    val balance_game : game
     ```
 
-    *Подсказка:* используйте `List.fold_left` с `Lwt.bind`, накапливая результаты в обратном порядке, а затем `List.rev`.
+    Генерация раунда: выберите случайные `a` и `b`, случайный оператор, вычислите `c`. Вопрос --- строка `"a ? b = c"`, ответ --- строка оператора (`"+"`, `"-"` или `"*"`).
 
-2. **(Среднее)** Реализуйте функцию `concurrent_map`, которая применяет асинхронную функцию к каждому элементу списка **конкурентно** и возвращает список результатов в том же порядке.
+    *Подсказка:* храните операторы в массиве пар `(string * (int -> int -> int))`, чтобы связать строковое представление с функцией вычисления.
+
+2. **(Среднее)** Реализуйте функцию `run_game_result` --- **чистую** версию игрового цикла, которая не использует ввод-вывод.
 
     ```ocaml
-    val concurrent_map : ('a -> 'b Lwt.t) -> 'a list -> 'b list Lwt.t
+    val run_game_result : game -> rounds:int -> string list -> bool
     ```
 
-    *Подсказка:* используйте `List.map` для создания списка промисов, а затем `Lwt.all`.
+    Вместо `read_line` функция принимает список ответов. Если ответов не хватает --- это поражение. Если все ответы верные --- победа. Если хотя бы один неверный --- поражение.
 
-3. **(Среднее)** Реализуйте функцию `timeout`, которая оборачивает промис таймаутом. Если промис не завершается за указанное время --- возвращает `None`.
+    *Подсказка:* используйте рекурсию по списку ответов и счётчику раундов.
+
+3. **(Среднее)** Реализуйте обобщённый конструктор `make_game`, который создаёт значение типа `game` из описания и функции-генератора.
 
     ```ocaml
-    val timeout : float -> 'a Lwt.t -> 'a option Lwt.t
+    val make_game : description:string -> generate:(unit -> string * string) -> game
     ```
 
-    *Подсказка:* используйте `Lwt.pick` с двумя промисами --- основным и таймером.
+    Функция `generate` возвращает пару `(question, correct_answer)`. `make_game` оборачивает её в запись `game`.
 
-4. **(Сложное)** Реализуйте функцию `rate_limit`, которая запускает список асинхронных задач, но не более `n` одновременно. Когда одна задача завершается --- запускается следующая.
+    *Подсказка:* это простая функция-адаптер. Создайте запись `{ description; generate_round }`, где `generate_round` вызывает `generate` и конструирует `round`.
+
+4. **(Сложное)** Реализуйте игру `factor_game` --- "разложи на множители". Даётся число, игрок должен ввести его разложение на простые множители через пробел (в порядке возрастания).
 
     ```ocaml
-    val rate_limit : int -> (unit -> 'a Lwt.t) list -> 'a list Lwt.t
+    val factor_game : game
     ```
 
-    *Подсказка:* реализуйте семафор через `Lwt_mutex` и счётчик. Запустите все задачи через `Lwt_list.map_p`, но каждая ожидает свободного слота перед выполнением.
+    Пример:
+
+    ```text
+    Вопрос: 60
+    Ваш ответ: 2 2 3 5
+    Верно!
+    ```
+
+    Генерация: выберите случайное число от 4 до 100. Разложите его на простые множители. Вопрос --- число, ответ --- множители через пробел.
+
+    *Подсказка:* напишите рекурсивную функцию `factorize n d`, которая делит `n` на `d`, пока делится, затем увеличивает `d`.
 
 ## Заключение
 
 В этой главе мы:
 
-- Изучили промисы `'a Lwt.t` --- основу конкурентности в Lwt.
-- Освоили монадический стиль: `>>=`, `>|=`, `let*`, `let+`, `and*`.
-- Познакомились с конкурентными примитивами: `Lwt.both`, `Lwt.all`, `Lwt.pick`, `Lwt.choose`.
-- Научились работать с асинхронным I/O через `Lwt_io`, `Lwt_unix` и `Lwt_stream`.
-- Детально сравнили Eio и Lwt --- их сильные стороны и области применения.
+- Познакомились с библиотекой Cmdliner и её аппликативным подходом к определению CLI.
+- Изучили три ключевых понятия: `Arg` (аргументы), `Term` (термы), `Cmd` (команды).
+- Научились создавать позиционные аргументы, флаги, опции со значениями и подкоманды.
+- Реализовали модульную архитектуру игры с типами `round` и `game`.
+- Построили проект Brain Games с пятью мини-играми: brain-even, brain-calc, brain-gcd, brain-progression, brain-prime.
+- Научились работать с интерактивным вводом через `read_line`.
+- Сравнили подходы OCaml (Cmdliner) и Haskell (optparse-applicative).
 
-Lwt --- зрелая и проверенная библиотека, на которой построена значительная часть OCaml-экосистемы. Понимание Lwt открывает доступ к Dream, Cohttp и десяткам других библиотек.
-
-В следующей главе мы используем Lwt на практике, построив веб-сервер с Dream.
+Главный урок этой главы --- **декларативное описание интерфейса**. Вместо ручного разбора аргументов мы описываем **что** программа принимает, а библиотека берёт на себя парсинг, валидацию и генерацию справки. Тот же принцип --- отделение описания от реализации --- мы видели в парсер-комбинаторах (глава 14) и модульных сигнатурах (глава 6). Это сквозная тема функционального программирования: **описывай что, а не как**.

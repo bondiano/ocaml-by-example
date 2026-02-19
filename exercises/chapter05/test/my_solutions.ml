@@ -39,6 +39,14 @@ let hamming_distance (_s1 : string) (_s2 : string) : (int, string) result = fail
 let rle_encode (_s : string) : string = failwith "todo"
 let rle_decode (_s : string) : string = failwith "todo"
 
+(** Упражнение: Traverse option *)
+let traverse_option (_f : 'a -> 'b option) (_lst : 'a list) : 'b list option =
+  failwith "todo"
+
+(** Упражнение: Traverse result *)
+let traverse_result (_f : 'a -> ('b, 'e) result) (_lst : 'a list) : ('b list, 'e) result =
+  failwith "todo"
+
 (** Упражнение: List Ops — реализуйте операции над списками без List.*. *)
 module List_ops = struct
   let length (_lst : 'a list) : int = failwith "todo"

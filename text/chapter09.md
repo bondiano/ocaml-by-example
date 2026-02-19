@@ -1,411 +1,942 @@
-# Конкурентность с Eio
+# Проектирование через типы
 
 ## Цели главы
 
-В этой главе мы изучим конкурентное и параллельное программирование в OCaml 5 с использованием библиотеки **Eio** --- прямой стиль (direct-style) вместо промисов и колбэков:
+В этой главе мы изучим ключевые паттерны **проектирования через типы** (type-driven design) --- подход, при котором система типов используется не только для проверки корректности, но и для **предотвращения** некорректных состояний на уровне компиляции:
 
-- **Домены** (domains) --- настоящий параллелизм на нескольких ядрах.
-- **Файберы** (fibers) --- легковесная конкурентность внутри домена.
-- **Eio** --- библиотека прямого стиля для конкурентного ввода-вывода.
-- **Структурированная конкурентность** --- все задачи завершаются до выхода из scope.
-- **Каналы** (`Eio.Stream`) --- безопасная коммуникация между файберами.
-- **Таймауты** и отмена операций.
-- Сравнение с Lwt и Async.
+- **Smart Constructors** (умные конструкторы) --- ограничение конструирования значений через валидацию.
+- **Make Illegal States Unrepresentable** --- кодирование допустимых состояний в типах.
+- **Parse, Don't Validate** --- парсинг как способ получить типизированную информацию.
+- **Phantom types** --- типы-метки для статической проверки протоколов.
+- Проект: типобезопасная платёжная система.
+
+Если вы знакомы с Haskell, многие из этих идей покажутся знакомыми --- `newtype` + smart constructors, Data.Refined, phantom types. В OCaml инструментарий другой (модули, `.mli`, `private`), но принципы те же.
 
 ## Подготовка проекта
 
-Код этой главы находится в `exercises/chapter09`. Этой главе нужны дополнительные библиотеки:
+Код этой главы находится в `exercises/chapter09`. Соберите проект:
 
 ```text
-$ opam install eio eio_main
 $ cd exercises/chapter09
 $ dune build
 ```
 
-## OCaml 5 и многоядерность
+## Smart Constructors (Умные конструкторы)
 
-OCaml 5 --- историческое обновление языка, добавившее поддержку параллелизма. До OCaml 5 существовал глобальный мьютекс (GIL), не позволявший выполнять OCaml-код на нескольких ядрах одновременно.
+### Проблема: неограниченное конструирование
 
-OCaml 5 предлагает два уровня конкурентности:
-
-1. **Домены** (domains) --- потоки уровня ОС для настоящего параллелизма.
-2. **Effect handlers** --- механизм для реализации легковесной конкурентности (файберов).
-
-## Домены
-
-Домен (domain) --- единица параллелизма. Каждый домен выполняется на отдельном ядре процессора:
+Предположим, мы моделируем денежную сумму:
 
 ```ocaml
-let () =
-  let d = Domain.spawn (fun () ->
-    Printf.printf "Домен: %d\n" (Domain.self () :> int)
-  ) in
-  Printf.printf "Основной домен\n";
-  Domain.join d
+type money = float
 ```
 
-`Domain.spawn f` запускает функцию `f` в новом домене. `Domain.join d` ожидает завершения домена и возвращает результат.
-
-### Параллельное вычисление
+Ничто не мешает создать отрицательную сумму:
 
 ```ocaml
-let parallel_sum arr =
-  let n = Array.length arr in
-  let mid = n / 2 in
-  let d = Domain.spawn (fun () ->
-    let sum = ref 0 in
-    for i = 0 to mid - 1 do sum := !sum + arr.(i) done;
-    !sum
-  ) in
-  let sum2 = ref 0 in
-  for i = mid to n - 1 do sum2 := !sum2 + arr.(i) done;
-  Domain.join d + !sum2
+let price : money = -42.0   (* компилируется без ошибок! *)
 ```
 
-Массив делится пополам, каждая половина суммируется в своём домене параллельно.
-
-### Ограничения доменов
-
-- Доменов должно быть **мало** (по числу ядер). Создание домена --- дорогая операция.
-- Для тысяч конкурентных задач используйте **файберы**.
-
-## Eio: конкурентность прямого стиля
-
-**Eio** --- библиотека для конкурентного ввода-вывода, использующая effect handlers OCaml 5. Её главное преимущество --- **прямой стиль**: код выглядит как обычный последовательный, без промисов, монад или колбэков.
-
-### Сравнение подходов
+Или email:
 
 ```ocaml
-(* Lwt (промисы, старый стиль) *)
-let fetch_lwt url =
-  let open Lwt.Syntax in
-  let* response = Http.get url in
-  let* body = Http.read_body response in
-  Lwt.return (String.length body)
+type email = string
 
-(* Eio (прямой стиль, новый стиль) *)
-let fetch_eio url =
-  let response = Http.get url in
-  let body = Http.read_body response in
-  String.length body
+let bad_email : email = "не-email"   (* тоже компилируется *)
 ```
 
-В Eio нет `let*`, `>>=`, `Lwt.return` --- код читается как обычный последовательный код, но при этом файберы корректно переключаются при ожидании I/O.
+Тип `string` не несёт информации о том, что значение прошло валидацию. Вызывающий код не знает, можно ли доверять этому значению.
 
-### Запуск Eio
+В Haskell аналогичная проблема решается через `newtype` + модуль с ограниченным экспортом:
 
-Любая Eio-программа начинается с `Eio_main.run`:
+```haskell
+-- Haskell
+module Email (Email, mkEmail, unEmail) where
 
-```ocaml
-let () =
-  Eio_main.run @@ fun env ->
-  let stdout = Eio.Stdenv.stdout env in
-  Eio.Flow.copy_string "Привет, Eio!\n" stdout
+newtype Email = Email String
+
+mkEmail :: String -> Maybe Email
+mkEmail s
+  | '@' `elem` s = Just (Email s)
+  | otherwise     = Nothing
+
+unEmail :: Email -> String
+unEmail (Email s) = s
 ```
 
-`Eio_main.run` инициализирует event loop и передаёт `env` --- окружение с доступом к файловой системе, сети, стандартному вводу-выводу и часам.
+В OCaml мы используем **модули** и **абстрактные типы**.
 
-### Окружение `env`
+### Решение: абстрактный тип + конструктор-валидатор
 
-| Функция | Описание |
-|---------|----------|
-| `Eio.Stdenv.stdout env` | Стандартный вывод |
-| `Eio.Stdenv.stdin env` | Стандартный ввод |
-| `Eio.Stdenv.stderr env` | Стандартный вывод ошибок |
-| `Eio.Stdenv.clock env` | Часы (для таймаутов и sleep) |
-| `Eio.Stdenv.fs env` | Файловая система |
-| `Eio.Stdenv.net env` | Сетевой стек |
-
-Передача `env` через аргументы вместо глобальных функций --- это **dependency injection**: тесты могут подставить моковое окружение.
-
-## Файберы
-
-Файбер (fiber) --- легковесный «зелёный поток», работающий внутри домена. В отличие от доменов, файберы дёшевы --- можно запустить тысячи.
-
-### `Eio.Fiber.both`
-
-`Eio.Fiber.both` запускает две функции конкурентно и ждёт завершения обеих:
+Идея: спрятать внутреннее представление типа и предоставить единственный способ создания значения --- через функцию-валидатор.
 
 ```ocaml
-let () =
-  Eio_main.run @@ fun _env ->
-  Eio.Fiber.both
-    (fun () -> traceln "Файбер A: начал"; traceln "Файбер A: закончил")
-    (fun () -> traceln "Файбер B: начал"; traceln "Файбер B: закончил")
-```
+module Email : sig
+  type t
+  val make : string -> (t, string) result
+  val to_string : t -> string
+end = struct
+  type t = string
 
-`traceln` --- отладочный вывод Eio (потокобезопасный, в отличие от `Printf.printf`).
+  let make s =
+    if String.contains s '@' then Ok s
+    else Error "email должен содержать @"
 
-### `Eio.Fiber.all` и `Eio.Fiber.any`
-
-```ocaml
-(* Запустить все задачи конкурентно, дождаться завершения всех *)
-Eio.Fiber.all [
-  (fun () -> task1 ());
-  (fun () -> task2 ());
-  (fun () -> task3 ());
-]
-
-(* Запустить все, вернуть результат первой завершившейся *)
-Eio.Fiber.any [
-  (fun () -> task1 ());
-  (fun () -> task2 ());
-]
-```
-
-`Fiber.all` ждёт **все** задачи. `Fiber.any` возвращает результат **первой** завершившейся и отменяет остальные.
-
-### `Eio.Fiber.fork`
-
-Для запуска файбера в фоне используется `Fiber.fork` внутри `Switch`:
-
-```ocaml
-let () =
-  Eio_main.run @@ fun _env ->
-  Eio.Switch.run @@ fun sw ->
-  Eio.Fiber.fork ~sw (fun () ->
-    traceln "Фоновый файбер"
-  );
-  traceln "Основной файбер"
-```
-
-## Структурированная конкурентность
-
-**Switch** --- ключевая абстракция Eio для управления временем жизни файберов:
-
-```ocaml
-Eio.Switch.run @@ fun sw ->
-  Eio.Fiber.fork ~sw (fun () -> task1 ());
-  Eio.Fiber.fork ~sw (fun () -> task2 ());
-  (* Switch.run не вернётся, пока оба файбера не завершатся *)
-```
-
-Правила:
-
-1. Все файберы, созданные внутри `Switch.run`, **должны завершиться** до выхода.
-2. Если один файбер бросает исключение --- остальные **отменяются**.
-3. Нельзя «забыть» файбер --- нет утечек горутин/промисов.
-
-Это называется **структурированная конкурентность** --- время жизни конкурентных задач привязано к лексической области видимости.
-
-## Каналы: `Eio.Stream`
-
-`Eio.Stream` --- потокобезопасная очередь для коммуникации между файберами:
-
-```ocaml
-let () =
-  Eio_main.run @@ fun _env ->
-  let stream = Eio.Stream.create 10 in  (* буфер на 10 элементов *)
-  Eio.Fiber.both
-    (fun () ->
-      for i = 1 to 5 do
-        Eio.Stream.add stream i;
-        traceln "Отправил: %d" i
-      done)
-    (fun () ->
-      for _ = 1 to 5 do
-        let v = Eio.Stream.take stream in
-        traceln "Получил: %d" v
-      done)
-```
-
-- `Eio.Stream.create n` --- создать канал с буфером размера `n`. Если `n = 0` --- синхронный канал (отправитель блокируется до получения).
-- `Eio.Stream.add stream v` --- отправить значение (блокируется, если буфер полон).
-- `Eio.Stream.take stream` --- получить значение (блокируется, если буфер пуст).
-
-### Паттерн Producer-Consumer
-
-```ocaml
-let producer stream n =
-  for i = 1 to n do
-    Eio.Stream.add stream (Some i)
-  done;
-  Eio.Stream.add stream None  (* сигнал завершения *)
-
-let consumer stream =
-  let rec loop acc =
-    match Eio.Stream.take stream with
-    | None -> List.rev acc
-    | Some v -> loop (v :: acc)
-  in
-  loop []
-```
-
-## Таймауты и отмена
-
-### `Eio.Time.sleep`
-
-```ocaml
-let () =
-  Eio_main.run @@ fun env ->
-  let clock = Eio.Stdenv.clock env in
-  traceln "Начало";
-  Eio.Time.sleep clock 1.0;
-  traceln "Прошла 1 секунда"
-```
-
-### Таймаут с `Fiber.any`
-
-```ocaml
-let with_timeout clock seconds f =
-  Eio.Fiber.any [
-    (fun () -> Some (f ()));
-    (fun () -> Eio.Time.sleep clock seconds; None);
-  ]
-```
-
-Если `f` завершается за `seconds` секунд --- возвращает `Some result`. Иначе --- `None`, а `f` отменяется.
-
-## Сравнение Eio с Lwt и Async
-
-| Аспект | Lwt | Async | Eio |
-|--------|-----|-------|-----|
-| Стиль | Монадический (`>>=`) | Монадический (`>>=`) | Прямой |
-| Параллелизм | Нет (1 ядро) | Нет (1 ядро) | Да (домены) |
-| Механизм | Промисы | Deferred | Effect handlers |
-| Структурированность | Нет | Нет | Да (Switch) |
-| Зрелость | Высокая | Высокая | Растущая |
-
-Eio --- будущее конкурентности в OCaml. Lwt и Async остаются для обратной совместимости.
-
-## Проект: конкурентные вычисления
-
-Модуль `lib/concurrent.ml` демонстрирует базовые паттерны конкурентности с Eio.
-
-### Параллельный map
-
-```ocaml
-let parallel_map f lst =
-  Eio.Fiber.List.map f lst
-```
-
-`Eio.Fiber.List.map` выполняет `f` для каждого элемента конкурентно (в отдельных файберах) и собирает результаты в том же порядке.
-
-### Параллельная свёртка
-
-```ocaml
-let parallel_sum lst =
-  let results = Eio.Fiber.List.map (fun x -> x) lst in
-  List.fold_left ( + ) 0 results
-```
-
-## Buf_read и сетевое взаимодействие
-
-До сих пор мы работали с файберами, каналами и таймаутами. Но Eio также предоставляет удобные средства для **буферизованного чтения** данных из потоков и **сетевого взаимодействия**.
-
-### Buf_read --- буферизованное чтение
-
-`Eio.Buf_read` оборачивает поток (`flow`) в буфер и позволяет читать данные построчно, побайтово или по произвольным разделителям. Это аналог `Buffered_reader` в других языках:
-
-```ocaml
-let read_http_status flow =
-  let buf = Eio.Buf_read.of_flow flow ~max_size:4096 in
-  let status_line = Eio.Buf_read.line buf in
-  status_line
-```
-
-`Eio.Buf_read.of_flow flow ~max_size:n` создаёт буферизованный читатель с ограничением буфера в `n` байт. `Eio.Buf_read.line buf` читает одну строку (до `\n`).
-
-Основные функции `Buf_read`:
-
-| Функция | Описание |
-|---------|----------|
-| `Eio.Buf_read.line buf` | Прочитать строку до `\n` |
-| `Eio.Buf_read.take n buf` | Прочитать ровно `n` байт |
-| `Eio.Buf_read.at_end_of_input buf` | Проверить, достигнут ли конец потока |
-| `Eio.Buf_read.any_char buf` | Прочитать один символ |
-
-### Custom-парсеры для бинарных протоколов
-
-`Buf_read` позволяет создавать собственные комбинаторы для чтения бинарных данных. Например, целые числа разной ширины:
-
-```ocaml
-module R = struct
-  include Eio.Buf_read
-  let int8 = map (Fun.flip String.get_int8 0) (take 1)
-  let int16_be = map (Fun.flip String.get_int16_be 0) (take 2)
+  let to_string t = t
 end
 ```
 
-Здесь `take n` читает `n` байт как строку, а `map f parser` применяет функцию `f` к результату парсера. Такой подход удобен для реализации бинарных протоколов (например, чтение заголовков пакетов).
+Теперь единственный способ получить значение типа `Email.t` --- вызвать `Email.make`, который проверяет формат:
 
-### Networking --- сетевое взаимодействие
+```text
+# Email.make "user@example.com";;
+- : (Email.t, string) result = Ok <abstr>
 
-Eio предоставляет модуль `Eio.Net` для работы с TCP/UDP. Сетевой стек доступен через `Eio.Stdenv.net env`.
+# Email.make "invalid";;
+- : (Email.t, string) result = Error "email должен содержать @"
 
-#### TCP-клиент
-
-```ocaml
-let tcp_client ~net ~host ~port =
-  let addr = `Tcp (Eio.Net.Ipaddr.V4.loopback, port) in
-  Eio.Net.connect net addr |> fun flow ->
-  let buf = Eio.Buf_read.of_flow flow ~max_size:4096 in
-  Eio.Flow.copy_string "GET / HTTP/1.0\r\n\r\n" flow;
-  Eio.Buf_read.line buf
+# Email.to_string (Result.get_ok (Email.make "user@example.com"));;
+- : string = "user@example.com"
 ```
 
-Разберём по шагам:
+Ключевой момент: тип `Email.t` **абстрактный** --- снаружи модуля невозможно создать его напрямую, обойдя валидацию. Компилятор гарантирует, что если у вас есть значение типа `Email.t`, оно прошло проверку.
 
-1. `Eio.Net.connect net addr` --- устанавливает TCP-соединение и возвращает `flow`.
-2. `Eio.Flow.copy_string ... flow` --- отправляет данные в поток.
-3. `Eio.Buf_read.of_flow flow` --- оборачивает поток для буферизованного чтения.
-4. `Eio.Buf_read.line buf` --- читает строку ответа.
+### Примеры: Email, Money, NonEmptyList, PositiveInt
 
-#### Адреса
+**Money --- положительная денежная сумма:**
 
-Eio поддерживает несколько видов адресов:
+```ocaml
+module Money : sig
+  type t
+  val make : float -> (t, string) result
+  val amount : t -> float
+  val add : t -> t -> t
+  val to_string : t -> string
+end = struct
+  type t = float
 
-- `` `Tcp (ip, port) `` --- TCP-соединение.
-- `Eio.Net.Ipaddr.V4.loopback` --- `127.0.0.1`.
-- `Eio.Net.Ipaddr.V6.loopback` --- `::1`.
+  let make f =
+    if f > 0.0 then Ok f
+    else Error "сумма должна быть положительной"
 
-Обратите внимание: `net` передаётся как аргумент (dependency injection), что позволяет подставить мок-сеть в тестах.
+  let amount t = t
+  let add a b = a +. b
+
+  let to_string t =
+    Printf.sprintf "%.2f" t
+end
+```
+
+```text
+# Money.make 100.0;;
+- : (Money.t, string) result = Ok <abstr>
+
+# Money.make (-5.0);;
+- : (Money.t, string) result = Error "сумма должна быть положительной"
+
+# let m1 = Result.get_ok (Money.make 100.0);;
+# let m2 = Result.get_ok (Money.make 50.0);;
+# Money.to_string (Money.add m1 m2);;
+- : string = "150.00"
+```
+
+**NonEmptyList --- список, который гарантированно не пуст:**
+
+```ocaml
+module NonEmptyList : sig
+  type 'a t
+  val make : 'a list -> ('a t, string) result
+  val of_pair : 'a -> 'a list -> 'a t
+  val head : 'a t -> 'a          (* никогда не падает *)
+  val tail : 'a t -> 'a list
+  val to_list : 'a t -> 'a list
+end = struct
+  type 'a t = 'a * 'a list
+
+  let make = function
+    | [] -> Error "список не может быть пустым"
+    | x :: xs -> Ok (x, xs)
+
+  let of_pair x xs = (x, xs)
+  let head (x, _) = x
+  let tail (_, xs) = xs
+  let to_list (x, xs) = x :: xs
+end
+```
+
+Обратите внимание: `head` и `tail` **не могут** завершиться ошибкой. Тип `'a t` гарантирует, что в списке есть хотя бы один элемент. Это пример того, как тип кодирует инварианты данных.
+
+**PositiveInt --- строго положительное целое число:**
+
+```ocaml
+module PositiveInt : sig
+  type t
+  val make : int -> (t, string) result
+  val value : t -> int
+  val add : t -> t -> t
+end = struct
+  type t = int
+
+  let make n =
+    if n > 0 then Ok n
+    else Error "число должно быть положительным"
+
+  let value t = t
+  let add a b = a + b
+end
+```
+
+### `.mli` и `private` --- альтернативный подход
+
+В OCaml есть ещё один способ ограничить конструирование --- ключевое слово `private` в `.mli`-файлах.
+
+`money.mli`:
+
+```ocaml
+type t = private float
+
+val make : float -> (t, string) result
+val add : t -> t -> t
+val to_string : t -> string
+```
+
+`money.ml`:
+
+```ocaml
+type t = float
+
+let make f =
+  if f > 0.0 then Ok f
+  else Error "сумма должна быть положительной"
+
+let add a b = a +. b
+let to_string t = Printf.sprintf "%.2f" t
+```
+
+Ключевое слово `private` означает: тип виден снаружи (его можно использовать в pattern matching), но конструировать напрямую нельзя:
+
+```text
+# let m = Result.get_ok (Money.make 100.0);;
+
+(* Pattern matching работает: *)
+# let (f : float) = (m :> float);;
+val f : float = 100.
+
+(* Но прямое создание запрещено: *)
+# let bad : Money.t = 42.0;;
+Error: This expression has type float but an expression of type
+       Money.t was expected
+```
+
+Сравнение подходов:
+
+| Аспект | Абстрактный тип (`type t`) | `private` |
+|--------|---------------------------|-----------|
+| Видимость представления | Полностью скрыто | Видно, но read-only |
+| Pattern matching | Невозможен | Возможен |
+| Coercion (`t :> base`) | Невозможен | Возможен |
+| Подходит для | Полная инкапсуляция | Типы, где matching полезен |
+
+Для большинства smart constructors лучше использовать полностью абстрактный тип --- он даёт максимальную защиту. `private` удобен, когда нужно деструктурировать значение без вызова функции-аксессора.
+
+## Make Illegal States Unrepresentable
+
+### Проблема: булевы флаги и невозможные состояния
+
+Рассмотрим модель заказа в интернет-магазине:
+
+```ocaml
+type order = {
+  id : int;
+  items : string list;
+  is_submitted : bool;
+  is_paid : bool;
+  is_shipped : bool;
+  payment_id : string option;
+  tracking_number : string option;
+}
+```
+
+Эта модель допускает **невозможные состояния**:
+
+```ocaml
+(* Отправлен, но не оплачен? *)
+let bad1 = {
+  id = 1; items = ["книга"];
+  is_submitted = true; is_paid = false; is_shipped = true;
+  payment_id = None; tracking_number = Some "TRACK123";
+}
+
+(* Не отправлен, но есть tracking number? *)
+let bad2 = {
+  id = 2; items = ["ручка"];
+  is_submitted = true; is_paid = true; is_shipped = false;
+  payment_id = Some "PAY456"; tracking_number = Some "TRACK789";
+}
+```
+
+Булевы флаги создают 2^3 = 8 комбинаций, из которых допустимы только 4. Программист должен **помнить** инварианты, и компилятор ему не поможет.
+
+В Haskell эту проблему решают через алгебраические типы данных (ADT). В OCaml --- точно так же.
+
+### Решение: кодирование состояний в типах
+
+Вместо булевых флагов зададим каждое состояние как отдельный вариант:
+
+```ocaml
+type draft = {
+  id : int;
+  items : string list;
+}
+
+type submitted = {
+  id : int;
+  items : string list;
+  submitted_at : float;
+}
+
+type paid = {
+  id : int;
+  items : string list;
+  submitted_at : float;
+  payment_id : string;
+}
+
+type shipped = {
+  id : int;
+  items : string list;
+  submitted_at : float;
+  payment_id : string;
+  tracking_number : string;
+}
+
+type order =
+  | Draft of draft
+  | Submitted of submitted
+  | Paid of paid
+  | Shipped of shipped
+```
+
+Теперь невозможно создать заказ с `tracking_number`, но без `payment_id` --- тип `shipped` требует оба поля. Каждый переход между состояниями --- отдельная функция:
+
+```ocaml
+let submit (d : draft) ~submitted_at : submitted =
+  { id = d.id; items = d.items; submitted_at }
+
+let pay (s : submitted) ~payment_id : paid =
+  { id = s.id; items = s.items;
+    submitted_at = s.submitted_at; payment_id }
+
+let ship (p : paid) ~tracking_number : shipped =
+  { id = p.id; items = p.items;
+    submitted_at = p.submitted_at;
+    payment_id = p.payment_id; tracking_number }
+```
+
+Попытка нарушить порядок --- ошибка компиляции:
+
+```text
+# let d = { id = 1; items = ["книга"] };;
+# ship d ~tracking_number:"T123";;
+Error: This expression has type draft
+       but an expression of type paid was expected
+```
+
+### Пример: конечный автомат для заказа (Draft -> Submitted -> Paid -> Shipped)
+
+Объединим всё в модуль:
+
+```ocaml
+module Order : sig
+  type draft
+  type submitted
+  type paid
+  type shipped
+  type t = Draft of draft | Submitted of submitted
+         | Paid of paid | Shipped of shipped
+
+  val create : items:string list -> draft
+  val submit : draft -> submitted
+  val pay : submitted -> payment_id:string -> paid
+  val ship : paid -> tracking_number:string -> shipped
+
+  val to_order : draft -> t
+  val items : t -> string list
+end = struct
+  type draft = { id : int; items : string list }
+  type submitted = { id : int; items : string list; submitted_at : float }
+  type paid = { id : int; items : string list; submitted_at : float;
+                payment_id : string }
+  type shipped = { id : int; items : string list; submitted_at : float;
+                   payment_id : string; tracking_number : string }
+  type t = Draft of draft | Submitted of submitted
+         | Paid of paid | Shipped of shipped
+
+  let next_id = ref 0
+  let fresh_id () = incr next_id; !next_id
+
+  let create ~items = { id = fresh_id (); items }
+
+  let submit d =
+    { id = d.id; items = d.items;
+      submitted_at = Unix.gettimeofday () }
+
+  let pay s ~payment_id =
+    { id = s.id; items = s.items;
+      submitted_at = s.submitted_at; payment_id }
+
+  let ship p ~tracking_number =
+    { id = p.id; items = p.items;
+      submitted_at = p.submitted_at;
+      payment_id = p.payment_id; tracking_number }
+
+  let to_order d = Draft d
+
+  let items = function
+    | Draft d -> d.items
+    | Submitted s -> s.items
+    | Paid p -> p.items
+    | Shipped s -> s.items
+end
+```
+
+Такая модель --- конечный автомат (finite state machine, FSM), где переходы между состояниями проверяются компилятором. Невозможно:
+
+- Оплатить неотправленный заказ (`pay` принимает только `submitted`).
+- Отправить неоплаченный заказ (`ship` принимает только `paid`).
+- Вернуться в предыдущее состояние (нет функции `unpay` или `unship`).
+
+### Phantom types для маркировки
+
+**Phantom types** (типы-фантомы) --- типовые параметры, которые не используются в представлении данных, но участвуют в проверке типов. Они позволяют «помечать» значения на уровне типов.
+
+В Haskell phantom types --- известный паттерн:
+
+```haskell
+-- Haskell
+newtype Tagged tag a = Tagged a
+
+data Open
+data Closed
+
+type Handle tag = Tagged tag FileHandle
+
+open :: FilePath -> IO (Handle Open)
+close :: Handle Open -> IO (Handle Closed)
+read :: Handle Open -> IO String   -- нельзя читать закрытый!
+```
+
+В OCaml phantom types работают аналогично:
+
+```ocaml
+type draft_state
+type submitted_state
+type paid_state
+type shipped_state
+
+type 'state order = {
+  id : int;
+  items : string list;
+  data : string;   (* различные данные в зависимости от состояния *)
+}
+```
+
+Типы `draft_state`, `submitted_state` и т.д. --- **пустые** (у них нет конструкторов). Их единственная роль --- быть метками в параметре `'state`.
+
+```ocaml
+let create ~items : draft_state order =
+  { id = 0; items; data = "" }
+
+let submit (o : draft_state order) : submitted_state order =
+  { id = o.id; items = o.items; data = "submitted" }
+
+let pay (o : submitted_state order) ~payment_id : paid_state order =
+  { id = o.id; items = o.items; data = payment_id }
+
+let ship (o : paid_state order) ~tracking : shipped_state order =
+  { id = o.id; items = o.items; data = tracking }
+```
+
+Компилятор проверяет порядок переходов:
+
+```text
+# let o = create ~items:["книга"];;
+val o : draft_state order = ...
+
+# let o = submit o;;
+val o : submitted_state order = ...
+
+# ship o ~tracking:"T123";;
+Error: This expression has type submitted_state order
+       but an expression of type paid_state order was expected
+```
+
+Phantom types особенно полезны, когда:
+
+- Все состояния имеют **одинаковое** представление (один тип записи).
+- Нужно «пометить» значение, не меняя его структуру.
+- Нужно обеспечить протокол использования (open/close, lock/unlock, connect/disconnect).
+
+Для заказа с **разными** данными в каждом состоянии (как `payment_id`, `tracking_number`) лучше подходят отдельные типы или GADT.
+
+## Parse, Don't Validate
+
+### Проблема: валидация возвращает `bool`, теряет информацию
+
+Рассмотрим типичную валидацию:
+
+```ocaml
+let is_valid_email (s : string) : bool =
+  String.contains s '@'
+
+let is_non_empty (s : string) : bool =
+  String.length s > 0
+
+let is_positive (n : int) : bool =
+  n > 0
+```
+
+Эти функции проверяют данные, но **не сохраняют результат проверки** в типе. После вызова `is_valid_email` у нас по-прежнему `string` --- и ничто не мешает передать невалидный `string` в код, ожидающий валидный email:
+
+```ocaml
+let send_email (email : string) =
+  (* Надеемся, что email валидный... *)
+  Printf.printf "Отправляем на %s\n" email
+
+let process input =
+  if is_valid_email input then
+    send_email input   (* Ok, но... *)
+  else
+    print_endline "Невалидный email"
+
+(* Ничто не мешает вызвать напрямую: *)
+let () = send_email "это-не-email"   (* Компилируется! *)
+```
+
+Валидация через `bool` создаёт **зазор** между проверкой и использованием. Проверка выполняется в одном месте, а использование --- в другом, и между ними нет связи на уровне типов.
+
+### Решение: парсинг возвращает типизированное значение
+
+Вместо валидации (возвращает `bool`) используйте **парсинг** (возвращает типизированное значение):
+
+```ocaml
+(* Валидация --- теряет информацию *)
+val is_valid_email : string -> bool
+
+(* Парсинг --- сохраняет информацию в типе *)
+val parse_email : string -> (Email.t, string) result
+```
+
+Парсинг преобразует «сырые» данные (`string`, `int`, `Yojson.Safe.t`) в **типизированные** значения (`Email.t`, `Money.t`, `Config.t`). Если преобразование невозможно --- возвращает ошибку.
+
+```ocaml
+module Email : sig
+  type t
+  val parse : string -> (t, string) result
+  val to_string : t -> string
+end = struct
+  type t = string
+
+  let parse s =
+    if String.length s = 0 then Error "email не может быть пустым"
+    else if not (String.contains s '@') then Error "email должен содержать @"
+    else
+      let parts = String.split_on_char '@' s in
+      match parts with
+      | [_local; domain] when String.contains domain '.' -> Ok s
+      | _ -> Error "некорректный формат email"
+
+  let to_string t = t
+end
+```
+
+Теперь `send_email` принимает `Email.t`, а не `string`:
+
+```ocaml
+let send_email (email : Email.t) =
+  Printf.printf "Отправляем на %s\n" (Email.to_string email)
+
+let process input =
+  match Email.parse input with
+  | Ok email -> send_email email   (* Гарантированно валидный *)
+  | Error msg -> Printf.printf "Ошибка: %s\n" msg
+
+(* Невозможно вызвать с невалидным значением: *)
+(* send_email "это-не-email"  --- ошибка компиляции! *)
+```
+
+### Связь с предыдущими паттернами
+
+«Parse, Don't Validate» --- это **обобщение** smart constructors и «Make Illegal States Unrepresentable»:
+
+1. **Smart constructors** --- парсинг примитивного значения в доменный тип: `string -> Email.t`, `float -> Money.t`.
+2. **Make Illegal States Unrepresentable** --- парсинг набора данных в допустимое состояние: вместо `{is_paid: bool; payment_id: string option}` создаём тип `Paid of {payment_id: string}`.
+3. **Parse, Don't Validate** --- философия: каждая граница системы (ввод пользователя, API, конфиг) --- это точка парсинга. Внутри системы работаем только с типизированными значениями.
+
+Вот ключевая идея: **парсинг выполняется один раз** на границе системы. После этого все функции работают с типизированными данными и не нуждаются в повторной валидации. Тип сам по себе является доказательством валидности.
+
+### Границы программы и границы системы
+
+Принцип «Parse, Don't Validate» --- мощный инструмент для отдельной программы. Но в реальном продакшене программа --- лишь один артефакт из многих. Статья Иана Данкана [*«What Functional Programmers Get Wrong About Systems»*](https://www.iankduncan.com/engineering/2026-02-09-what-functional-programmers-get-wrong-about-systems) (2026) формулирует проблему резко:
+
+> *«Единица корректности в продакшене --- не программа, а набор деплоев.»*
+
+Система типов проверяет свойства **одного артефакта**. Но в продакшене одновременно работают **несколько версий** вашего кода. Разрыв между этими двумя мирами --- источник реальных ошибок.
+
+**Проблема 1: несколько версий сосуществуют.** Деплой никогда не заменяет код атомарно. Во время rolling deploy старые и новые воркеры обрабатывают запросы одновременно. Представьте, что вы добавляете новый вариант в тип:
+
+```ocaml
+(* v1 *)
+type payment_status = Pending | Completed | Failed
+
+(* v2 --- добавили Refunded *)
+type payment_status = Pending | Completed | Failed | Refunded
+```
+
+На несколько минут старые воркеры будут получать сообщения с `Refunded` --- и не будут знать, что с ними делать. Типы гарантируют корректность **внутри** каждой версии, но **между версиями** нет проверки.
+
+**Проблема 2: сериализованные данные переживают код.** Очередь сообщений (Kafka, RabbitMQ) --- это «капсула времени для версий». Если Kafka хранит сообщения 30 дней, вы должны уметь десериализовать **30 разных форматов** одновременно. `parse` в «Parse, Don't Validate» работает на входе в программу, но что именно он парсит --- может оказаться артефактом давно откачанной версии.
+
+**Проблема 3: семантический дрейф обходит систему типов.** Самый коварный случай --- когда тип не меняется, но **смысл** значения меняется:
+
+```ocaml
+(* v1: amount — центы *)
+type payment = { amount : int; currency : string }
+
+(* v2: amount — доллары *)
+type payment = { amount : int; currency : string }
+```
+
+Тип идентичен. Парсер пропустит оба формата. Но значение отличается в 100 раз. Никакой type checker этого не поймает.
+
+#### Как расширить «Parse, Don't Validate» на уровень системы
+
+Данкан не отвергает принцип --- он показывает, что его нужно **расширить** за пределы одного артефакта:
+
+1. **Версионируйте сериализованные данные.** Каждое сообщение, API-ответ и миграция базы несёт неявный версионный контракт. Делайте его **явным** --- используйте schema ID, теги версий, маркеры формата. Реестры схем (Confluent Schema Registry, Buf для Protobuf) реализуют «parse, don't validate» **на границе между версиями**, а не только на границе одной программы.
+
+2. **Используйте паттерн expand-and-contract для миграций.** Код можно откатить, но схему базы данных --- нет. «Однонаправленная трещотка миграции» означает, что откат на старый код с новой схемой создаёт непротестированное состояние. Четырёхшаговый процесс:
+   - Добавить nullable колонку (expand).
+   - Записывать в оба формата.
+   - Бэкфиллить старые данные.
+   - Удалить старую колонку (contract).
+
+3. **Проверяйте совместимость на этапе деплоя, а не в рантайме.** GraphQL operations checks сравнивают предложенные изменения схемы с реальными клиентскими запросами **до** деплоя. Это переносит проверку совместимости из рантайма на этап сборки --- тот же принцип, что «Parse, Don't Validate», но на уровне всей системы.
+
+#### Практическое правило
+
+Разделяйте мир на три зоны:
+
+| Зона | Стратегия | Инструмент |
+|------|-----------|------------|
+| **Внутри программы** | Parse, Don't Validate | Система типов OCaml, smart constructors |
+| **Между версиями одного сервиса** | Версионированные схемы, совместимость | Protobuf/schema registry, expand-and-contract |
+| **Между разными сервисами** | Контрактное тестирование, API-версионирование | GraphQL operations checks, Pact, API gateways |
+
+Внутри программы тип --- это доказательство. На границе между версиями тип --- это **контракт**, который нуждается в явной проверке совместимости. «Parse, Don't Validate» остаётся верным принципом --- но его юрисдикция заканчивается на границе одного артефакта, а продакшен --- это ансамбль артефактов разных поколений.
+
+## Проект: типобезопасная платёжная система
+
+Модуль `lib/payment.ml` объединяет все паттерны главы в одном проекте --- типобезопасной платёжной системе.
+
+### Money --- smart constructor
+
+```ocaml
+module Money : sig
+  type t
+  val make : float -> (t, string) result
+  val amount : t -> float
+  val add : t -> t -> t
+  val to_string : t -> string
+end = struct
+  type t = float
+
+  let make f =
+    if f > 0.0 then Ok f
+    else Error "сумма должна быть положительной"
+
+  let amount t = t
+  let add a b = a +. b
+  let to_string t = Printf.sprintf "%.2f" t
+end
+```
+
+### CardNumber --- smart constructor
+
+```ocaml
+module CardNumber : sig
+  type t
+  val make : string -> (t, string) result
+  val to_masked : t -> string
+  val to_string : t -> string
+end = struct
+  type t = string
+
+  let make s =
+    let digits = String.to_seq s
+      |> Seq.filter (fun c -> c <> ' ' && c <> '-')
+      |> String.of_seq
+    in
+    if String.length digits <> 16 then
+      Error "номер карты должен содержать 16 цифр"
+    else if not (String.for_all (fun c -> c >= '0' && c <= '9') digits) then
+      Error "номер карты должен содержать только цифры"
+    else
+      Ok digits
+
+  let to_masked t =
+    let len = String.length t in
+    String.init len (fun i ->
+      if i < len - 4 then '*' else t.[i])
+
+  let to_string t = t
+end
+```
+
+```text
+# CardNumber.make "4111 1111 1111 1111";;
+- : (CardNumber.t, string) result = Ok <abstr>
+
+# CardNumber.make "123";;
+- : (CardNumber.t, string) result = Error "номер карты должен содержать 16 цифр"
+
+# let card = Result.get_ok (CardNumber.make "4111111111111111");;
+# CardNumber.to_masked card;;
+- : string = "************1111"
+```
+
+### PaymentState --- конечный автомат
+
+```ocaml
+module PaymentState : sig
+  type draft
+  type submitted
+  type paid
+  type shipped
+
+  type 'state payment
+
+  val create : amount:Money.t -> 'a -> draft payment
+  val submit : draft payment -> card:CardNumber.t -> submitted payment
+  val pay : submitted payment -> transaction_id:string -> paid payment
+  val ship : paid payment -> tracking:string -> shipped payment
+
+  val amount : 'state payment -> Money.t
+  val description : 'state payment -> string
+end = struct
+  type draft
+  type submitted
+  type paid
+  type shipped
+
+  type 'state payment = {
+    amount : Money.t;
+    description : string;
+    data : string;
+  }
+
+  let create ~amount description =
+    { amount; description; data = "" }
+
+  let submit p ~card =
+    { amount = p.amount;
+      description = p.description;
+      data = CardNumber.to_masked card }
+
+  let pay p ~transaction_id =
+    { amount = p.amount;
+      description = p.description;
+      data = transaction_id }
+
+  let ship p ~tracking =
+    { amount = p.amount;
+      description = p.description;
+      data = tracking }
+
+  let amount p = p.amount
+  let description p = p.description
+end
+```
+
+Используем всю систему вместе:
+
+```ocaml
+let process_payment () =
+  let ( let* ) = Result.bind in
+  let* amount = Money.make 99.99 in
+  let* card = CardNumber.make "4111 1111 1111 1111" in
+
+  let payment = PaymentState.create ~amount "Книга по OCaml" in
+  let payment = PaymentState.submit payment ~card in
+  let payment = PaymentState.pay payment ~transaction_id:"TXN-001" in
+  let payment = PaymentState.ship payment ~tracking:"TRACK-42" in
+
+  Ok (Printf.sprintf "Оплата %s за '%s' отправлена"
+    (Money.to_string (PaymentState.amount payment))
+    (PaymentState.description payment))
+```
+
+```text
+# process_payment ();;
+- : (string, string) result =
+Ok "Оплата 99.99 за 'Книга по OCaml' отправлена"
+```
+
+Попытка нарушить порядок --- ошибка компиляции:
+
+```text
+# let p = PaymentState.create ~amount "test" in
+  PaymentState.ship p ~tracking:"T";;
+Error: This expression has type draft payment
+       but an expression of type paid payment was expected
+```
+
+Вся система типобезопасна:
+
+- `Money.t` гарантирует положительную сумму.
+- `CardNumber.t` гарантирует 16 цифр.
+- Phantom types в `PaymentState` гарантируют порядок переходов.
 
 ## Упражнения
 
 Решения пишите в `test/my_solutions.ml`. Проверяйте: `dune runtest`.
 
-Все упражнения этой главы выполняются внутри `Eio_main.run`. Тесты оборачивают ваши функции в Eio-окружение.
-
-1. **(Среднее)** Реализуйте функцию `parallel_fib`, которая вычисляет N-й и M-й числа Фибоначчи параллельно, используя `Eio.Fiber.both`, и возвращает их сумму.
+1. **(Лёгкое)** Реализуйте модуль `PositiveInt` --- smart constructor для строго положительных целых чисел.
 
     ```ocaml
-    val parallel_fib : int -> int -> int
+    module PositiveInt : sig
+      type t
+      val make : int -> (t, string) result
+      val value : t -> int
+      val add : t -> t -> t
+      val to_string : t -> string
+    end
     ```
 
-    *Подсказка:* напишите обычную функцию `fib n` и используйте `Eio.Fiber.both` с `ref` для сбора результатов.
+    `make n` возвращает `Ok`, если `n > 0`, иначе `Error "число должно быть положительным"`. `add` складывает два значения.
 
-2. **(Среднее)** Реализуйте функцию `concurrent_map`, которая применяет функцию к каждому элементу списка конкурентно, используя `Eio.Fiber.List.map`.
+2. **(Среднее)** Реализуйте модуль `Email` --- smart constructor для email-адресов.
 
     ```ocaml
-    val concurrent_map : ('a -> 'b) -> 'a list -> 'b list
+    module Email : sig
+      type t
+      val make : string -> (t, string) result
+      val to_string : t -> string
+    end
     ```
 
-3. **(Среднее)** Реализуйте паттерн producer-consumer: функцию `produce_consume`, где producer отправляет числа от 1 до n в `Eio.Stream`, а consumer суммирует их.
+    Валидация: строка не пуста, содержит `@`, домен (часть после `@`) содержит `.`. `make "" -> Error "email не может быть пустым"`. `make "user" -> Error "email должен содержать @"`. `make "user@host" -> Error "некорректный домен"`. `make "user@host.com" -> Ok <email>`.
+
+3. **(Среднее)** Реализуйте модуль `NonEmptyList` --- список, гарантированно содержащий хотя бы один элемент.
 
     ```ocaml
-    val produce_consume : int -> int
+    module NonEmptyList : sig
+      type 'a t
+      val make : 'a list -> ('a t, string) result
+      val singleton : 'a -> 'a t
+      val head : 'a t -> 'a
+      val tail : 'a t -> 'a list
+      val to_list : 'a t -> 'a list
+      val length : 'a t -> int
+      val map : ('a -> 'b) -> 'a t -> 'b t
+    end
     ```
 
-    *Подсказка:* используйте `Eio.Stream.create`, `Eio.Fiber.both`, `Some`/`None` как сигнал завершения.
+    Ключевое свойство: `head` и `tail` **не могут** завершиться ошибкой. `make [] -> Error`, `make [1;2;3] -> Ok`, `head -> 'a` (не `'a option`!).
 
-4. **(Среднее)** Реализуйте функцию `race`, которая запускает список функций конкурентно и возвращает результат первой завершившейся.
+    *Подсказка:* внутреннее представление --- пара `'a * 'a list`.
+
+4. **(Среднее)** Смоделируйте светофор как конечный автомат с phantom types.
 
     ```ocaml
-    val race : (unit -> 'a) list -> 'a
+    module TrafficLight : sig
+      type red
+      type yellow
+      type green
+
+      type 'state light
+
+      val start : red light
+      val red_to_green : red light -> green light
+      val green_to_yellow : green light -> yellow light
+      val yellow_to_red : yellow light -> red light
+      val show : 'state light -> string
+    end
     ```
 
-    *Подсказка:* используйте `Eio.Fiber.any`.
+    Порядок переходов: Red -> Green -> Yellow -> Red -> ... Попытка вызвать `green_to_yellow` на `red light` должна быть ошибкой компиляции.
+
+5. **(Сложное)** Реализуйте модуль `Form` --- строитель формы с накоплением ошибок.
+
+    ```ocaml
+    module Form : sig
+      type 'a validated
+      val field : string -> string -> (string -> ('a, string) result) -> 'a validated
+      val map2 : ('a -> 'b -> 'c) -> 'a validated -> 'b validated -> 'c validated
+      val map3 : ('a -> 'b -> 'c -> 'd) ->
+        'a validated -> 'b validated -> 'c validated -> 'd validated
+      val run : 'a validated -> ('a, (string * string) list) result
+    end
+    ```
+
+    `field name raw_value parser` --- создаёт валидированное поле. `map2 f a b` --- комбинирует два поля, накапливая ошибки. `run` --- возвращает результат или список пар `(имя_поля, ошибка)`.
+
+    Пример:
+
+    ```ocaml
+    type user = { name : string; age : int }
+
+    let parse_name s =
+      if String.length s > 0 then Ok s
+      else Error "не может быть пустым"
+
+    let parse_age s =
+      match int_of_string_opt s with
+      | Some n when n > 0 -> Ok n
+      | _ -> Error "должен быть положительным числом"
+
+    let validate name_str age_str =
+      let open Form in
+      run (map2
+        (fun name age -> { name; age })
+        (field "имя" name_str parse_name)
+        (field "возраст" age_str parse_age))
+    ```
+
+    *Подсказка:* внутреннее представление `'a validated = ('a, (string * string) list) result`.
+
+6. **(Сложное)** Реализуйте модуль `FileHandle` --- API для работы с «файлами», где чтение и запись возможны только для открытых дескрипторов. Используйте phantom types.
+
+    ```ocaml
+    module FileHandle : sig
+      type opened
+      type closed
+
+      type 'state handle
+
+      val open_file : string -> opened handle
+      val read : opened handle -> string
+      val write : opened handle -> string -> opened handle
+      val close : opened handle -> closed handle
+      val name : 'state handle -> string
+    end
+    ```
+
+    Ключевое свойство: `read` и `write` принимают **только** `opened handle`. Попытка прочитать из закрытого дескриптора --- ошибка компиляции. `close` возвращает `closed handle`, по которому уже нельзя вызвать `read`/`write`.
+
+    *Подсказка:* внутреннее представление --- запись `{ name: string; content: string }`. Реальный файловый ввод-вывод не нужен --- эмулируйте работу со строками в памяти.
 
 ## Заключение
 
 В этой главе мы:
 
-- Познакомились с доменами --- единицей параллелизма OCaml 5.
-- Изучили Eio --- библиотеку прямого стиля для конкурентности.
-- Разобрали файберы и структурированную конкурентность через `Switch`.
-- Научились использовать каналы (`Eio.Stream`) для коммуникации.
-- Познакомились с таймаутами и отменой операций.
-- Сравнили Eio с Lwt и Async.
+- Изучили **smart constructors** --- паттерн ограничения конструирования через абстрактные типы и функции-валидаторы.
+- Познакомились с принципом **Make Illegal States Unrepresentable** --- кодирование допустимых состояний в типах вместо булевых флагов.
+- Разобрали философию **Parse, Don't Validate** --- парсинг как способ преобразования данных в типизированные значения на границе системы.
+- Освоили **phantom types** --- типовые параметры-метки для статической проверки протоколов.
+- Реализовали проект --- типобезопасную платёжную систему, объединяющую все паттерны.
+- Сравнили подходы OCaml (модули, `.mli`, `private`) с подходами Haskell (`newtype`, phantom types).
 
-В следующей главе мы изучим FFI --- взаимодействие OCaml с кодом на C и работу с JSON.
+Все эти паттерны объединяет одна идея: **переложить проверку инвариантов с программиста на компилятор**. Чем больше ошибок ловится на этапе компиляции, тем надёжнее программа и тем меньше тестов нужно для проверки «невозможных» состояний.
+
+В следующей главе мы изучим конкурентное программирование с библиотекой Eio --- прямой стиль вместо промисов и колбэков.

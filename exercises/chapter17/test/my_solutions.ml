@@ -1,21 +1,25 @@
 (** Здесь вы можете писать свои решения упражнений. *)
 
-(** Упражнение 1: Последовательный map --- применить async-функцию к списку по порядку. *)
-let sequential_map (f : 'a -> 'b Lwt.t) (lst : 'a list) : 'b list Lwt.t =
-  ignore f; ignore lst;
+open Chapter17.Brain_games
+
+(** Упражнение 1: Игра "угадай оператор" --- дано "a ? b = c", угадайте оператор. *)
+let balance_game : game =
+  ignore (fun () -> { question = ""; correct_answer = "" });
+  { description = "todo";
+    generate_round = (fun () -> failwith "todo") }
+
+(** Упражнение 2: Чистая логика игры --- принимает список ответов, возвращает bool. *)
+let run_game_result (game : game) ~(rounds : int) (answers : string list) : bool =
+  ignore game; ignore rounds; ignore answers;
   failwith "todo"
 
-(** Упражнение 2: Параллельный map --- применить async-функцию к списку конкурентно. *)
-let concurrent_map (f : 'a -> 'b Lwt.t) (lst : 'a list) : 'b list Lwt.t =
-  ignore f; ignore lst;
+(** Упражнение 3: Обобщённый конструктор игры. *)
+let make_game ~(description : string) ~(generate : unit -> string * string) : game =
+  ignore description; ignore generate;
   failwith "todo"
 
-(** Упражнение 3: Таймаут --- обернуть промис с ограничением по времени. *)
-let timeout (seconds : float) (promise : 'a Lwt.t) : 'a option Lwt.t =
-  ignore seconds; ignore promise;
-  failwith "todo"
-
-(** Упражнение 4: Ограничение параллелизма --- выполнять не более N задач одновременно. *)
-let rate_limit (n : int) (tasks : (unit -> 'a Lwt.t) list) : 'a list Lwt.t =
-  ignore n; ignore tasks;
-  failwith "todo"
+(** Упражнение 4: Игра --- разложить число на простые множители. *)
+let factor_game : game =
+  ignore (fun () -> { question = ""; correct_answer = "" });
+  { description = "todo";
+    generate_round = (fun () -> failwith "todo") }

@@ -1,2 +1,3 @@
 (library
- (name chapter11))
+ (name chapter11)
+ (libraries eio))

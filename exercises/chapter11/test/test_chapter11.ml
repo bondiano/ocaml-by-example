@@ -1,134 +1,126 @@
-open Chapter11.Effects
+open Chapter11.Concurrent
+
+(* --- Утилита: запуск теста внутри Eio --- *)
+
+let run_eio f () =
+  Eio_main.run @@ fun _env -> f ()
 
 (* --- Тесты библиотеки --- *)
 
-let state_tests =
+let fib_tests =
   let open Alcotest in
   [
-    test_case "run_state example" `Quick (fun () ->
-      let result = run_state 5 state_example in
-      check int "5 + 15" 20 result);
-    test_case "run_state set/get" `Quick (fun () ->
-      let result = run_state 0 (fun () ->
-        Effect.perform (Set 42);
-        Effect.perform Get
-      ) in
-      check int "42" 42 result);
+    test_case "fib 0" `Quick (fun () ->
+      check int "fib 0" 0 (fib 0));
+    test_case "fib 1" `Quick (fun () ->
+      check int "fib 1" 1 (fib 1));
+    test_case "fib 10" `Quick (fun () ->
+      check int "fib 10" 55 (fib 10));
   ]
 
-let log_tests =
+let parallel_map_tests =
   let open Alcotest in
   [
-    test_case "run_log example" `Quick (fun () ->
-      let (result, logs) = run_log log_example in
-      check int "result" 5 result;
-      check int "log count" 3 (List.length logs);
-      check string "first" "start" (List.hd logs));
+    test_case "parallel_map double" `Quick (run_eio (fun () ->
+      check (list int) "double" [2; 4; 6]
+        (parallel_map (fun x -> x * 2) [1; 2; 3])));
+    test_case "parallel_map пустой список" `Quick (run_eio (fun () ->
+      check (list int) "empty" []
+        (parallel_map (fun x -> x * 2) [])));
   ]
 
-let combined_tests =
+let parallel_sum_tests =
   let open Alcotest in
   [
-    test_case "state + log" `Quick (fun () ->
-      let (result, logs) = run_log (fun () ->
-        run_state 7 combined_example
+    test_case "parallel_sum" `Quick (run_eio (fun () ->
+      check int "sum" 15 (parallel_sum [1; 2; 3; 4; 5])));
+    test_case "parallel_sum пустой" `Quick (run_eio (fun () ->
+      check int "empty" 0 (parallel_sum [])));
+  ]
+
+let produce_and_collect_tests =
+  let open Alcotest in
+  [
+    test_case "produce_and_collect" `Quick (run_eio (fun () ->
+      let result = produce_and_collect (fun stream ->
+        for i = 1 to 3 do
+          Eio.Stream.add stream (Some i)
+        done;
+        Eio.Stream.add stream None
       ) in
-      check int "result" 14 result;
-      check int "log count" 3 (List.length logs));
+      check (list int) "collected" [1; 2; 3] result));
   ]
 
 (* --- Тесты упражнений --- *)
 
-let emit_tests =
+let parallel_fib_tests =
   let open Alcotest in
   [
-    test_case "run_emit basic" `Quick (fun () ->
-      let ((), items) = My_solutions.run_emit (fun () ->
-        Effect.perform (My_solutions.Emit 1);
-        Effect.perform (My_solutions.Emit 2);
-        Effect.perform (My_solutions.Emit 3)
-      ) in
-      check (list int) "items" [1; 2; 3] items);
-    test_case "run_emit with result" `Quick (fun () ->
-      let (result, items) = My_solutions.run_emit (fun () ->
-        Effect.perform (My_solutions.Emit 10);
-        42
-      ) in
-      check int "result" 42 result;
-      check (list int) "items" [10] items);
-    test_case "run_emit empty" `Quick (fun () ->
-      let ((), items) = My_solutions.run_emit (fun () -> ()) in
-      check (list int) "empty" [] items);
+    test_case "parallel_fib 10 10" `Quick (run_eio (fun () ->
+      check int "fib 10 + fib 10" 110
+        (My_solutions.parallel_fib 10 10)));
+    test_case "parallel_fib 5 7" `Quick (run_eio (fun () ->
+      check int "fib 5 + fib 7" 18
+        (My_solutions.parallel_fib 5 7)));
+    test_case "parallel_fib 0 1" `Quick (run_eio (fun () ->
+      check int "fib 0 + fib 1" 1
+        (My_solutions.parallel_fib 0 1)));
   ]
 
-let reader_tests =
+let concurrent_map_tests =
   let open Alcotest in
   [
-    test_case "run_reader" `Quick (fun () ->
-      let result = My_solutions.run_reader "hello" (fun () ->
-        let env = Effect.perform My_solutions.Ask in
-        String.uppercase_ascii env
-      ) in
-      check string "HELLO" "HELLO" result);
-    test_case "run_reader multiple asks" `Quick (fun () ->
-      let result = My_solutions.run_reader "world" (fun () ->
-        let a = Effect.perform My_solutions.Ask in
-        let b = Effect.perform My_solutions.Ask in
-        a ^ " " ^ b
-      ) in
-      check string "world world" "world world" result);
+    test_case "concurrent_map square" `Quick (run_eio (fun () ->
+      check (list int) "squares" [1; 4; 9; 16]
+        (My_solutions.concurrent_map (fun x -> x * x) [1; 2; 3; 4])));
+    test_case "concurrent_map strings" `Quick (run_eio (fun () ->
+      check (list string) "upper"
+        ["HELLO"; "WORLD"]
+        (My_solutions.concurrent_map String.uppercase_ascii
+           ["hello"; "world"])));
+    test_case "concurrent_map пустой" `Quick (run_eio (fun () ->
+      check (list int) "empty" []
+        (My_solutions.concurrent_map (fun x -> x) [])));
   ]
 
-let count_and_emit_tests =
+let produce_consume_tests =
   let open Alcotest in
   [
-    test_case "count_and_emit 3" `Quick (fun () ->
-      let ((), items) = My_solutions.run_emit (fun () ->
-        run_state 0 (fun () ->
-          My_solutions.count_and_emit 3
-        )
-      ) in
-      check (list int) "items" [1; 3; 6] items);
-    test_case "count_and_emit 0" `Quick (fun () ->
-      let ((), items) = My_solutions.run_emit (fun () ->
-        run_state 0 (fun () ->
-          My_solutions.count_and_emit 0
-        )
-      ) in
-      check (list int) "empty" [] items);
+    test_case "produce_consume 5" `Quick (run_eio (fun () ->
+      check int "sum 1..5" 15
+        (My_solutions.produce_consume 5)));
+    test_case "produce_consume 10" `Quick (run_eio (fun () ->
+      check int "sum 1..10" 55
+        (My_solutions.produce_consume 10)));
+    test_case "produce_consume 0" `Quick (run_eio (fun () ->
+      check int "sum 0" 0
+        (My_solutions.produce_consume 0)));
   ]
 
-let result_testable =
-  Alcotest.result Alcotest.int Alcotest.string
-
-let fail_tests =
+let race_tests =
   let open Alcotest in
   [
-    test_case "run_fail ok" `Quick (fun () ->
-      let r = My_solutions.run_fail (fun () -> 42) in
-      check result_testable "ok" (Ok 42) r);
-    test_case "run_fail error" `Quick (fun () ->
-      let r = My_solutions.run_fail (fun () ->
-        Effect.perform (My_solutions.Fail "oops")
-      ) in
-      check result_testable "error" (Error "oops") r);
-    test_case "run_fail error midway" `Quick (fun () ->
-      let r = My_solutions.run_fail (fun () ->
-        let x = 1 + 2 in
-        if x > 0 then Effect.perform (My_solutions.Fail "positive");
-        x
-      ) in
-      check result_testable "error" (Error "positive") r);
+    test_case "race возвращает результат" `Quick (run_eio (fun () ->
+      let result = My_solutions.race [
+        (fun () -> 42);
+        (fun () -> 99);
+      ] in
+      check bool "result is 42 or 99" true
+        (result = 42 || result = 99)));
+    test_case "race с одной задачей" `Quick (run_eio (fun () ->
+      check int "single" 7
+        (My_solutions.race [(fun () -> 7)])));
   ]
 
 let () =
-  Alcotest.run "Chapter 11"
+  Alcotest.run "Chapter 09"
     [
-      ("state --- эффект State", state_tests);
-      ("log --- эффект Log", log_tests);
-      ("combined --- State + Log", combined_tests);
-      ("emit --- эффект Emit", emit_tests);
-      ("reader --- эффект Reader", reader_tests);
-      ("count_and_emit --- State + Emit", count_and_emit_tests);
-      ("fail --- эффект Fail", fail_tests);
+      ("fib --- числа Фибоначчи", fib_tests);
+      ("parallel_map --- параллельный map", parallel_map_tests);
+      ("parallel_sum --- параллельная сумма", parallel_sum_tests);
+      ("produce_and_collect --- producer-consumer", produce_and_collect_tests);
+      ("parallel_fib --- параллельный Фибоначчи", parallel_fib_tests);
+      ("concurrent_map --- конкурентный map", concurrent_map_tests);
+      ("produce_consume --- producer-consumer сумма", produce_consume_tests);
+      ("race --- гонка задач", race_tests);
     ]

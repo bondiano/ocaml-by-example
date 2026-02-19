@@ -1,54 +1,73 @@
 (** Референсные решения --- не подсматривайте, пока не попробуете сами! *)
+open Chapter15.Properties
 
-open Chapter15.Brain_games
+(** Инволюция reverse. *)
+let prop_rev_involution =
+  QCheck.Test.make ~name:"rev_involution" ~count:100
+    QCheck.(list small_int)
+    (fun lst -> List.rev (List.rev lst) = lst)
 
-(** Упражнение 1: Игра "угадай оператор". *)
-let balance_game : game =
-  let ops = [| ("+", ( + )); ("-", ( - )); ("*", ( * )) |] in
-  { description = "Дано 'a ? b = c'. Какой оператор?";
-    generate_round = (fun () ->
-      let a = random_int 1 20 in
-      let b = random_int 1 20 in
-      let idx = Random.int 3 in
-      let (op_str, op_fn) = ops.(idx) in
-      let c = op_fn a b in
-      { question = Printf.sprintf "%d ? %d = %d" a b c;
-        correct_answer = op_str })
-  }
+(** Sort возвращает отсортированный список. *)
+let prop_sort_sorted =
+  QCheck.Test.make ~name:"sort_sorted" ~count:100
+    QCheck.(list small_int)
+    (fun lst -> is_sorted (List.sort compare lst))
 
-(** Упражнение 2: Чистая логика игры. *)
-let run_game_result (game : game) ~(rounds : int) (answers : string list) : bool =
-  let rec loop i answers =
-    if i > rounds then true
-    else match answers with
-      | [] -> false
-      | answer :: rest ->
-        let r = game.generate_round () in
-        if String.lowercase_ascii answer = String.lowercase_ascii r.correct_answer
-        then loop (i + 1) rest
-        else false
+(** BST содержит все вставленные элементы. *)
+let prop_bst_membership =
+  QCheck.Test.make ~name:"bst_membership" ~count:100
+    QCheck.(pair small_int (list small_int))
+    (fun (x, xs) ->
+       let tree = bst_of_list (x :: xs) in
+       bst_mem x tree)
+
+(** Roundtrip для кодека (только строки без ':'). *)
+let prop_codec_roundtrip =
+  QCheck.Test.make ~name:"codec_roundtrip" ~count:100
+    QCheck.(pair small_int (string_of_size (Gen.return 5)))
+    (fun (n, s) ->
+       let s_clean = String.map (fun c -> if c = ':' then '_' else c) s in
+       decode_pair (encode_pair (n, s_clean)) = Some (n, s_clean))
+
+(** Binary Search. *)
+let binary_search arr target =
+  let rec loop lo hi =
+    if lo > hi then None
+    else
+      let mid = lo + (hi - lo) / 2 in
+      if arr.(mid) = target then Some mid
+      else if arr.(mid) < target then loop (mid + 1) hi
+      else loop lo (mid - 1)
   in
-  loop 1 answers
+  if Array.length arr = 0 then None
+  else loop 0 (Array.length arr - 1)
 
-(** Упражнение 3: Обобщённый конструктор игры. *)
-let make_game ~(description : string) ~(generate : unit -> string * string) : game =
-  { description;
-    generate_round = (fun () ->
-      let (question, correct_answer) = generate () in
-      { question; correct_answer })
-  }
+(** BST. *)
+module BST = struct
+  type 'a t =
+    | Empty
+    | Node of 'a t * 'a * 'a t
 
-(** Упражнение 4: Разложение на простые множители. *)
-let factor_game : game =
-  { description = "Разложите число на простые множители.";
-    generate_round = (fun () ->
-      let n = random_int 4 100 in
-      let rec factorize n d =
-        if n <= 1 then []
-        else if n mod d = 0 then d :: factorize (n / d) d
-        else factorize n (d + 1)
-      in
-      let factors = factorize n 2 in
-      { question = string_of_int n;
-        correct_answer = String.concat " " (List.map string_of_int factors) })
-  }
+  let empty = Empty
+
+  let rec insert value = function
+    | Empty -> Node (Empty, value, Empty)
+    | Node (left, v, right) ->
+      if value <= v then Node (insert value left, v, right)
+      else Node (left, v, insert value right)
+
+  let rec mem value = function
+    | Empty -> false
+    | Node (left, v, right) ->
+      if value = v then true
+      else if value < v then mem value left
+      else mem value right
+
+  let to_sorted_list tree =
+    let rec loop acc = function
+      | Empty -> acc
+      | Node (left, v, right) ->
+        loop (v :: loop acc right) left
+    in
+    loop [] tree
+end

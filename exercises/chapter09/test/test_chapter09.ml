@@ -1,126 +1,301 @@
-open Chapter09.Concurrent
+open Chapter09.Payment
 
-(* --- Утилита: запуск теста внутри Eio --- *)
+(* --- Вспомогательные testable для Alcotest --- *)
 
-let run_eio f () =
-  Eio_main.run @@ fun _env -> f ()
+let result_string (type a) (ok_t : a Alcotest.testable) =
+  Alcotest.(result ok_t string)
 
-(* --- Тесты библиотеки --- *)
+(* --- Тесты библиотеки: Money --- *)
 
-let fib_tests =
+let money_tests =
   let open Alcotest in
   [
-    test_case "fib 0" `Quick (fun () ->
-      check int "fib 0" 0 (fib 0));
-    test_case "fib 1" `Quick (fun () ->
-      check int "fib 1" 1 (fib 1));
-    test_case "fib 10" `Quick (fun () ->
-      check int "fib 10" 55 (fib 10));
+    test_case "Money.make положительная сумма" `Quick (fun () ->
+      match Money.make 100.0 with
+      | Ok m -> check string "amount" "100.00" (Money.to_string m)
+      | Error _ -> fail "ожидался Ok");
+    test_case "Money.make нулевая сумма" `Quick (fun () ->
+      check (result_string string) "zero"
+        (Error "сумма должна быть положительной")
+        (Money.make 0.0 |> Result.map Money.to_string));
+    test_case "Money.make отрицательная сумма" `Quick (fun () ->
+      check (result_string string) "negative"
+        (Error "сумма должна быть положительной")
+        (Money.make (-5.0) |> Result.map Money.to_string));
+    test_case "Money.add" `Quick (fun () ->
+      match Money.make 100.0, Money.make 50.0 with
+      | Ok a, Ok b ->
+        check string "sum" "150.00" (Money.to_string (Money.add a b))
+      | _ -> fail "ожидались Ok");
   ]
 
-let parallel_map_tests =
+(* --- Тесты библиотеки: CardNumber --- *)
+
+let card_number_tests =
   let open Alcotest in
   [
-    test_case "parallel_map double" `Quick (run_eio (fun () ->
-      check (list int) "double" [2; 4; 6]
-        (parallel_map (fun x -> x * 2) [1; 2; 3])));
-    test_case "parallel_map пустой список" `Quick (run_eio (fun () ->
-      check (list int) "empty" []
-        (parallel_map (fun x -> x * 2) [])));
+    test_case "CardNumber.make валидный номер" `Quick (fun () ->
+      match CardNumber.make "4111111111111111" with
+      | Ok _ -> ()
+      | Error e -> fail e);
+    test_case "CardNumber.make с пробелами" `Quick (fun () ->
+      match CardNumber.make "4111 1111 1111 1111" with
+      | Ok _ -> ()
+      | Error e -> fail e);
+    test_case "CardNumber.make с дефисами" `Quick (fun () ->
+      match CardNumber.make "4111-1111-1111-1111" with
+      | Ok _ -> ()
+      | Error e -> fail e);
+    test_case "CardNumber.make слишком короткий" `Quick (fun () ->
+      match CardNumber.make "1234" with
+      | Error _ -> ()
+      | Ok _ -> fail "ожидалась ошибка");
+    test_case "CardNumber.make с буквами" `Quick (fun () ->
+      match CardNumber.make "4111ABCD11111111" with
+      | Error _ -> ()
+      | Ok _ -> fail "ожидалась ошибка");
+    test_case "CardNumber.to_masked" `Quick (fun () ->
+      match CardNumber.make "4111111111111111" with
+      | Ok card ->
+        check string "masked" "************1111" (CardNumber.to_masked card)
+      | Error e -> fail e);
   ]
 
-let parallel_sum_tests =
-  let open Alcotest in
-  [
-    test_case "parallel_sum" `Quick (run_eio (fun () ->
-      check int "sum" 15 (parallel_sum [1; 2; 3; 4; 5])));
-    test_case "parallel_sum пустой" `Quick (run_eio (fun () ->
-      check int "empty" 0 (parallel_sum [])));
-  ]
+(* --- Тесты библиотеки: PaymentState --- *)
 
-let produce_and_collect_tests =
+let payment_state_tests =
   let open Alcotest in
   [
-    test_case "produce_and_collect" `Quick (run_eio (fun () ->
-      let result = produce_and_collect (fun stream ->
-        for i = 1 to 3 do
-          Eio.Stream.add stream (Some i)
-        done;
-        Eio.Stream.add stream None
-      ) in
-      check (list int) "collected" [1; 2; 3] result));
+    test_case "полный цикл платежа" `Quick (fun () ->
+      match Money.make 99.99, CardNumber.make "4111111111111111" with
+      | Ok amount, Ok card ->
+        let p = PaymentState.create ~amount "Книга" in
+        check string "draft" "draft" (PaymentState.state_name p);
+        let p = PaymentState.submit p ~card in
+        check string "submitted" "submitted" (PaymentState.state_name p);
+        let p = PaymentState.pay p ~transaction_id:"TXN-001" in
+        check string "paid" "paid" (PaymentState.state_name p);
+        let p = PaymentState.ship p ~tracking:"TRACK-42" in
+        check string "shipped" "shipped" (PaymentState.state_name p);
+        check string "description" "Книга" (PaymentState.description p);
+        check string "amount" "99.99"
+          (Money.to_string (PaymentState.amount p))
+      | _ -> fail "ожидались Ok");
   ]
 
 (* --- Тесты упражнений --- *)
 
-let parallel_fib_tests =
+(* Упражнение 1: PositiveInt *)
+
+let positive_int_tests =
   let open Alcotest in
   [
-    test_case "parallel_fib 10 10" `Quick (run_eio (fun () ->
-      check int "fib 10 + fib 10" 110
-        (My_solutions.parallel_fib 10 10)));
-    test_case "parallel_fib 5 7" `Quick (run_eio (fun () ->
-      check int "fib 5 + fib 7" 18
-        (My_solutions.parallel_fib 5 7)));
-    test_case "parallel_fib 0 1" `Quick (run_eio (fun () ->
-      check int "fib 0 + fib 1" 1
-        (My_solutions.parallel_fib 0 1)));
+    test_case "PositiveInt.make положительное" `Quick (fun () ->
+      match My_solutions.PositiveInt.make 42 with
+      | Ok n -> check int "value" 42 (My_solutions.PositiveInt.value n)
+      | Error _ -> fail "ожидался Ok");
+    test_case "PositiveInt.make ноль" `Quick (fun () ->
+      check (result_string int) "zero"
+        (Error "число должно быть положительным")
+        (My_solutions.PositiveInt.make 0
+         |> Result.map My_solutions.PositiveInt.value));
+    test_case "PositiveInt.make отрицательное" `Quick (fun () ->
+      check (result_string int) "negative"
+        (Error "число должно быть положительным")
+        (My_solutions.PositiveInt.make (-5)
+         |> Result.map My_solutions.PositiveInt.value));
+    test_case "PositiveInt.add" `Quick (fun () ->
+      match My_solutions.PositiveInt.make 10, My_solutions.PositiveInt.make 20 with
+      | Ok a, Ok b ->
+        check int "sum" 30
+          (My_solutions.PositiveInt.value (My_solutions.PositiveInt.add a b))
+      | _ -> fail "ожидались Ok");
+    test_case "PositiveInt.to_string" `Quick (fun () ->
+      match My_solutions.PositiveInt.make 42 with
+      | Ok n -> check string "str" "42" (My_solutions.PositiveInt.to_string n)
+      | Error _ -> fail "ожидался Ok");
   ]
 
-let concurrent_map_tests =
+(* Упражнение 2: Email *)
+
+let email_tests =
   let open Alcotest in
   [
-    test_case "concurrent_map square" `Quick (run_eio (fun () ->
-      check (list int) "squares" [1; 4; 9; 16]
-        (My_solutions.concurrent_map (fun x -> x * x) [1; 2; 3; 4])));
-    test_case "concurrent_map strings" `Quick (run_eio (fun () ->
-      check (list string) "upper"
-        ["HELLO"; "WORLD"]
-        (My_solutions.concurrent_map String.uppercase_ascii
-           ["hello"; "world"])));
-    test_case "concurrent_map пустой" `Quick (run_eio (fun () ->
-      check (list int) "empty" []
-        (My_solutions.concurrent_map (fun x -> x) [])));
+    test_case "Email.make валидный" `Quick (fun () ->
+      match My_solutions.Email.make "user@example.com" with
+      | Ok e ->
+        check string "email" "user@example.com" (My_solutions.Email.to_string e)
+      | Error e -> fail e);
+    test_case "Email.make пустой" `Quick (fun () ->
+      check (result_string string) "empty"
+        (Error "email не может быть пустым")
+        (My_solutions.Email.make ""
+         |> Result.map My_solutions.Email.to_string));
+    test_case "Email.make без @" `Quick (fun () ->
+      check (result_string string) "no at"
+        (Error "email должен содержать @")
+        (My_solutions.Email.make "user"
+         |> Result.map My_solutions.Email.to_string));
+    test_case "Email.make без точки в домене" `Quick (fun () ->
+      check (result_string string) "no dot"
+        (Error "некорректный домен")
+        (My_solutions.Email.make "user@host"
+         |> Result.map My_solutions.Email.to_string));
   ]
 
-let produce_consume_tests =
+(* Упражнение 3: NonEmptyList *)
+
+let non_empty_list_tests =
   let open Alcotest in
   [
-    test_case "produce_consume 5" `Quick (run_eio (fun () ->
-      check int "sum 1..5" 15
-        (My_solutions.produce_consume 5)));
-    test_case "produce_consume 10" `Quick (run_eio (fun () ->
-      check int "sum 1..10" 55
-        (My_solutions.produce_consume 10)));
-    test_case "produce_consume 0" `Quick (run_eio (fun () ->
-      check int "sum 0" 0
-        (My_solutions.produce_consume 0)));
+    test_case "NonEmptyList.make непустой" `Quick (fun () ->
+      match My_solutions.NonEmptyList.make [1; 2; 3] with
+      | Ok nel ->
+        check int "head" 1 (My_solutions.NonEmptyList.head nel);
+        check (list int) "tail" [2; 3] (My_solutions.NonEmptyList.tail nel);
+        check (list int) "to_list" [1; 2; 3]
+          (My_solutions.NonEmptyList.to_list nel);
+        check int "length" 3 (My_solutions.NonEmptyList.length nel)
+      | Error _ -> fail "ожидался Ok");
+    test_case "NonEmptyList.make пустой" `Quick (fun () ->
+      match My_solutions.NonEmptyList.make ([] : int list) with
+      | Error _ -> ()
+      | Ok _ -> fail "ожидалась ошибка");
+    test_case "NonEmptyList.singleton" `Quick (fun () ->
+      let nel = My_solutions.NonEmptyList.singleton 42 in
+      check int "head" 42 (My_solutions.NonEmptyList.head nel);
+      check (list int) "tail" [] (My_solutions.NonEmptyList.tail nel);
+      check int "length" 1 (My_solutions.NonEmptyList.length nel));
+    test_case "NonEmptyList.map" `Quick (fun () ->
+      match My_solutions.NonEmptyList.make [1; 2; 3] with
+      | Ok nel ->
+        let doubled = My_solutions.NonEmptyList.map (fun x -> x * 2) nel in
+        check (list int) "mapped" [2; 4; 6]
+          (My_solutions.NonEmptyList.to_list doubled)
+      | Error _ -> fail "ожидался Ok");
   ]
 
-let race_tests =
+(* Упражнение 4: TrafficLight *)
+
+let traffic_light_tests =
   let open Alcotest in
   [
-    test_case "race возвращает результат" `Quick (run_eio (fun () ->
-      let result = My_solutions.race [
-        (fun () -> 42);
-        (fun () -> 99);
-      ] in
-      check bool "result is 42 or 99" true
-        (result = 42 || result = 99)));
-    test_case "race с одной задачей" `Quick (run_eio (fun () ->
-      check int "single" 7
-        (My_solutions.race [(fun () -> 7)])));
+    test_case "начальное состояние --- красный" `Quick (fun () ->
+      check string "red"
+        "red" (My_solutions.TrafficLight.show My_solutions.TrafficLight.start));
+    test_case "полный цикл" `Quick (fun () ->
+      let open My_solutions.TrafficLight in
+      let l = start in
+      check string "red" "red" (show l);
+      let l = red_to_green l in
+      check string "green" "green" (show l);
+      let l = green_to_yellow l in
+      check string "yellow" "yellow" (show l);
+      let l = yellow_to_red l in
+      check string "red again" "red" (show l));
+  ]
+
+(* Упражнение 5: Form *)
+
+let form_tests =
+  let open Alcotest in
+  let parse_name s =
+    if String.length s > 0 then Ok s
+    else Error "не может быть пустым"
+  in
+  let parse_age s =
+    match int_of_string_opt s with
+    | Some n when n > 0 -> Ok n
+    | _ -> Error "должен быть положительным числом"
+  in
+  [
+    test_case "Form --- все поля валидны" `Quick (fun () ->
+      let open My_solutions.Form in
+      match run (map2
+        (fun name age -> (name, age))
+        (field "имя" "Иван" parse_name)
+        (field "возраст" "25" parse_age))
+      with
+      | Ok (name, age) ->
+        check string "name" "Иван" name;
+        check int "age" 25 age
+      | Error _ -> fail "ожидался Ok");
+    test_case "Form --- одно поле невалидно" `Quick (fun () ->
+      let open My_solutions.Form in
+      match run (map2
+        (fun name age -> (name, age))
+        (field "имя" "" parse_name)
+        (field "возраст" "25" parse_age))
+      with
+      | Error errors ->
+        check int "одна ошибка" 1 (List.length errors);
+        check string "имя поля" "имя" (fst (List.hd errors))
+      | Ok _ -> fail "ожидалась ошибка");
+    test_case "Form --- оба поля невалидны" `Quick (fun () ->
+      let open My_solutions.Form in
+      match run (map2
+        (fun name age -> (name, age))
+        (field "имя" "" parse_name)
+        (field "возраст" "abc" parse_age))
+      with
+      | Error errors ->
+        check int "две ошибки" 2 (List.length errors)
+      | Ok _ -> fail "ожидалась ошибка");
+    test_case "Form.map3 --- все валидны" `Quick (fun () ->
+      let open My_solutions.Form in
+      match run (map3
+        (fun a b c -> (a, b, c))
+        (field "a" "hello" parse_name)
+        (field "b" "world" parse_name)
+        (field "c" "10" parse_age))
+      with
+      | Ok ("hello", "world", 10) -> ()
+      | Ok _ -> fail "неожиданные значения"
+      | Error _ -> fail "ожидался Ok");
+    test_case "Form.map3 --- все невалидны" `Quick (fun () ->
+      let open My_solutions.Form in
+      match run (map3
+        (fun a b c -> (a, b, c))
+        (field "a" "" parse_name)
+        (field "b" "" parse_name)
+        (field "c" "abc" parse_age))
+      with
+      | Error errors ->
+        check int "три ошибки" 3 (List.length errors)
+      | Ok _ -> fail "ожидалась ошибка");
+  ]
+
+(* Упражнение 6: FileHandle *)
+
+let file_handle_tests =
+  let open Alcotest in
+  [
+    test_case "FileHandle --- открытие и чтение" `Quick (fun () ->
+      let h = My_solutions.FileHandle.open_file "test.txt" in
+      check string "name" "test.txt" (My_solutions.FileHandle.name h);
+      check string "empty content" "" (My_solutions.FileHandle.read h));
+    test_case "FileHandle --- запись и чтение" `Quick (fun () ->
+      let h = My_solutions.FileHandle.open_file "test.txt" in
+      let h = My_solutions.FileHandle.write h "hello " in
+      let h = My_solutions.FileHandle.write h "world" in
+      check string "content" "hello world" (My_solutions.FileHandle.read h));
+    test_case "FileHandle --- close сохраняет имя" `Quick (fun () ->
+      let h = My_solutions.FileHandle.open_file "test.txt" in
+      let h = My_solutions.FileHandle.write h "data" in
+      let closed = My_solutions.FileHandle.close h in
+      check string "name" "test.txt" (My_solutions.FileHandle.name closed));
   ]
 
 let () =
   Alcotest.run "Chapter 09"
     [
-      ("fib --- числа Фибоначчи", fib_tests);
-      ("parallel_map --- параллельный map", parallel_map_tests);
-      ("parallel_sum --- параллельная сумма", parallel_sum_tests);
-      ("produce_and_collect --- producer-consumer", produce_and_collect_tests);
-      ("parallel_fib --- параллельный Фибоначчи", parallel_fib_tests);
-      ("concurrent_map --- конкурентный map", concurrent_map_tests);
-      ("produce_consume --- producer-consumer сумма", produce_consume_tests);
-      ("race --- гонка задач", race_tests);
+      ("Money --- умный конструктор", money_tests);
+      ("CardNumber --- умный конструктор", card_number_tests);
+      ("PaymentState --- конечный автомат", payment_state_tests);
+      ("PositiveInt --- упражнение 1", positive_int_tests);
+      ("Email --- упражнение 2", email_tests);
+      ("NonEmptyList --- упражнение 3", non_empty_list_tests);
+      ("TrafficLight --- упражнение 4", traffic_light_tests);
+      ("Form --- упражнение 5", form_tests);
+      ("FileHandle --- упражнение 6", file_handle_tests);
     ]

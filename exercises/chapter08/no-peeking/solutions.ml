@@ -50,6 +50,23 @@ let array_sum_imperative arr =
   done;
   !sum
 
+(** Logger FC/IS --- Functional Core. *)
+module LoggerPure = struct
+  let add msgs msg = msgs @ [msg]
+  let count msgs = List.length msgs
+  let messages msgs = msgs
+end
+
+(** Logger FC/IS --- Imperative Shell. *)
+module LoggerShell = struct
+  type t = { mutable msgs : string list }
+  let create () = { msgs = [] }
+  let log l msg = l.msgs <- LoggerPure.add l.msgs msg
+  let messages l = LoggerPure.messages l.msgs
+  let count l = LoggerPure.count l.msgs
+  let clear l = l.msgs <- []
+end
+
 (** Robot Name --- генерация уникальных имён формата AA000. *)
 module Robot = struct
   type t = { name : string }

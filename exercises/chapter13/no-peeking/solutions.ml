@@ -1,73 +1,48 @@
 (** Референсные решения --- не подсматривайте, пока не попробуете сами! *)
-open Chapter13.Properties
 
-(** Инволюция reverse. *)
-let prop_rev_involution =
-  QCheck.Test.make ~name:"rev_involution" ~count:100
-    QCheck.(list small_int)
-    (fun lst -> List.rev (List.rev lst) = lst)
+(** Эффект Emit. *)
+type _ Effect.t += Emit : int -> unit Effect.t
 
-(** Sort возвращает отсортированный список. *)
-let prop_sort_sorted =
-  QCheck.Test.make ~name:"sort_sorted" ~count:100
-    QCheck.(list small_int)
-    (fun lst -> is_sorted (List.sort compare lst))
-
-(** BST содержит все вставленные элементы. *)
-let prop_bst_membership =
-  QCheck.Test.make ~name:"bst_membership" ~count:100
-    QCheck.(pair small_int (list small_int))
-    (fun (x, xs) ->
-       let tree = bst_of_list (x :: xs) in
-       bst_mem x tree)
-
-(** Roundtrip для кодека (только строки без ':'). *)
-let prop_codec_roundtrip =
-  QCheck.Test.make ~name:"codec_roundtrip" ~count:100
-    QCheck.(pair small_int (string_of_size (Gen.return 5)))
-    (fun (n, s) ->
-       let s_clean = String.map (fun c -> if c = ':' then '_' else c) s in
-       decode_pair (encode_pair (n, s_clean)) = Some (n, s_clean))
-
-(** Binary Search. *)
-let binary_search arr target =
-  let rec loop lo hi =
-    if lo > hi then None
-    else
-      let mid = lo + (hi - lo) / 2 in
-      if arr.(mid) = target then Some mid
-      else if arr.(mid) < target then loop (mid + 1) hi
-      else loop lo (mid - 1)
+let run_emit (f : unit -> 'a) : 'a * int list =
+  let items = ref [] in
+  let result = Effect.Deep.try_with f ()
+    { effc = fun (type a) (eff : a Effect.t) ->
+        match eff with
+        | Emit v -> Some (fun (k : (a, _) Effect.Deep.continuation) ->
+            items := v :: !items;
+            Effect.Deep.continue k ())
+        | _ -> None }
   in
-  if Array.length arr = 0 then None
-  else loop 0 (Array.length arr - 1)
+  (result, List.rev !items)
 
-(** BST. *)
-module BST = struct
-  type 'a t =
-    | Empty
-    | Node of 'a t * 'a * 'a t
+(** Эффект Reader. *)
+type _ Effect.t += Ask : string Effect.t
 
-  let empty = Empty
+let run_reader (env : string) (f : unit -> 'a) : 'a =
+  Effect.Deep.try_with f ()
+    { effc = fun (type a) (eff : a Effect.t) ->
+        match eff with
+        | Ask -> Some (fun (k : (a, _) Effect.Deep.continuation) ->
+            Effect.Deep.continue k env)
+        | _ -> None }
 
-  let rec insert value = function
-    | Empty -> Node (Empty, value, Empty)
-    | Node (left, v, right) ->
-      if value <= v then Node (insert value left, v, right)
-      else Node (left, v, insert value right)
+(** Композиция State + Emit. *)
+let count_and_emit (n : int) : unit =
+  for i = 1 to n do
+    let current = Effect.perform Chapter13.Effects.Get in
+    Effect.perform (Chapter13.Effects.Set (current + i));
+    Effect.perform (Emit (current + i))
+  done
 
-  let rec mem value = function
-    | Empty -> false
-    | Node (left, v, right) ->
-      if value = v then true
-      else if value < v then mem value left
-      else mem value right
+(** Эффект Fail. *)
+type _ Effect.t += Fail : string -> 'a Effect.t
 
-  let to_sorted_list tree =
-    let rec loop acc = function
-      | Empty -> acc
-      | Node (left, v, right) ->
-        loop (v :: loop acc right) left
-    in
-    loop [] tree
-end
+let run_fail (f : unit -> 'a) : ('a, string) result =
+  Effect.Deep.match_with f ()
+    { retc = (fun x -> Ok x);
+      exnc = (fun e -> raise e);
+      effc = fun (type a) (eff : a Effect.t) ->
+        match eff with
+        | Fail msg -> Some (fun (_k : (a, _) Effect.Deep.continuation) ->
+            Error msg)
+        | _ -> None }

@@ -1,532 +1,665 @@
-# Графика с raylib
+# FFI и JSON
 
 ## Цели главы
 
-В этой главе мы познакомимся с графическим программированием на OCaml, используя библиотеку **raylib-ocaml** --- привязки к популярному игровому фреймворку [Raylib](https://www.raylib.com/). Мы изучим игровой цикл, рисование примитивов, обработку ввода и анимацию. Особое внимание уделим **чистой игровой логике** --- векторной математике, обнаружению столкновений и управлению состоянием, которые можно тестировать без графической библиотеки.
+В этой главе мы изучим два важных аспекта практической разработки на OCaml:
 
-## Установка raylib-ocaml
+- **FFI (Foreign Function Interface)** --- вызов C-функций из OCaml.
+- **Работа с JSON** --- парсинг и генерация JSON с помощью библиотеки Yojson.
+- **Автоматическая сериализация** --- ppx_deriving_yojson для генерации кодеков.
+- Сравнение с подходом Haskell (aeson, FFI).
 
-Библиотека [raylib-ocaml](https://github.com/tjammer/raylib-ocaml) устанавливается через opam:
+## Подготовка проекта
 
-```text
-$ opam install raylib
-```
-
-В `dune`-файле исполняемого приложения добавьте зависимость:
-
-```text
-(executable
- (name main)
- (libraries raylib))
-```
-
-> Упражнения этой главы **не зависят от raylib**. Библиотечный код в `lib/` содержит чистую игровую логику (векторная математика, столкновения, физика), которая тестируется через Alcotest. Текст главы объясняет raylib для визуализации, но все упражнения --- это чистые функции.
-
-## Игровой цикл
-
-Любая графическая программа строится вокруг **игрового цикла** (game loop) --- бесконечного цикла, который повторяет три шага:
-
-1. **Обработка ввода** --- считываем нажатия клавиш, позицию мыши.
-2. **Обновление состояния** --- двигаем объекты, проверяем столкновения.
-3. **Отрисовка** --- рисуем текущий кадр на экране.
-
-В raylib-ocaml этот паттерн выглядит так:
-
-```ocaml
-open Raylib
-
-let () =
-  init_window 800 600 "Мой первый raylib";
-  set_target_fps 60;
-
-  while not (window_should_close ()) do
-    (* 1. Обработка ввода *)
-    (* 2. Обновление состояния *)
-
-    (* 3. Отрисовка *)
-    begin_drawing ();
-    clear_background Color.raywhite;
-    draw_text "Привет, raylib!" 300 280 20 Color.darkgray;
-    end_drawing ()
-  done;
-
-  close_window ()
-```
-
-Функция `init_window` создаёт окно заданного размера с заголовком. `set_target_fps 60` ограничивает частоту кадров --- без этого цикл будет работать максимально быстро, нагружая процессор.
-
-Цикл `while not (window_should_close ())` продолжается, пока пользователь не нажмёт Escape или не закроет окно. Внутри цикла всё рисование обрамляется парой `begin_drawing` / `end_drawing`.
-
-## Координатная система и цвета
-
-В raylib начало координат `(0, 0)` находится в **левом верхнем** углу экрана. Ось X направлена вправо, ось Y --- вниз:
+Код этой главы находится в `exercises/chapter12`. Соберите проект:
 
 ```text
-(0, 0) ---------> X
-|
-|
-|
-v
-Y
+$ cd exercises/chapter12
+$ dune build
 ```
 
-Это отличается от математической системы координат, где Y направлена вверх. Учитывайте это при расчётах физики --- положительное ускорение по Y означает движение **вниз**.
-
-Цвета в raylib задаются через модуль `Color`. Есть набор предопределённых цветов:
-
-```ocaml
-Color.red
-Color.green
-Color.blue
-Color.black
-Color.white
-Color.raywhite  (* светло-серый фон *)
-```
-
-Можно создать свой цвет через RGBA-компоненты:
-
-```ocaml
-let my_color = Color.create 255 128 0 255  (* оранжевый, непрозрачный *)
-```
-
-## Рисование примитивов
-
-Raylib предоставляет набор функций для рисования простых фигур. Все вызовы рисования должны находиться между `begin_drawing` и `end_drawing`:
-
-```ocaml
-(* Круг: центр (400, 300), радиус 50, красный *)
-draw_circle 400 300 50.0 Color.red;
-
-(* Прямоугольник: левый верхний угол (100, 100), ширина 200, высота 80 *)
-draw_rectangle 100 100 200 80 Color.blue;
-
-(* Линия: из (0, 0) в (400, 300), зелёная *)
-draw_line 0 0 400 300 Color.green;
-
-(* Текст: позиция (10, 10), размер шрифта 20 *)
-draw_text "Счёт: 42" 10 10 20 Color.black;
-
-(* Контур круга *)
-draw_circle_lines 400 300 50.0 Color.darkgray;
-
-(* Контур прямоугольника *)
-draw_rectangle_lines 100 100 200 80 Color.darkgray;
-```
-
-## Обработка ввода
-
-Raylib предоставляет функции для проверки состояния клавиш и мыши:
-
-```ocaml
-(* Клавиша нажата в текущем кадре *)
-if is_key_pressed Key.Space then (* прыжок *)
-
-(* Клавиша удерживается *)
-if is_key_down Key.Right then (* двигаемся вправо *)
-
-(* Позиция мыши *)
-let mx = get_mouse_x () in
-let my = get_mouse_y () in
-
-(* Клик мыши *)
-if is_mouse_button_pressed MouseButton.Left then (* выстрел *)
-```
-
-Различие между `is_key_pressed` и `is_key_down` важно: первая срабатывает **один раз** при нажатии, вторая --- **каждый кадр**, пока клавиша удерживается. Для движения используйте `is_key_down`, для разовых действий (прыжок, выстрел) --- `is_key_pressed`.
-
-## Анимация: обновление состояния
-
-Анимация --- это изменение состояния между кадрами. Простейший пример --- движущийся круг:
-
-```ocaml
-open Raylib
-
-let () =
-  init_window 800 600 "Движущийся круг";
-  set_target_fps 60;
-
-  let x = ref 400.0 in
-  let y = ref 300.0 in
-  let speed = 4.0 in
-
-  while not (window_should_close ()) do
-    (* Обновление *)
-    if is_key_down Key.Right then x := !x +. speed;
-    if is_key_down Key.Left  then x := !x -. speed;
-    if is_key_down Key.Down  then y := !y +. speed;
-    if is_key_down Key.Up    then y := !y -. speed;
-
-    (* Отрисовка *)
-    begin_drawing ();
-    clear_background Color.raywhite;
-    draw_circle (int_of_float !x) (int_of_float !y) 20.0 Color.maroon;
-    end_drawing ()
-  done;
-
-  close_window ()
-```
-
-Этот пример использует `ref` для мутабельного состояния --- простой, но не очень функциональный подход. Далее мы рассмотрим более чистый паттерн.
-
-## Чистая игровая логика
-
-Ключевая идея функционального подхода к играм --- **отделение логики от рендеринга**. Игровое состояние описывается неизменяемой записью, а обновление --- чистой функцией:
-
-```ocaml
-type state = {
-  player_x : float;
-  player_y : float;
-  score : int;
-}
-
-let initial_state = {
-  player_x = 400.0;
-  player_y = 300.0;
-  score = 0;
-}
-
-(** Чистая функция обновления --- без побочных эффектов. *)
-let update (input : input) (st : state) : state =
-  let dx = if input.right then 4.0 else if input.left then -4.0 else 0.0 in
-  let dy = if input.down then 4.0 else if input.up then -4.0 else 0.0 in
-  { st with player_x = st.player_x +. dx; player_y = st.player_y +. dy }
-
-(** Побочный эффект --- только отрисовка. *)
-let draw (st : state) : unit =
-  Raylib.begin_drawing ();
-  Raylib.clear_background Raylib.Color.raywhite;
-  Raylib.draw_circle
-    (int_of_float st.player_x)
-    (int_of_float st.player_y)
-    20.0 Raylib.Color.maroon;
-  Raylib.draw_text
-    (Printf.sprintf "Счёт: %d" st.score)
-    10 10 20 Raylib.Color.darkgray;
-  Raylib.end_drawing ()
-```
-
-Преимущества такого подхода:
-
-- **Тестируемость** --- функцию `update` можно тестировать без графики.
-- **Воспроизводимость** --- записав последовательность `input`, можно воспроизвести игру.
-- **Ясность** --- состояние явно описано типом, логика сосредоточена в одном месте.
-
-## Векторная математика
-
-Для работы с 2D-координатами удобно определить тип двумерного вектора и операции над ним:
-
-```ocaml
-type vec2 = { x : float; y : float }
-
-let vec2_add a b = { x = a.x +. b.x; y = a.y +. b.y }
-let vec2_sub a b = { x = a.x -. b.x; y = a.y -. b.y }
-let vec2_scale s v = { x = v.x *. s; y = v.y *. s }
-let vec2_length v = Float.sqrt (v.x *. v.x +. v.y *. v.y)
-```
-
-Нормализация вектора --- приведение к единичной длине --- нужна, чтобы задавать направление:
-
-```ocaml
-let vec2_normalize v =
-  let len = vec2_length v in
-  if len < 1e-10 then { x = 0.0; y = 0.0 }
-  else vec2_scale (1.0 /. len) v
-```
-
-Проверка `len < 1e-10` защищает от деления на ноль для нулевого вектора.
-
-Скалярное произведение (dot product) полезно для проекций и проверки направлений:
-
-```ocaml
-let vec2_dot a b = a.x *. b.x +. a.y *. b.y
-```
-
-Если `vec2_dot a b > 0`, векторы направлены примерно в одну сторону; если `< 0` --- в противоположные; если `= 0` --- перпендикулярны.
-
-Расстояние между двумя точками --- длина вектора разности:
-
-```ocaml
-let vec2_distance a b = vec2_length (vec2_sub b a)
-```
-
-## Обнаружение столкновений
-
-Столкновения (collisions) --- фундаментальная часть любой игры. Рассмотрим два базовых случая.
-
-### Точка в прямоугольнике
-
-Определим прямоугольник по левому верхнему углу, ширине и высоте:
-
-```ocaml
-type rect = { rx : float; ry : float; rw : float; rh : float }
-
-let point_in_rect (p : vec2) (r : rect) =
-  p.x >= r.rx && p.x <= r.rx +. r.rw &&
-  p.y >= r.ry && p.y <= r.ry +. r.rh
-```
-
-Точка находится внутри прямоугольника, если все четыре неравенства выполняются одновременно. Эта проверка нужна, например, для определения, навёл ли пользователь курсор на кнопку.
-
-### Столкновение двух кругов
-
-Два круга пересекаются, если расстояние между их центрами меньше или равно сумме радиусов:
-
-```ocaml
-type circle = { center : vec2; radius : float }
-
-let circles_collide (c1 : circle) (c2 : circle) =
-  vec2_distance c1.center c2.center <= c1.radius +. c2.radius
-```
-
-Это простейшая и самая быстрая проверка столкновений. Круговые хитбоксы используются во многих играх именно из-за дешевизны проверки.
-
-### Столкновение круга с прямоугольником
-
-Более сложный случай --- столкновение круга с прямоугольником. Алгоритм: находим ближайшую к центру круга точку на прямоугольнике и проверяем, лежит ли она внутри круга:
-
-```ocaml
-let circle_rect_collide (c : circle) (r : rect) =
-  let closest_x = Float.max r.rx (Float.min c.center.x (r.rx +. r.rw)) in
-  let closest_y = Float.max r.ry (Float.min c.center.y (r.ry +. r.rh)) in
-  let dx = c.center.x -. closest_x in
-  let dy = c.center.y -. closest_y in
-  (dx *. dx +. dy *. dy) <= c.radius *. c.radius
-```
-
-`Float.min` и `Float.max` "зажимают" (clamp) координату центра круга в пределы прямоугольника. Если расстояние от центра до этой ближайшей точки меньше радиуса --- есть столкновение. Сравниваем квадраты расстояний, чтобы избежать вычисления квадратного корня.
-
-## Пример: прыгающий мяч
-
-Объединим всё вышесказанное в классическом примере --- мяч, отскакивающий от стенок окна.
-
-Состояние мяча:
-
-```ocaml
-type ball = {
-  pos : vec2;     (** Позиция центра *)
-  vel : vec2;     (** Скорость *)
-  radius : float; (** Радиус *)
-}
-```
-
-Функция обновления --- чистая, не зависит от raylib:
-
-```ocaml
-let update_ball (width : float) (height : float) (b : ball) : ball =
-  let new_pos = vec2_add b.pos b.vel in
-  let vx =
-    if new_pos.x -. b.radius < 0.0 || new_pos.x +. b.radius > width
-    then -. b.vel.x else b.vel.x
-  in
-  let vy =
-    if new_pos.y -. b.radius < 0.0 || new_pos.y +. b.radius > height
-    then -. b.vel.y else b.vel.y
-  in
-  let vel = { x = vx; y = vy } in
-  let pos = vec2_add b.pos vel in
-  { b with pos; vel }
-```
-
-Логика проста: вычисляем новую позицию; если мяч выходит за границы по какой-либо оси --- инвертируем соответствующую компоненту скорости. Затем вычисляем финальную позицию с обновлённой скоростью.
-
-Отрисовка --- единственное место, где нужен raylib:
-
-```ocaml
-let draw_ball (b : ball) =
-  Raylib.draw_circle
-    (int_of_float b.pos.x) (int_of_float b.pos.y)
-    b.radius Raylib.Color.red
-```
-
-Главный цикл собирает всё вместе:
-
-```ocaml
-let () =
-  let width = 800.0 in
-  let height = 600.0 in
-  Raylib.init_window (int_of_float width) (int_of_float height) "Bouncing Ball";
-  Raylib.set_target_fps 60;
-
-  let ball = ref {
-    pos = { x = 100.0; y = 100.0 };
-    vel = { x = 3.0; y = 2.0 };
-    radius = 15.0;
-  } in
-
-  while not (Raylib.window_should_close ()) do
-    ball := update_ball width height !ball;
-    Raylib.begin_drawing ();
-    Raylib.clear_background Raylib.Color.raywhite;
-    draw_ball !ball;
-    Raylib.end_drawing ()
-  done;
-
-  Raylib.close_window ()
-```
-
-Заметьте, что `ref` используется только для хранения состояния между кадрами. Функция `update_ball` остаётся чистой --- она принимает `ball` и возвращает новый `ball`.
-
-## Пример: персонаж с управлением
-
-Расширим пример --- добавим управление с клавиатуры и простую гравитацию:
-
-```ocaml
-type entity = {
-  pos : vec2;
-  vel : vec2;
-  gravity : float;
-}
-
-let update_entity (dt : float) (e : entity) : entity =
-  let new_vel = { x = e.vel.x; y = e.vel.y +. e.gravity *. dt } in
-  let new_pos = vec2_add e.pos (vec2_scale dt new_vel) in
-  { e with pos = new_pos; vel = new_vel }
-```
-
-Параметр `dt` (delta time) --- время, прошедшее с предыдущего кадра. Использование `dt` вместо фиксированного шага делает движение независимым от частоты кадров. В raylib `dt` получают через `Raylib.get_frame_time ()`.
-
-## Отражение векторов
-
-Отражение вектора скорости от поверхности --- ещё одна частая операция. Для горизонтальной поверхности (пол/потолок) инвертируем Y-компоненту:
-
-```ocaml
-let reflect_horizontal (v : vec2) : vec2 =
-  { x = v.x; y = -. v.y }
-```
-
-Для вертикальной поверхности (стена) --- X-компоненту:
-
-```ocaml
-let reflect_vertical (v : vec2) : vec2 =
-  { x = -. v.x; y = v.y }
-```
-
-Это упрощённая модель --- в реальных играх учитывают угол поверхности и нормаль. Но для осевых границ (стенки экрана) этого достаточно.
-
-## Паттерн: игровое состояние
-
-Обобщим подход к организации игры:
-
-```ocaml
-module type GAME = sig
-  type state
-  type input
-
-  val initial : state
-  val read_input : unit -> input  (** Побочный эффект: читаем ввод *)
-  val update : input -> state -> state  (** Чистая функция *)
-  val draw : state -> unit  (** Побочный эффект: рисуем *)
-end
-
-let run_game (module G : GAME) =
-  let state = ref G.initial in
-  while not (Raylib.window_should_close ()) do
-    let input = G.read_input () in
-    state := G.update input !state;
-    G.draw !state
-  done
-```
-
-Модульная сигнатура `GAME` чётко разделяет чистую логику (`update`) и побочные эффекты (`read_input`, `draw`). Это позволяет:
-
-- Тестировать `update` без запуска графики.
-- Заменять рендерер (например, текстовый для отладки).
-- Воспроизводить игру по записи ввода.
-
-## Сравнение с Haskell и gloss
-
-В книге "PureScript by Example" / Haskell-версии этой книги для графики используется библиотека **gloss**. Сравним подходы:
-
-| Аспект | Haskell + gloss | OCaml + raylib |
-|--------|----------------|----------------|
-| Парадигма | Чисто функциональная: `play :: ... -> (state -> Picture) -> (Event -> state -> state) -> (Float -> state -> state) -> IO ()` | Императивный цикл с чистыми функциями обновления |
-| Состояние | Передаётся через аргументы `play` | Хранится в `ref`, обновляется чистой функцией |
-| Ввод | Через алгебраический тип `Event` | Через функции-запросы (`is_key_down` и т.д.) |
-| Рисование | Композиция значений типа `Picture` | Последовательность вызовов `draw_*` |
-| Возможности | 2D, простые формы и изображения | 2D и 3D, текстуры, звук, шейдеры |
-| Установка | `cabal install gloss` | `opam install raylib` |
-
-Gloss предоставляет более декларативный API: вы описываете **картинку** как значение, а не последовательность команд. Raylib ближе к императивному стилю, но мощнее --- он поддерживает 3D, звук, шейдеры и многое другое.
-
-Принцип, однако, одинаков: **логика игры --- чистые функции**, рендеринг --- тонкая прослойка с побочными эффектами.
-
-## Структура проекта упражнений
-
-Откройте директорию `exercises/chapter12`:
+Для этой главы требуются библиотеки `yojson` и `ppx_deriving_yojson`. Убедитесь, что они установлены:
 
 ```text
-chapter12/
-├── dune-project
-├── lib/
-│   ├── dune
-│   └── game.ml              <- чистая игровая логика (векторы, столкновения, физика)
-├── test/
-│   ├── dune
-│   ├── test_chapter12.ml    <- тесты
-│   └── my_solutions.ml      <- ваши решения
-└── no-peeking/
-    └── solutions.ml          <- эталонные решения
+$ opam install yojson ppx_deriving_yojson
 ```
 
-Библиотека `lib/game.ml` содержит типы (`vec2`, `rect`, `circle`, `ball`) и функции (векторная арифметика, обнаружение столкновений, обновление мяча). Она **не зависит от raylib** --- только стандартная библиотека OCaml.
+## Часть 1: FFI --- вызов C-функций из OCaml
+
+### Зачем нужен FFI?
+
+OCaml --- компилируемый язык с эффективной средой выполнения, но иногда нужно:
+
+- Использовать существующие C-библиотеки (OpenSSL, SQLite, zlib).
+- Вызывать системные функции ОС.
+- Оптимизировать критичные участки кода на C.
+- Интегрироваться с экосистемой других языков через C ABI.
+
+В Haskell для FFI используется ключевое слово `foreign import`:
+
+```haskell
+-- Haskell FFI
+foreign import ccall "sin" c_sin :: CDouble -> CDouble
+```
+
+В OCaml аналогичную роль играет ключевое слово `external`.
+
+### Ключевое слово `external`
+
+`external` объявляет функцию, реализованную на C:
+
+```ocaml
+external c_sin : float -> float = "caml_sin_float" "sin"
+  [@@unboxed] [@@noalloc]
+external c_cos : float -> float = "caml_cos_float" "cos"
+  [@@unboxed] [@@noalloc]
+```
+
+Разберём синтаксис:
+
+- `external c_sin` --- имя функции в OCaml.
+- `: float -> float` --- тип функции в OCaml.
+- `= "caml_sin_float" "sin"` --- два имени C-функций: первое для байткод-компилятора, второе для нативного.
+- `[@@unboxed]` --- аргументы и результат передаются без упаковки (boxing). Требует указания двух C-имён.
+- `[@@noalloc]` --- функция не выделяет память в куче OCaml.
+
+### Соответствие типов OCaml и C
+
+| Тип OCaml | Тип C | Примечание |
+|-----------|-------|------------|
+| `int` | `intnat` | Машинное целое минус 1 бит (тег) |
+| `float` | `double` | 64-битное число с плавающей точкой |
+| `bool` | `intnat` | 0 = false, 1 = true |
+| `string` | `char *` | Строки OCaml --- не нуль-терминированные! |
+| `unit` | `value` | Представлен как `Val_unit` |
+| `'a array` | `value` | Массив боксированных значений |
+
+### Пример: математические функции из libm
+
+Стандартная библиотека C `libm` содержит математические функции, которые можно вызывать напрямую:
+
+```ocaml
+external c_sin : float -> float = "caml_sin_float" "sin"
+  [@@unboxed] [@@noalloc]
+external c_cos : float -> float = "caml_cos_float" "cos"
+  [@@unboxed] [@@noalloc]
+external c_sqrt : float -> float = "caml_sqrt_float" "sqrt"
+  [@@unboxed] [@@noalloc]
+external c_exp : float -> float = "caml_exp_float" "exp"
+  [@@unboxed] [@@noalloc]
+external c_log : float -> float = "caml_log_float" "log"
+  [@@unboxed] [@@noalloc]
+```
+
+Использование:
+
+```text
+# c_sin 0.0;;
+- : float = 0.
+
+# c_sin (Float.pi /. 2.0);;
+- : float = 1.
+
+# c_cos 0.0;;
+- : float = 1.
+
+# c_sqrt 2.0;;
+- : float = 1.41421356237309515
+```
+
+Атрибуты `[@@unboxed]` и `[@@noalloc]` --- оптимизации для простых числовых функций. `[@@unboxed]` избегает упаковки `float` в блок кучи, а `[@@noalloc]` сообщает сборщику мусора, что вызов безопасен. При использовании `[@@unboxed]` обязательно указывать два имени C-функций --- для байткод-компилятора и для нативного.
+
+### Простые external без атрибутов
+
+Если не нужны оптимизации `[@@unboxed]` и `[@@noalloc]`, можно указать одно имя C-функции:
+
+```ocaml
+external c_abs : int -> int = "abs"
+```
+
+Это проще, но медленнее для числовых типов из-за боксинга.
+
+### Функции с несколькими аргументами
+
+Для C-функций с несколькими аргументами тоже нужно указать **два** имени --- для байткод-компилятора и нативного:
+
+```ocaml
+external c_pow : float -> float -> float
+  = "caml_pow_bytecode" "pow" [@@unboxed] [@@noalloc]
+```
+
+Первое имя --- обёртка для байткода (все аргументы передаются как `value`), второе --- нативная C-функция.
+
+### Безопасность FFI
+
+FFI --- **небезопасная** операция. Компилятор OCaml **не проверяет** соответствие типов с C-функцией. Если вы объявите неправильный тип, программа может упасть с segfault:
+
+```ocaml
+(* ОПАСНО: неправильный тип! sin принимает double, а не int *)
+external bad_sin : int -> int = "sin"
+(* Это скомпилируется, но вызовет undefined behavior *)
+```
+
+Правила безопасности:
+
+1. Убедитесь, что типы OCaml соответствуют типам C.
+2. Не используйте `[@@noalloc]` если C-функция может вызвать callback в OCaml.
+3. Будьте осторожны со строками --- строки OCaml не нуль-терминированы.
+4. Не передавайте OCaml-значения в C без правильного маршаллинга.
+
+### Библиотека ctypes
+
+Для более сложного FFI (структуры, указатели, callbacks) существует библиотека **ctypes**, которая позволяет описывать C-привязки целиком на OCaml:
+
+```ocaml
+(* С ctypes (концептуально): *)
+open Ctypes
+open Foreign
+
+let c_strlen = foreign "strlen" (string @-> returning int)
+let c_puts = foreign "puts" (string @-> returning int)
+```
+
+`ctypes` безопаснее ручных `external`-объявлений, потому что генерирует правильный маршаллинг автоматически. Но `external` быстрее для простых случаев, так как не имеет накладных расходов.
+
+Подробное изучение ctypes выходит за рамки этой главы, но знать о его существовании полезно.
+
+## Часть 2: JSON с Yojson
+
+### Зачем JSON?
+
+JSON --- самый популярный формат обмена данными в веб-разработке и API. В OCaml основная библиотека для работы с JSON --- **Yojson**.
+
+В Haskell для JSON используется `aeson`:
+
+```haskell
+-- Haskell: aeson
+import Data.Aeson
+data Person = Person { name :: Text, age :: Int }
+  deriving (Generic, FromJSON, ToJSON)
+```
+
+В OCaml аналогичную роль играет связка `yojson` + `ppx_deriving_yojson`.
+
+### Тип `Yojson.Safe.t`
+
+`Yojson.Safe.t` --- алгебраический тип, представляющий любое JSON-значение:
+
+```ocaml
+type t =
+  | `Null
+  | `Bool of bool
+  | `Int of int
+  | `Float of float
+  | `String of string
+  | `List of t list
+  | `Assoc of (string * t) list
+```
+
+Это **полиморфные варианты** (polymorphic variants). Обратите внимание на обратный апостроф перед именем конструктора.
+
+Примеры:
+
+```text
+# `Null;;
+- : [> `Null ] = `Null
+
+# `Bool true;;
+- : [> `Bool of bool ] = `Bool true
+
+# `Int 42;;
+- : [> `Int of int ] = `Int 42
+
+# `String "hello";;
+- : [> `String of string ] = `String "hello"
+
+# `List [`Int 1; `Int 2; `Int 3];;
+- : [> `List of [> `Int of int ] list ] = `List [`Int 1; `Int 2; `Int 3]
+
+# `Assoc [("name", `String "Alice"); ("age", `Int 30)];;
+- : ... = `Assoc [("name", `String "Alice"); ("age", `Int 30)]
+```
+
+### Парсинг JSON из строки
+
+`Yojson.Safe.from_string` преобразует строку в `Yojson.Safe.t`:
+
+```text
+# Yojson.Safe.from_string {|{"name": "Alice", "age": 30}|};;
+- : Yojson.Safe.t = `Assoc [("name", `String "Alice"); ("age", `Int 30)]
+
+# Yojson.Safe.from_string {|[1, 2, 3]|};;
+- : Yojson.Safe.t = `List [`Int 1; `Int 2; `Int 3]
+
+# Yojson.Safe.from_string "null";;
+- : Yojson.Safe.t = `Null
+```
+
+Обратите внимание на синтаксис **quoted strings** `{| ... |}` --- строки OCaml, в которых не нужно экранировать кавычки. Очень удобно для JSON.
+
+### Генерация JSON в строку
+
+`Yojson.Safe.to_string` преобразует `Yojson.Safe.t` обратно в строку:
+
+```text
+# let json = `Assoc [("name", `String "Bob"); ("age", `Int 25)] in
+  Yojson.Safe.to_string json;;
+- : string = "{\"name\":\"Bob\",\"age\":25}"
+
+# Yojson.Safe.pretty_to_string json;;
+- : string = "{\n  \"name\": \"Bob\",\n  \"age\": 25\n}"
+```
+
+`pretty_to_string` выводит JSON с отступами --- удобно для отладки.
+
+### Ручной парсинг: сопоставление с образцом
+
+Главная сила OCaml при работе с JSON --- **pattern matching**. Можно безопасно разобрать JSON-структуру:
+
+```ocaml
+let parse_name json =
+  match json with
+  | `Assoc fields ->
+    (match List.assoc_opt "name" fields with
+     | Some (`String name) -> Ok name
+     | Some _ -> Error "name is not a string"
+     | None -> Error "name field missing")
+  | _ -> Error "expected JSON object"
+```
+
+Для вложенных структур парсинг выглядит так:
+
+```ocaml
+type address = {
+  street : string;
+  city : string;
+  zip : string;
+}
+
+type contact = {
+  name : string;
+  age : int;
+  email : string option;
+  address : address;
+}
+
+let contact_of_json (json : Yojson.Safe.t) : (contact, string) result =
+  match json with
+  | `Assoc fields ->
+    (match
+       List.assoc_opt "name" fields,
+       List.assoc_opt "age" fields,
+       List.assoc_opt "email" fields,
+       List.assoc_opt "address" fields
+     with
+     | Some (`String name), Some (`Int age), email_json, Some (`Assoc addr) ->
+       let email = match email_json with
+         | Some (`String e) -> Some e
+         | _ -> None
+       in
+       (match
+          List.assoc_opt "street" addr,
+          List.assoc_opt "city" addr,
+          List.assoc_opt "zip" addr
+        with
+        | Some (`String street), Some (`String city), Some (`String zip) ->
+          Ok { name; age; email; address = { street; city; zip } }
+        | _ -> Error "invalid address fields")
+     | _ -> Error "missing or invalid fields")
+  | _ -> Error "expected JSON object"
+```
+
+Ручной парсинг надёжен и явен, но **многословен**. Для каждого типа нужно писать конвертер вручную.
+
+### Ручная генерация JSON
+
+Построить JSON-значение из OCaml-типа тоже просто:
+
+```ocaml
+let contact_to_json (c : contact) : Yojson.Safe.t =
+  `Assoc [
+    ("name", `String c.name);
+    ("age", `Int c.age);
+    ("email", match c.email with Some e -> `String e | None -> `Null);
+    ("address", `Assoc [
+      ("street", `String c.address.street);
+      ("city", `String c.address.city);
+      ("zip", `String c.address.zip);
+    ]);
+  ]
+```
+
+### Вспомогательные функции
+
+Полезно вынести повторяющиеся паттерны в утилиты:
+
+```ocaml
+let json_string_field key json =
+  match json with
+  | `Assoc fields ->
+    (match List.assoc_opt key fields with
+     | Some (`String s) -> Some s
+     | _ -> None)
+  | _ -> None
+
+let json_int_field key json =
+  match json with
+  | `Assoc fields ->
+    (match List.assoc_opt key fields with
+     | Some (`Int n) -> Some n
+     | _ -> None)
+  | _ -> None
+```
+
+Использование:
+
+```text
+# let json = Yojson.Safe.from_string {|{"name": "Alice", "age": 30}|} in
+  json_string_field "name" json;;
+- : string option = Some "Alice"
+
+# json_int_field "age" json;;
+- : int option = Some 30
+
+# json_string_field "missing" json;;
+- : string option = None
+```
+
+## Часть 3: ppx_deriving_yojson
+
+### Проблема ручных кодеков
+
+Ручные конвертеры JSON имеют недостатки:
+
+- Много шаблонного кода.
+- Легко допустить ошибку в имени поля.
+- При изменении типа нужно обновлять конвертеры вручную.
+
+### Автоматическая генерация с `[@@deriving yojson]`
+
+`ppx_deriving_yojson` --- PPX-расширение, которое автоматически генерирует функции сериализации и десериализации:
+
+```ocaml
+type address = {
+  street : string;
+  city : string;
+  zip : string;
+} [@@deriving yojson]
+
+type contact = {
+  name : string;
+  age : int;
+  email : string option;
+  address : address;
+} [@@deriving yojson]
+```
+
+Аннотация `[@@deriving yojson]` генерирует две функции:
+
+- `address_to_yojson : address -> Yojson.Safe.t`
+- `address_of_yojson : Yojson.Safe.t -> (address, string) result`
+
+И аналогично для `contact`:
+
+- `contact_to_yojson : contact -> Yojson.Safe.t`
+- `contact_of_yojson : Yojson.Safe.t -> (contact, string) result`
+
+### Использование
+
+```text
+# let alice = {
+    name = "Alice"; age = 30; email = Some "alice@example.com";
+    address = { street = "Main St"; city = "Moscow"; zip = "101000" }
+  };;
+
+# let json = contact_to_yojson alice;;
+# Yojson.Safe.pretty_to_string json;;
+- : string = {
+  "name": "Alice",
+  "age": 30,
+  "email": ["Some", "alice@example.com"],
+  "address": {
+    "street": "Main St",
+    "city": "Moscow",
+    "zip": "101000"
+  }
+}
+```
+
+Обратите внимание: `option` сериализуется как `["Some", value]` или `"None"` по умолчанию. Это отличается от ручной сериализации, где мы использовали `null`.
+
+### Десериализация
+
+```text
+# let json_str = {|{"name":"Bob","age":25,"email":"None",
+    "address":{"street":"Elm St","city":"SPb","zip":"190000"}}|} in
+  let json = Yojson.Safe.from_string json_str in
+  contact_of_yojson json;;
+- : (contact, string) result = Ok {name = "Bob"; age = 25; email = None; ...}
+```
+
+Функция `contact_of_yojson` возвращает `result` --- `Ok` при успехе или `Error` с описанием ошибки.
+
+### Настройка dune
+
+Для использования `ppx_deriving_yojson` нужно настроить `dune`:
+
+```lisp
+(library
+ (name mylib)
+ (libraries yojson)
+ (preprocess (pps ppx_deriving_yojson)))
+```
+
+Ключевая строка --- `(preprocess (pps ppx_deriving_yojson))`, которая включает PPX-препроцессор.
+
+### Только сериализация или десериализация
+
+Можно сгенерировать только одну из двух функций:
+
+```ocaml
+type log_entry = {
+  timestamp : float;
+  message : string;
+} [@@deriving to_yojson]
+(* Генерирует только log_entry_to_yojson *)
+
+type config = {
+  host : string;
+  port : int;
+} [@@deriving of_yojson]
+(* Генерирует только config_of_yojson *)
+```
+
+## Часть 4: Проект --- парсер конфигурации
+
+Соберём всё вместе --- напишем парсер конфигурационного файла в формате JSON.
+
+### Тип конфигурации
+
+```ocaml
+type database_config = {
+  host : string;
+  port : int;
+  name : string;
+} [@@deriving yojson]
+
+type app_config = {
+  debug : bool;
+  log_level : string;
+  database : database_config;
+} [@@deriving yojson]
+```
+
+### Чтение конфигурации
+
+```ocaml
+let load_config path =
+  let content = In_channel.with_open_text path In_channel.input_all in
+  let json = Yojson.Safe.from_string content in
+  app_config_of_yojson json
+
+let save_config path config =
+  let json = app_config_to_yojson config in
+  let content = Yojson.Safe.pretty_to_string json in
+  Out_channel.with_open_text path (fun oc ->
+    Out_channel.output_string oc content)
+```
+
+### Пример конфигурации
+
+```json
+{
+  "debug": true,
+  "log_level": "info",
+  "database": {
+    "host": "localhost",
+    "port": 5432,
+    "name": "mydb"
+  }
+}
+```
+
+Этот паттерн --- типичный для OCaml-приложений: определить тип с `[@@deriving yojson]`, затем использовать `from_string` / `to_string` для ввода-вывода.
+
+## Сравнение с Haskell
+
+| Аспект | OCaml (yojson + ppx) | Haskell (aeson) |
+|--------|---------------------|-----------------|
+| Тип JSON | `Yojson.Safe.t` (полиморфные варианты) | `Value` (ADT) |
+| Автодеривация | `[@@deriving yojson]` | `deriving (FromJSON, ToJSON)` |
+| Генерируемые функции | `t_to_yojson`, `t_of_yojson` | `toJSON`, `parseJSON` |
+| Возврат десериализации | `(t, string) result` | `Parser t` (монада) |
+| Ручной парсинг | Pattern matching | `.:`, `.:?`, `withObject` |
+| FFI | `external` + C stubs | `foreign import ccall` |
+| Типобезопасность FFI | Нет (доверие программисту) | Нет (доверие программисту) |
+| Высокоуровневый FFI | ctypes | inline-c, c2hs |
+
+Общая идея одинакова: определить тип данных, автоматически получить сериализаторы, использовать их для ввода-вывода JSON.
+
+## Ctypes --- высокоуровневый FFI
+
+В разделе про FFI мы кратко упомянули библиотеку **ctypes**. Рассмотрим её подробнее --- ctypes позволяет описывать C-типы и вызывать C-функции **целиком на OCaml**, без написания C-кода и стабов вручную.
+
+### Установка
+
+```text
+$ opam install ctypes ctypes-foreign
+```
+
+### Основы: вызов C-функций
+
+Модуль `Foreign` предоставляет функцию `foreign`, которая связывает имя C-функции с описанием её типа:
+
+```ocaml
+open Ctypes
+open Foreign
+
+let c_sqrt = foreign "sqrt" (double @-> returning double)
+let c_pow = foreign "pow" (double @-> double @-> returning double)
+```
+
+Оператор `@->` описывает аргументы, а `returning t` --- тип возвращаемого значения. Типы (`double`, `int`, `string` и т.д.) --- это значения модуля `Ctypes`, а не типы OCaml.
+
+После объявления `c_sqrt` и `c_pow` --- обычные OCaml-функции:
+
+```text
+# c_sqrt 2.0;;
+- : float = 1.41421356237309515
+
+# c_pow 2.0 10.0;;
+- : float = 1024.
+```
+
+### Определение C-структур
+
+Ctypes позволяет описывать C-структуры:
+
+```ocaml
+type point
+let point : point structure typ = structure "point"
+let x = field point "x" double
+let y = field point "y" double
+let () = seal point
+
+(* Создание и использование *)
+let p = make point in
+setf p x 3.0;
+setf p y 4.0;
+let dist = sqrt (getf p x ** 2.0 +. getf p y ** 2.0)
+```
+
+Порядок действий:
+
+1. `structure "point"` --- объявить структуру с именем `point`.
+2. `field point "x" double` --- добавить поле `x` типа `double`.
+3. `seal point` --- завершить определение (вычислить размер и выравнивание).
+4. `make point` --- создать экземпляр структуры.
+5. `setf` / `getf` --- записать / прочитать поле.
+
+**Частая ошибка:** если забыть вызвать `seal t`, при попытке использовать структуру вы получите исключение `Ctypes_static.IncompleteType`.
+
+### Два подхода к связыванию
+
+Ctypes поддерживает два режима работы:
+
+1. **Dynamic linking** (через `libffi`) --- быстрый старт, не требует компиляции C-кода. Библиотека загружается в рантайме (`.so` на Linux, `.dylib` на macOS). Удобно для прототипирования.
+
+2. **Stub generation** --- production-подход. Ctypes генерирует C-стабы на этапе сборки. Результат эффективнее (нет overhead от libffi), но сборка сложнее.
+
+Для большинства задач dynamic linking достаточно. Stub generation имеет смысл, когда FFI-вызовы находятся на горячем пути.
+
+### Ограничения
+
+- Generated stubs не поддерживают атрибуты `[@noalloc]` и `[@unboxed]`, которые доступны при ручном `external`.
+- Dynamic linking требует наличия `.so`/`.dylib` в системе в рантайме.
+- Ctypes медленнее ручных `external` для простых числовых функций из-за дополнительного уровня абстракции.
+
+Для простых числовых функций `external` с `[@@unboxed] [@@noalloc]` остаётся лучшим выбором. Ctypes раскрывает свою мощь при работе со структурами, указателями, массивами и сложными C API.
 
 ## Упражнения
 
-Решения пишите в файле `test/my_solutions.ml`. После каждого упражнения запускайте `dune test`, чтобы проверить ответ.
+Решения пишите в `test/my_solutions.ml`. Проверяйте: `dune runtest`.
 
-1. **(Лёгкое)** Реализуйте функцию `reflect_horizontal`, которая отражает вектор скорости от горизонтальной поверхности (пол или потолок). При таком отражении X-компонента остаётся прежней, а Y-компонента инвертируется.
-
-    ```ocaml
-    val reflect_horizontal : vec2 -> vec2
-    ```
-
-    ```text
-    # reflect_horizontal { x = 3.0; y = 4.0 };;
-    - : vec2 = { x = 3.0; y = -4.0 }
-    ```
-
-2. **(Лёгкое)** Реализуйте функцию `reflect_vertical`, которая отражает вектор скорости от вертикальной поверхности (стена). При таком отражении Y-компонента остаётся прежней, а X-компонента инвертируется.
+1. **(Среднее)** Реализуйте ручную конвертацию `product_to_json` для типа:
 
     ```ocaml
-    val reflect_vertical : vec2 -> vec2
+    type product = {
+      title : string;
+      price : float;
+      in_stock : bool;
+    }
     ```
 
-    ```text
-    # reflect_vertical { x = 3.0; y = 4.0 };;
-    - : vec2 = { x = -3.0; y = 4.0 }
-    ```
+    Функция должна возвращать `Yojson.Safe.t` --- JSON-объект с полями `"title"`, `"price"`, `"in_stock"`.
 
-3. **(Среднее)** Реализуйте функцию `circle_rect_collide`, которая проверяет столкновение круга с прямоугольником. Алгоритм: найдите ближайшую к центру круга точку на прямоугольнике (используя `Float.min` и `Float.max` для "зажатия" координат), затем проверьте, лежит ли эта точка внутри круга.
+2. **(Среднее)** Реализуйте обратную конвертацию `product_of_json`:
 
     ```ocaml
-    val circle_rect_collide : circle -> rect -> bool
+    val product_of_json : Yojson.Safe.t -> (product, string) result
     ```
 
-    *Подсказка:* Сравнивайте квадраты расстояний, чтобы не вычислять квадратный корень.
+    При невалидном JSON верните `Error` с описанием ошибки.
 
-4. **(Среднее)** Реализуйте функцию `update_entity`, которая обновляет позицию и скорость сущности с учётом гравитации. За время `dt`:
-    - Новая скорость: `vel.y + gravity * dt`.
-    - Новая позиция: `pos + new_vel * dt`.
+3. **(Среднее)** Реализуйте функцию `extract_names`, которая из JSON-массива объектов извлекает значения поля `"name"`:
 
     ```ocaml
-    type entity = { pos : vec2; vel : vec2; gravity : float }
-
-    val update_entity : float -> entity -> entity
+    val extract_names : Yojson.Safe.t -> string list
     ```
 
-    *Подсказка:* используйте `vec2_add` и `vec2_scale` из библиотеки.
+    Например, для `[{"name": "Alice"}, {"name": "Bob"}, {"age": 25}]` результат: `["Alice"; "Bob"]`. Объекты без поля `"name"` пропускаются.
+
+4. **(Лёгкое)** Определите тип `config` с полями `host : string`, `port : int`, `debug : bool` и аннотацией `[@@deriving yojson]`. Убедитесь, что автоматическая сериализация и десериализация работают (тесты проверят roundtrip).
 
 ## Заключение
 
 В этой главе мы:
 
-- Познакомились с библиотекой raylib-ocaml и игровым циклом.
-- Изучили рисование примитивов, цвета и координатную систему.
-- Научились обрабатывать ввод с клавиатуры и мыши.
-- Разделили чистую игровую логику и рендеринг.
-- Реализовали векторную математику: сложение, вычитание, масштабирование, нормализация, скалярное произведение.
-- Написали функции обнаружения столкновений: точка-прямоугольник, круг-круг, круг-прямоугольник.
-- Создали модели физики: прыгающий мяч, сущность с гравитацией.
-- Сравнили подходы OCaml + raylib и Haskell + gloss.
+- Изучили FFI: ключевое слово `external` для вызова C-функций.
+- Разобрали соответствие типов OCaml и C.
+- Познакомились с библиотекой Yojson и типом `Yojson.Safe.t`.
+- Научились вручную парсить и генерировать JSON через pattern matching.
+- Освоили `ppx_deriving_yojson` для автоматической сериализации.
+- Написали парсер конфигурации --- типичный паттерн для OCaml-приложений.
 
-Главный урок этой главы --- **отделяйте чистую логику от побочных эффектов**. Это упрощает тестирование, отладку и переиспользование кода. Графическая библиотека --- лишь тонкая обёртка для визуализации состояния, которое вычисляется чистыми функциями.
+В следующей главе мы изучим **обработчики эффектов (Effect Handlers)** --- одну из ключевых новинок OCaml 5, которая открывает новые подходы к структурированию побочных эффектов.

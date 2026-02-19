@@ -1,122 +1,220 @@
-open Chapter10.Ffi_json
+open Chapter10.Expr
 
 (* --- Тесты библиотеки --- *)
 
-let c_sin_tests =
+let variant_tests =
   let open Alcotest in
+  let open Variant in
   [
-    test_case "c_sin 0" `Quick (fun () ->
-      let r = Float.abs (c_sin 0.0) in
-      check bool "~0" true (r < 1e-10));
-    test_case "c_sin pi/2" `Quick (fun () ->
-      let r = Float.abs (c_sin (Float.pi /. 2.0) -. 1.0) in
-      check bool "~1" true (r < 1e-10));
+    test_case "eval: целое число" `Quick (fun () ->
+      check int "eval Int" 42 (eval (Int 42)));
+    test_case "eval: сложение" `Quick (fun () ->
+      check int "eval Add" 6
+        (eval (Add (Int 1, Add (Int 2, Int 3)))));
+    test_case "show: целое число" `Quick (fun () ->
+      check string "show Int" "42" (show (Int 42)));
+    test_case "show: сложение" `Quick (fun () ->
+      check string "show Add" "(1 + (2 + 3))"
+        (show (Add (Int 1, Add (Int 2, Int 3)))));
   ]
 
-let contact_json_tests =
-  let alice = {
-    name = "Alice"; age = 30; email = Some "alice@example.com";
-    address = { street = "Main St"; city = "Moscow"; zip = "101000" }
-  } in
+let tagless_final_tests =
   let open Alcotest in
   [
-    test_case "contact_to_json roundtrip" `Quick (fun () ->
-      let json = contact_to_json alice in
-      match contact_of_json json with
-      | Ok c -> check string "name" "Alice" c.name
-      | Error e -> fail e);
-    test_case "contact_of_json invalid" `Quick (fun () ->
-      match contact_of_json (`String "bad") with
-      | Error _ -> ()
-      | Ok _ -> fail "expected error");
-    test_case "json_string_field" `Quick (fun () ->
-      let json = `Assoc [("key", `String "val")] in
-      check (option string) "found" (Some "val") (json_string_field "key" json));
-    test_case "json_int_field" `Quick (fun () ->
-      let json = `Assoc [("n", `Int 42)] in
-      check (option int) "found" (Some 42) (json_int_field "n" json));
-    test_case "ppx contact_of_yojson roundtrip" `Quick (fun () ->
-      let json = contact_to_yojson alice in
-      match contact_of_yojson json with
-      | Ok c -> check string "name" "Alice" c.name
-      | Error e -> fail e);
+    test_case "TF_Eval: целое число" `Quick (fun () ->
+      check int "int_" 42 (TF_Eval.int_ 42));
+    test_case "TF_Eval: сложение" `Quick (fun () ->
+      check int "add" 6
+        (TF_Eval.add (TF_Eval.int_ 1) (TF_Eval.add (TF_Eval.int_ 2) (TF_Eval.int_ 3))));
+    test_case "TF_Show: целое число" `Quick (fun () ->
+      check string "int_" "42" (TF_Show.int_ 42));
+    test_case "TF_Show: сложение" `Quick (fun () ->
+      check string "add" "(1 + (2 + 3))"
+        (TF_Show.add (TF_Show.int_ 1) (TF_Show.add (TF_Show.int_ 2) (TF_Show.int_ 3))));
+    test_case "TF_EvalMul: умножение" `Quick (fun () ->
+      check int "mul" 14
+        (TF_EvalMul.mul (TF_EvalMul.int_ 2) (TF_EvalMul.add (TF_EvalMul.int_ 3) (TF_EvalMul.int_ 4))));
+    test_case "TF_ShowMul: умножение" `Quick (fun () ->
+      check string "mul" "(2 * (3 + 4))"
+        (TF_ShowMul.mul (TF_ShowMul.int_ 2) (TF_ShowMul.add (TF_ShowMul.int_ 3) (TF_ShowMul.int_ 4))));
+  ]
+
+let polyvar_tests =
+  let open Alcotest in
+  [
+    test_case "PolyVar.eval: целое число" `Quick (fun () ->
+      check int "Int" 42 (PolyVar.eval (`Int 42)));
+    test_case "PolyVar.eval: сложение" `Quick (fun () ->
+      check int "Add" 6
+        (PolyVar.eval (`Add (`Int 1, `Add (`Int 2, `Int 3)))));
+    test_case "PolyVar.show: целое число" `Quick (fun () ->
+      check string "Int" "42" (PolyVar.show (`Int 42)));
+    test_case "PolyVar.show: сложение" `Quick (fun () ->
+      check string "Add" "(1 + (2 + 3))"
+        (PolyVar.show (`Add (`Int 1, `Add (`Int 2, `Int 3)))));
+    test_case "PolyVar.eval_mul: умножение" `Quick (fun () ->
+      check int "Mul" 14
+        (PolyVar.eval_mul (`Mul (`Int 2, `Add (`Int 3, `Int 4)))));
+    test_case "PolyVar.show_mul: умножение" `Quick (fun () ->
+      check string "Mul" "(2 * (3 + 4))"
+        (PolyVar.show_mul (`Mul (`Int 2, `Add (`Int 3, `Int 4)))));
   ]
 
 (* --- Тесты упражнений --- *)
 
-let product_json_tests =
+(* Упражнение 1: VariantMul *)
+let variant_mul_tests =
   let open Alcotest in
-  let book = My_solutions.{ title = "OCaml Book"; price = 29.99; in_stock = true } in
+  let open My_solutions.VariantMul in
   [
-    test_case "product_to_json" `Quick (fun () ->
-      let json = My_solutions.product_to_json book in
-      match json with
-      | `Assoc fields ->
-        check (option string) "title"
-          (Some "OCaml Book")
-          (match List.assoc_opt "title" fields with Some (`String s) -> Some s | _ -> None)
-      | _ -> fail "expected object");
-    test_case "product_of_json valid" `Quick (fun () ->
-      let json = `Assoc [
-        ("title", `String "Pen");
-        ("price", `Float 1.50);
-        ("in_stock", `Bool false);
-      ] in
-      match My_solutions.product_of_json json with
-      | Ok p ->
-        check string "title" "Pen" p.title;
-        check bool "stock" false p.in_stock
-      | Error e -> fail e);
-    test_case "product_of_json invalid" `Quick (fun () ->
-      match My_solutions.product_of_json (`Int 42) with
-      | Error _ -> ()
-      | Ok _ -> fail "expected error");
-    test_case "product roundtrip" `Quick (fun () ->
-      let json = My_solutions.product_to_json book in
-      match My_solutions.product_of_json json with
-      | Ok p -> check string "title" "OCaml Book" p.title
-      | Error e -> fail e);
+    test_case "eval: Int" `Quick (fun () ->
+      check int "eval Int" 42 (eval (Int 42)));
+    test_case "eval: Add" `Quick (fun () ->
+      check int "eval Add" 3 (eval (Add (Int 1, Int 2))));
+    test_case "eval: Mul" `Quick (fun () ->
+      check int "eval Mul" 14
+        (eval (Mul (Int 2, Add (Int 3, Int 4)))));
+    test_case "eval: вложенные Mul" `Quick (fun () ->
+      check int "eval nested" 24
+        (eval (Mul (Mul (Int 2, Int 3), Int 4))));
+    test_case "show: Int" `Quick (fun () ->
+      check string "show Int" "42" (show (Int 42)));
+    test_case "show: Add" `Quick (fun () ->
+      check string "show Add" "(1 + 2)" (show (Add (Int 1, Int 2))));
+    test_case "show: Mul" `Quick (fun () ->
+      check string "show Mul" "(2 * (3 + 4))"
+        (show (Mul (Int 2, Add (Int 3, Int 4)))));
   ]
 
-let extract_names_tests =
+(* Упражнение 2: TF_Pretty *)
+let tf_pretty_tests =
   let open Alcotest in
+  let open My_solutions.TF_Pretty in
   [
-    test_case "extract_names" `Quick (fun () ->
-      let json = `List [
-        `Assoc [("name", `String "Alice"); ("age", `Int 30)];
-        `Assoc [("name", `String "Bob")];
-        `Assoc [("age", `Int 25)];
-      ] in
-      check (list string) "names" ["Alice"; "Bob"]
-        (My_solutions.extract_names json));
-    test_case "extract_names empty" `Quick (fun () ->
-      check (list string) "empty" []
-        (My_solutions.extract_names (`List [])));
-    test_case "extract_names not list" `Quick (fun () ->
-      check (list string) "not list" []
-        (My_solutions.extract_names (`String "bad")));
+    test_case "int_" `Quick (fun () ->
+      check string "int_" "42" (int_ 42));
+    test_case "add двух чисел" `Quick (fun () ->
+      check string "add" "(1 + 2)" (add (int_ 1) (int_ 2)));
+    test_case "вложенный add" `Quick (fun () ->
+      check string "nested" "(1 + (2 + 3))"
+        (add (int_ 1) (add (int_ 2) (int_ 3))));
+    test_case "глубокая вложенность" `Quick (fun () ->
+      check string "deep" "((1 + 2) + (3 + 4))"
+        (add (add (int_ 1) (int_ 2)) (add (int_ 3) (int_ 4))));
   ]
 
-let config_ppx_tests =
+(* Упражнение 3: Полиморфные варианты с Neg *)
+let poly_neg_tests =
   let open Alcotest in
-  let cfg = My_solutions.{ host = "localhost"; port = 8080; debug = true } in
   [
-    test_case "config yojson roundtrip" `Quick (fun () ->
-      let json = My_solutions.config_to_yojson cfg in
-      match My_solutions.config_of_yojson json with
-      | Ok c ->
-        check string "host" "localhost" c.host;
-        check int "port" 8080 c.port;
-        check bool "debug" true c.debug
-      | Error e -> fail e);
+    test_case "eval_neg: Int" `Quick (fun () ->
+      check int "Int" 42 (My_solutions.eval_neg (`Int 42)));
+    test_case "eval_neg: Add" `Quick (fun () ->
+      check int "Add" 3
+        (My_solutions.eval_neg (`Add (`Int 1, `Int 2))));
+    test_case "eval_neg: Neg" `Quick (fun () ->
+      check int "Neg" (-5)
+        (My_solutions.eval_neg (`Neg (`Int 5))));
+    test_case "eval_neg: Neg Add" `Quick (fun () ->
+      check int "Neg Add" (-3)
+        (My_solutions.eval_neg (`Neg (`Add (`Int 1, `Int 2)))));
+    test_case "show_neg: Int" `Quick (fun () ->
+      check string "Int" "42"
+        (My_solutions.show_neg (`Int 42)));
+    test_case "show_neg: Neg" `Quick (fun () ->
+      check string "Neg" "(-5)"
+        (My_solutions.show_neg (`Neg (`Int 5))));
+    test_case "show_neg: Neg Add" `Quick (fun () ->
+      check string "Neg Add" "(-(1 + 2))"
+        (My_solutions.show_neg (`Neg (`Add (`Int 1, `Int 2)))));
+  ]
+
+(* Упражнение 4: Tagless Final для булевых выражений *)
+let bool_eval_tests =
+  let open Alcotest in
+  let open My_solutions.Bool_Eval in
+  [
+    test_case "bool_ true" `Quick (fun () ->
+      check bool "true" true (bool_ true));
+    test_case "bool_ false" `Quick (fun () ->
+      check bool "false" false (bool_ false));
+    test_case "and_ true true" `Quick (fun () ->
+      check bool "and tt" true (and_ (bool_ true) (bool_ true)));
+    test_case "and_ true false" `Quick (fun () ->
+      check bool "and tf" false (and_ (bool_ true) (bool_ false)));
+    test_case "or_ false true" `Quick (fun () ->
+      check bool "or ft" true (or_ (bool_ false) (bool_ true)));
+    test_case "or_ false false" `Quick (fun () ->
+      check bool "or ff" false (or_ (bool_ false) (bool_ false)));
+    test_case "not_ true" `Quick (fun () ->
+      check bool "not t" false (not_ (bool_ true)));
+    test_case "not_ false" `Quick (fun () ->
+      check bool "not f" true (not_ (bool_ false)));
+    test_case "сложное выражение" `Quick (fun () ->
+      check bool "complex" true
+        (and_ (bool_ true) (or_ (bool_ false) (bool_ true))));
+  ]
+
+let bool_show_tests =
+  let open Alcotest in
+  let open My_solutions.Bool_Show in
+  [
+    test_case "bool_ true" `Quick (fun () ->
+      check string "true" "true" (bool_ true));
+    test_case "bool_ false" `Quick (fun () ->
+      check string "false" "false" (bool_ false));
+    test_case "and_" `Quick (fun () ->
+      check string "and" "(true && false)"
+        (and_ (bool_ true) (bool_ false)));
+    test_case "or_" `Quick (fun () ->
+      check string "or" "(false || true)"
+        (or_ (bool_ false) (bool_ true)));
+    test_case "not_" `Quick (fun () ->
+      check string "not" "(!true)"
+        (not_ (bool_ true)));
+    test_case "сложное выражение" `Quick (fun () ->
+      check string "complex" "(true && (false || true))"
+        (and_ (bool_ true) (or_ (bool_ false) (bool_ true))));
+  ]
+
+(* Упражнение 5: Объединённый DSL *)
+let combined_show_tests =
+  let open Alcotest in
+  let open My_solutions.Combined_Show in
+  [
+    test_case "int_" `Quick (fun () ->
+      check string "int_" "42" (int_ 42));
+    test_case "add" `Quick (fun () ->
+      check string "add" "(1 + 2)" (add (int_ 1) (int_ 2)));
+    test_case "bool_" `Quick (fun () ->
+      check string "bool_" "true" (bool_ true));
+    test_case "and_" `Quick (fun () ->
+      check string "and" "(true && false)"
+        (and_ (bool_ true) (bool_ false)));
+    test_case "eq int" `Quick (fun () ->
+      check string "eq int" "((1 + 2) == 3)"
+        (eq (add (int_ 1) (int_ 2)) (int_ 3)));
+    test_case "eq в and_" `Quick (fun () ->
+      check string "eq in and" "(true && (1 == 1))"
+        (and_ (bool_ true) (eq (int_ 1) (int_ 1))));
+    test_case "not_ с eq" `Quick (fun () ->
+      check string "not eq" "(!(1 == 2))"
+        (not_ (eq (int_ 1) (int_ 2))));
+    test_case "or_ с eq" `Quick (fun () ->
+      check string "or eq" "((1 == 1) || (2 == 3))"
+        (or_ (eq (int_ 1) (int_ 1)) (eq (int_ 2) (int_ 3))));
   ]
 
 let () =
   Alcotest.run "Chapter 10"
     [
-      ("c_sin --- FFI sin", c_sin_tests);
-      ("contact_json --- ручной JSON", contact_json_tests);
-      ("product_json --- product JSON", product_json_tests);
-      ("extract_names --- извлечение имён", extract_names_tests);
-      ("config_ppx --- ppx_deriving_yojson", config_ppx_tests);
+      ("Variant --- вариантный калькулятор", variant_tests);
+      ("Tagless Final --- модульный калькулятор", tagless_final_tests);
+      ("PolyVar --- полиморфные варианты", polyvar_tests);
+      ("Упр. 1: VariantMul --- добавить Mul", variant_mul_tests);
+      ("Упр. 2: TF_Pretty --- pretty_print", tf_pretty_tests);
+      ("Упр. 3: PolyVar Neg --- унарное отрицание", poly_neg_tests);
+      ("Упр. 4: Bool_Eval --- булев DSL (eval)", bool_eval_tests);
+      ("Упр. 4: Bool_Show --- булев DSL (show)", bool_show_tests);
+      ("Упр. 5: Combined_Show --- объединённый DSL", combined_show_tests);
     ]

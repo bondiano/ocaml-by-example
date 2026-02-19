@@ -231,6 +231,41 @@ let list_ops_tests =
         (My_solutions.List_ops.concat [[1; 2]; [3; 4]; [5; 6]]));
   ]
 
+let traverse_tests =
+  let open Alcotest in
+  [
+    test_case "traverse_option все Some" `Quick (fun () ->
+      check (option (list int)) "all some"
+        (Some [1; 2; 3])
+        (My_solutions.traverse_option int_of_string_opt ["1"; "2"; "3"]));
+    test_case "traverse_option с None" `Quick (fun () ->
+      check (option (list int)) "has none"
+        None
+        (My_solutions.traverse_option int_of_string_opt ["1"; "abc"; "3"]));
+    test_case "traverse_option пустой список" `Quick (fun () ->
+      check (option (list int)) "empty"
+        (Some [])
+        (My_solutions.traverse_option int_of_string_opt []));
+    test_case "traverse_result все Ok" `Quick (fun () ->
+      let parse s =
+        match int_of_string_opt s with
+        | Some n -> Ok n
+        | None -> Error (Printf.sprintf "не число: %s" s)
+      in
+      check (result (list int) string) "all ok"
+        (Ok [1; 2; 3])
+        (My_solutions.traverse_result parse ["1"; "2"; "3"]));
+    test_case "traverse_result с Error" `Quick (fun () ->
+      let parse s =
+        match int_of_string_opt s with
+        | Some n -> Ok n
+        | None -> Error (Printf.sprintf "не число: %s" s)
+      in
+      check (result (list int) string) "has error"
+        (Error "не число: abc")
+        (My_solutions.traverse_result parse ["1"; "abc"; "3"]));
+  ]
+
 let () =
   Alcotest.run "Chapter 05"
     [
@@ -248,5 +283,6 @@ let () =
       ("Nucleotide Count", nucleotide_tests);
       ("Hamming Distance", hamming_tests);
       ("Run-Length Encoding", rle_tests);
+      ("Traverse", traverse_tests);
       ("List Ops", list_ops_tests);
     ]

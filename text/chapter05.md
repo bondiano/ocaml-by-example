@@ -318,6 +318,141 @@ let flatten lst =
   List.fold_right (fun x acc -> x @ acc) lst []
 ```
 
+## Traverse: обработка списков с эффектами
+
+Рассмотрим частую задачу: у нас есть список значений, каждое из которых нужно обработать функцией, возвращающей `option` или `result`. Если **все** обработки успешны, мы хотим получить список результатов. Если хотя бы одна неуспешна, вся операция должна провалиться.
+
+### Проблема: `'a option list` → `'a list option`
+
+Допустим, мы парсим список строк в числа:
+
+```text
+# List.map int_of_string_opt ["1"; "2"; "3"];;
+- : int option list = [Some 1; Some 2; Some 3]
+
+# List.map int_of_string_opt ["1"; "abc"; "3"];;
+- : int option list = [Some 1; None; Some 3]
+```
+
+Мы получаем `int option list` --- список, где каждый элемент может быть `Some` или `None`. Но нам нужен `int list option` --- либо весь список целиком, либо `None`.
+
+### `sequence_option`: сборка списка из option
+
+```ocaml
+let sequence_option lst =
+  List.fold_right
+    (fun x acc ->
+      match x, acc with
+      | Some v, Some vs -> Some (v :: vs)
+      | _ -> None)
+    lst (Some [])
+```
+
+```text
+# sequence_option [Some 1; Some 2; Some 3];;
+- : int list option = Some [1; 2; 3]
+
+# sequence_option [Some 1; None; Some 3];;
+- : int list option = None
+```
+
+`fold_right` обходит список справа налево. Если аккумулятор и текущий элемент оба `Some`, добавляем значение в список. Иначе --- всё `None`.
+
+### `traverse_option`: map + sequence за один проход
+
+`sequence_option` требует сначала `List.map`, а потом сборку. Можно совместить оба шага:
+
+```ocaml
+let traverse_option f lst =
+  List.fold_right
+    (fun x acc ->
+      match f x, acc with
+      | Some v, Some vs -> Some (v :: vs)
+      | _ -> None)
+    lst (Some [])
+```
+
+```text
+# traverse_option int_of_string_opt ["1"; "2"; "3"];;
+- : int list option = Some [1; 2; 3]
+
+# traverse_option int_of_string_opt ["1"; "abc"; "3"];;
+- : int list option = None
+```
+
+`traverse_option f` = `sequence_option ∘ List.map f`, но за один проход.
+
+### `traverse_result`: аналог для `Result`
+
+Для `result` логика аналогична, но при ошибке мы сохраняем информацию о причине:
+
+```ocaml
+let traverse_result f lst =
+  List.fold_right
+    (fun x acc ->
+      match f x, acc with
+      | Ok v, Ok vs -> Ok (v :: vs)
+      | Error e, _ -> Error e
+      | _, Error e -> Error e)
+    lst (Ok [])
+```
+
+```text
+# let parse s =
+    match int_of_string_opt s with
+    | Some n -> Ok n
+    | None -> Error (Printf.sprintf "не число: %s" s);;
+
+# traverse_result parse ["1"; "2"; "3"];;
+- : (int list, string) result = Ok [1; 2; 3]
+
+# traverse_result parse ["1"; "abc"; "3"];;
+- : (int list, string) result = Error "не число: abc"
+```
+
+### Связь с `List.filter_map`
+
+`List.filter_map` --- похожая функция, но с другой семантикой: она **молча отбрасывает** неуспешные элементы вместо того, чтобы провалить всю операцию:
+
+```text
+# List.filter_map int_of_string_opt ["1"; "abc"; "3"];;
+- : int list = [1; 3]
+```
+
+Выбирайте по ситуации:
+
+| Функция | При ошибке | Результат |
+|---------|-----------|-----------|
+| `filter_map` | Пропускает элемент | Всегда `'b list` |
+| `traverse_option` | Провал всей операции | `'b list option` |
+| `traverse_result` | Провал с сообщением | `('b list, 'e) result` |
+
+### Практический пример: парсинг CSV-строки
+
+```ocaml
+type person = { name : string; age : int }
+
+let parse_csv_line line =
+  match String.split_on_char ',' line with
+  | [name; age_str] ->
+    (match int_of_string_opt (String.trim age_str) with
+     | Some age -> Ok { name = String.trim name; age }
+     | None -> Error (Printf.sprintf "некорректный возраст: %s" age_str))
+  | _ -> Error (Printf.sprintf "неверный формат строки: %s" line)
+
+let parse_csv lines = traverse_result parse_csv_line lines
+```
+
+```text
+# parse_csv ["Alice, 30"; "Bob, 25"];;
+- : (person list, string) result = Ok [{name = "Alice"; age = 30}; ...]
+
+# parse_csv ["Alice, 30"; "Bob, xyz"];;
+- : (person list, string) result = Error "некорректный возраст:  xyz"
+```
+
+Если хотя бы одна строка невалидна, весь парсинг провалится с понятным сообщением об ошибке.
+
 ## Ленивые последовательности: `Seq`
 
 В Haskell все списки ленивые, что позволяет работать с бесконечными структурами. В OCaml списки строгие (strict) --- все элементы вычисляются сразу. Для ленивых вычислений OCaml предоставляет модуль `Seq`.
@@ -548,7 +683,16 @@ let root =
 
     `rle_encode "AABBBC"` = `"2A3B1C"`. `rle_decode "2A3B1C"` = `"AABBBC"`.
 
-13. **(Сложное)** List Ops --- реализуйте стандартные операции над списками **без использования функций модуля `List`**.
+13. **(Среднее)** Реализуйте `traverse_option` и `traverse_result` --- функции, которые применяют функцию к каждому элементу списка и собирают результат в `option`/`result`. Если хотя бы один вызов неуспешен, вся операция проваливается.
+
+    ```ocaml
+    val traverse_option : ('a -> 'b option) -> 'a list -> 'b list option
+    val traverse_result : ('a -> ('b, 'e) result) -> 'a list -> ('b list, 'e) result
+    ```
+
+    *Подсказка:* используйте `List.fold_right`.
+
+14. **(Сложное)** List Ops --- реализуйте стандартные операции над списками **без использования функций модуля `List`**.
 
     ```ocaml
     module List_ops : sig
@@ -572,6 +716,7 @@ let root =
 - Изучили рекурсию и хвостовую рекурсию с аккумулятором.
 - Познакомились с функциями высшего порядка: `List.map`, `List.filter`, `List.filter_map`, `List.concat_map`.
 - Разобрали свёртки `List.fold_left` (хвостовая, слева направо) и `List.fold_right` (не хвостовая, справа налево).
+- Изучили паттерн traverse --- обработку списков с эффектами (`option`, `result`).
 - Научились строить цепочки обработки данных с оператором `|>`.
 - Познакомились с ленивыми последовательностями `Seq` --- аналогом бесконечных списков Haskell.
 

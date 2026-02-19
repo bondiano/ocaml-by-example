@@ -1,54 +1,37 @@
 (** Референсные решения --- не подсматривайте, пока не попробуете сами! *)
 
-open Chapter18.Todo_api
+(** Упражнение 1: Тип color с ppx-деривацией. *)
+type color = Red | Green | Blue
+[@@deriving show, eq]
 
-(** Упражнение 1: Health-check handler. *)
-let health_handler (_req : Dream.request) : Dream.response Lwt.t =
-  Dream.json {|{"status":"ok"}|}
+let all_colors : color list = [Red; Green; Blue]
 
-(** Упражнение 2: Пагинация списка. *)
-let paginate ~(offset : int) ~(limit : int) (lst : 'a list) : 'a list =
-  let rec drop n = function
-    | _ :: rest when n > 0 -> drop (n - 1) rest
-    | l -> l
-  in
-  let rec take n = function
-    | x :: rest when n > 0 -> x :: take (n - 1) rest
-    | _ -> []
-  in
-  take limit (drop offset lst)
+let color_to_string (c : color) : string =
+  show_color c
 
-(** Упражнение 3: Поиск задач по подстроке. *)
-let search_todos (query : string) (lst : todo list) : todo list =
-  if query = "" then lst
-  else
-    let contains haystack needle =
-      let nlen = String.length needle in
-      let hlen = String.length haystack in
-      if nlen > hlen then false
-      else
-        let rec check i =
-          if i > hlen - nlen then false
-          else if String.sub haystack i nlen = needle then true
-          else check (i + 1)
-        in
-        check 0
-    in
-    List.filter (fun (t : todo) -> contains t.title query) lst
+(** Упражнение 2: Дедупликация записей. *)
+type person = { name : string; age : int }
+[@@deriving show, eq]
 
-(** Упражнение 4: Bearer token auth middleware. *)
-let auth_middleware (expected_token : string) : Dream.middleware =
-  fun handler req ->
-    match Dream.header req "Authorization" with
-    | Some value ->
-      let prefix = "Bearer " in
-      let plen = String.length prefix in
-      if String.length value > plen && String.sub value 0 plen = prefix then
-        let token = String.sub value plen (String.length value - plen) in
-        if token = expected_token then handler req
-        else
-          Dream.json ~status:`Unauthorized {|{"error":"invalid token"}|}
-      else
-        Dream.json ~status:`Unauthorized {|{"error":"invalid auth format"}|}
-    | None ->
-      Dream.json ~status:`Unauthorized {|{"error":"missing authorization"}|}
+let dedup_persons (lst : person list) : person list =
+  List.fold_left (fun acc p ->
+    if List.exists (equal_person p) acc then acc
+    else acc @ [p]
+  ) [] lst
+
+(** Упражнение 3: Строковое представление пары. *)
+let make_pair (a : 'a) (b : 'b) (show_a : 'a -> string) (show_b : 'b -> string) : string =
+  Printf.sprintf "(%s, %s)" (show_a a) (show_b b)
+
+(** Упражнение 4: Перечисление вариантов вручную. *)
+type suit = Hearts | Diamonds | Clubs | Spades
+[@@deriving show, eq]
+
+let all_suits : suit list = [Hearts; Diamonds; Clubs; Spades]
+
+let next_suit (s : suit) : suit option =
+  match s with
+  | Hearts -> Some Diamonds
+  | Diamonds -> Some Clubs
+  | Clubs -> Some Spades
+  | Spades -> None

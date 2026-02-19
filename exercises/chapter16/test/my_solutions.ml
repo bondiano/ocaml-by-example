@@ -1,37 +1,30 @@
 (** Здесь вы можете писать свои решения упражнений. *)
 
-(** Упражнение 1: Тип color с ppx-деривацией. *)
-type color = Red | Green | Blue
-[@@deriving show, eq]
+(** Упражнение 1: Парсер списка целых чисел "[1, 2, 3]". *)
+let int_list_parser : int list Angstrom.t =
+  Angstrom.fail "todo"
 
-let all_colors : color list =
-  [] (* todo: заполните список всех цветов *)
+(** Упражнение 2: Парсер key=value пар "key=value". *)
+let key_value_parser : (string * string) Angstrom.t =
+  Angstrom.fail "todo"
 
-let color_to_string (c : color) : string =
-  ignore c;
-  failwith "todo"
+(** Упражнение 3: GADT --- добавить оператор Not для bool expr. *)
+type _ extended_expr =
+  | Int : int -> int extended_expr
+  | Bool : bool -> bool extended_expr
+  | Add : int extended_expr * int extended_expr -> int extended_expr
+  | Not : bool extended_expr -> bool extended_expr
+  | Gt : int extended_expr * int extended_expr -> bool extended_expr
 
-(** Упражнение 2: Запись с дедупликацией через equal. *)
-type person = { name : string; age : int }
-[@@deriving show, eq]
+let eval_extended : type a. a extended_expr -> a = function
+  | _ -> failwith "todo"
 
-let dedup_persons (lst : person list) : person list =
-  ignore lst;
-  failwith "todo"
+(** Упражнение 4: Парсер арифметических выражений с [+] и [*]. *)
+let arith_parser : int Angstrom.t =
+  Angstrom.fail "todo"
 
-(** Упражнение 3: Реализовать функцию [make_pair], возвращающую строковое представление пары. *)
-let make_pair (a : 'a) (b : 'b) (show_a : 'a -> string) (show_b : 'b -> string) : string =
-  ignore a; ignore b; ignore show_a; ignore show_b;
-  failwith "todo"
+(** Упражнение: Matching Brackets — проверка парности скобок. *)
+let matching_brackets (_s : string) : bool = failwith "todo"
 
-(** Упражнение 4: Реализовать [enumerate] для простых вариантов вручную
-    (аналог того, что мог бы генерировать ppx). *)
-type suit = Hearts | Diamonds | Clubs | Spades
-[@@deriving show, eq]
-
-let all_suits : suit list =
-  [] (* todo: заполните список всех мастей *)
-
-let next_suit (s : suit) : suit option =
-  ignore s;
-  failwith "todo"
+(** Упражнение: Word Count — подсчёт слов в строке. *)
+let word_count (_s : string) : (string * int) list = failwith "todo"

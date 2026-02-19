@@ -1,150 +1,164 @@
-open Chapter17.Lwt_examples
+open Chapter17.Brain_games
+
+(* --- Вспомогательная функция --- *)
+
+let string_contains haystack needle =
+  let nlen = String.length needle in
+  let hlen = String.length haystack in
+  if nlen > hlen then false
+  else
+    let rec check i =
+      if i > hlen - nlen then false
+      else if String.sub haystack i nlen = needle then true
+      else check (i + 1)
+    in
+    check 0
 
 (* --- Тесты библиотеки --- *)
 
-let lwt_tc name f =
-  Alcotest.test_case name `Quick (fun () -> Lwt_main.run (f ()))
-
-let basic_tests =
+let helper_tests =
+  let open Alcotest in
   [
-    lwt_tc "delay returns unit" (fun () ->
-      let open Lwt.Syntax in
-      let* () = delay 0.01 in
-      Lwt.return (Alcotest.(check unit) "unit" () ()));
+    test_case "gcd 12 8" `Quick (fun () ->
+      check int "gcd" 4 (gcd 12 8));
+    test_case "gcd 7 3" `Quick (fun () ->
+      check int "gcd" 1 (gcd 7 3));
+    test_case "gcd 100 25" `Quick (fun () ->
+      check int "gcd" 25 (gcd 100 25));
+    test_case "is_prime 2" `Quick (fun () ->
+      check bool "prime" true (is_prime 2));
+    test_case "is_prime 7" `Quick (fun () ->
+      check bool "prime" true (is_prime 7));
+    test_case "is_prime 4" `Quick (fun () ->
+      check bool "not prime" false (is_prime 4));
+    test_case "is_prime 1" `Quick (fun () ->
+      check bool "not prime" false (is_prime 1));
+    test_case "random_int range" `Quick (fun () ->
+      Random.self_init ();
+      let n = random_int 5 10 in
+      check bool "in range" true (n >= 5 && n <= 10));
+  ]
 
-    lwt_tc "sequence" (fun () ->
-      let open Lwt.Syntax in
-      let* results = sequence [Lwt.return 1; Lwt.return 2; Lwt.return 3] in
-      Lwt.return (Alcotest.(check (list int)) "seq" [1; 2; 3] results));
-
-    lwt_tc "parallel2" (fun () ->
-      let open Lwt.Syntax in
-      let* (a, b) = parallel2 (Lwt.return 1) (Lwt.return "hello") in
-      Alcotest.(check int) "a" 1 a;
-      Lwt.return (Alcotest.(check string) "b" "hello" b));
-
-    lwt_tc "race" (fun () ->
-      let open Lwt.Syntax in
-      let slow = let* () = delay 1.0 in Lwt.return "slow" in
-      let fast = let* () = delay 0.01 in Lwt.return "fast" in
-      let* winner = race fast slow in
-      Lwt.return (Alcotest.(check string) "winner" "fast" winner));
-
-    lwt_tc "parallel_delays" (fun () ->
-      let open Lwt.Syntax in
-      let* results = parallel_delays () in
-      Lwt.return (Alcotest.(check (list string)) "results" ["first"; "second"] results));
-
-    lwt_tc "race_example" (fun () ->
-      let open Lwt.Syntax in
-      let* result = race_example () in
-      Lwt.return (Alcotest.(check string) "fast" "fast" result));
+let game_structure_tests =
+  let open Alcotest in
+  [
+    test_case "even_game generates round" `Quick (fun () ->
+      Random.self_init ();
+      let r = even_game.generate_round () in
+      check bool "answer is yes or no" true
+        (r.correct_answer = "yes" || r.correct_answer = "no"));
+    test_case "calc_game generates round" `Quick (fun () ->
+      Random.self_init ();
+      let r = calc_game.generate_round () in
+      check bool "answer is a number" true
+        (match int_of_string_opt r.correct_answer with Some _ -> true | None -> false));
+    test_case "gcd_game generates round" `Quick (fun () ->
+      Random.self_init ();
+      let r = gcd_game.generate_round () in
+      check bool "answer is a number" true
+        (match int_of_string_opt r.correct_answer with Some _ -> true | None -> false));
+    test_case "progression_game generates round" `Quick (fun () ->
+      Random.self_init ();
+      let r = progression_game.generate_round () in
+      check bool "question has .." true
+        (string_contains r.question ".."));
+    test_case "prime_game generates round" `Quick (fun () ->
+      Random.self_init ();
+      let r = prime_game.generate_round () in
+      check bool "answer is yes or no" true
+        (r.correct_answer = "yes" || r.correct_answer = "no"));
   ]
 
 (* --- Тесты упражнений --- *)
 
-let sequential_map_tests =
+let balance_game_tests =
+  let open Alcotest in
   [
-    lwt_tc "sequential_map identity" (fun () ->
-      let open Lwt.Syntax in
-      let* results = My_solutions.sequential_map Lwt.return [1; 2; 3] in
-      Lwt.return (Alcotest.(check (list int)) "identity" [1; 2; 3] results));
+    test_case "balance_game generates round" `Quick (fun () ->
+      Random.self_init ();
+      let r = My_solutions.balance_game.generate_round () in
+      check bool "answer is +, - or *" true
+        (r.correct_answer = "+" || r.correct_answer = "-" || r.correct_answer = "*"));
+    test_case "balance_game answer is correct" `Quick (fun () ->
+      Random.self_init ();
+      for _ = 1 to 20 do
+        let r = My_solutions.balance_game.generate_round () in
+        let parts = String.split_on_char ' ' r.question in
+        match parts with
+        | [a_s; "?"; b_s; "="; c_s] ->
+          let a = int_of_string a_s and b = int_of_string b_s and c = int_of_string c_s in
+          let expected = match r.correct_answer with
+            | "+" -> a + b | "-" -> a - b | "*" -> a * b | _ -> -99999
+          in
+          check int "correct" c expected
+        | _ -> fail (Printf.sprintf "bad question format: %s" r.question)
+      done);
+  ]
 
-    lwt_tc "sequential_map double" (fun () ->
-      let open Lwt.Syntax in
-      let* results = My_solutions.sequential_map
-        (fun x -> Lwt.return (x * 2)) [1; 2; 3] in
-      Lwt.return (Alcotest.(check (list int)) "doubled" [2; 4; 6] results));
+let run_game_result_tests =
+  let open Alcotest in
+  let simple_game = {
+    description = "test";
+    generate_round = (fun () -> { question = "2 + 2"; correct_answer = "4" })
+  } in
+  [
+    test_case "all correct" `Quick (fun () ->
+      check bool "win" true
+        (My_solutions.run_game_result simple_game ~rounds:3 ["4"; "4"; "4"]));
+    test_case "wrong answer" `Quick (fun () ->
+      check bool "lose" false
+        (My_solutions.run_game_result simple_game ~rounds:3 ["4"; "5"; "4"]));
+    test_case "not enough answers" `Quick (fun () ->
+      check bool "lose" false
+        (My_solutions.run_game_result simple_game ~rounds:3 ["4"]));
+  ]
 
-    lwt_tc "sequential_map empty" (fun () ->
-      let open Lwt.Syntax in
-      let* results = My_solutions.sequential_map Lwt.return [] in
-      Lwt.return (Alcotest.(check (list int)) "empty" [] results));
-
-    lwt_tc "sequential_map preserves order" (fun () ->
-      let open Lwt.Syntax in
-      let order = ref [] in
-      let f x =
-        let* () = Lwt_unix.sleep (Float.of_int (3 - x) *. 0.01) in
-        order := x :: !order;
-        Lwt.return x
+let make_game_tests =
+  let open Alcotest in
+  [
+    test_case "make_game creates game" `Quick (fun () ->
+      let g = My_solutions.make_game
+        ~description:"test game"
+        ~generate:(fun () -> ("what is 1+1?", "2"))
       in
-      let* results = My_solutions.sequential_map f [1; 2; 3] in
-      Alcotest.(check (list int)) "results" [1; 2; 3] results;
-      Lwt.return (Alcotest.(check (list int)) "order" [3; 2; 1] !order));
+      check string "description" "test game" g.description;
+      let r = g.generate_round () in
+      check string "question" "what is 1+1?" r.question;
+      check string "answer" "2" r.correct_answer);
   ]
 
-let concurrent_map_tests =
+let factor_game_tests =
+  let open Alcotest in
   [
-    lwt_tc "concurrent_map identity" (fun () ->
-      let open Lwt.Syntax in
-      let* results = My_solutions.concurrent_map Lwt.return [1; 2; 3] in
-      Lwt.return (Alcotest.(check (list int)) "identity" [1; 2; 3] results));
-
-    lwt_tc "concurrent_map double" (fun () ->
-      let open Lwt.Syntax in
-      let* results = My_solutions.concurrent_map
-        (fun x -> Lwt.return (x * 2)) [1; 2; 3] in
-      Lwt.return (Alcotest.(check (list int)) "doubled" [2; 4; 6] results));
-
-    lwt_tc "concurrent_map empty" (fun () ->
-      let open Lwt.Syntax in
-      let* results = My_solutions.concurrent_map Lwt.return [] in
-      Lwt.return (Alcotest.(check (list int)) "empty" [] results));
-  ]
-
-let timeout_tests =
-  [
-    lwt_tc "timeout succeeds" (fun () ->
-      let open Lwt.Syntax in
-      let* result = My_solutions.timeout 1.0 (Lwt.return 42) in
-      Lwt.return (Alcotest.(check (option int)) "some" (Some 42) result));
-
-    lwt_tc "timeout expires" (fun () ->
-      let open Lwt.Syntax in
-      let slow =
-        let* () = Lwt_unix.sleep 1.0 in
-        Lwt.return 42
-      in
-      let* result = My_solutions.timeout 0.01 slow in
-      Lwt.return (Alcotest.(check (option int)) "none" None result));
-  ]
-
-let rate_limit_tests =
-  [
-    lwt_tc "rate_limit all" (fun () ->
-      let open Lwt.Syntax in
-      let tasks = List.init 5 (fun i -> fun () -> Lwt.return i) in
-      let* results = My_solutions.rate_limit 2 tasks in
-      Lwt.return (Alcotest.(check (list int)) "all" [0; 1; 2; 3; 4] results));
-
-    lwt_tc "rate_limit respects limit" (fun () ->
-      let open Lwt.Syntax in
-      let running = ref 0 in
-      let max_running = ref 0 in
-      let tasks = List.init 6 (fun i -> fun () ->
-        running := !running + 1;
-        if !running > !max_running then max_running := !running;
-        let* () = Lwt_unix.sleep 0.02 in
-        running := !running - 1;
-        Lwt.return i
-      ) in
-      let* results = My_solutions.rate_limit 3 tasks in
-      Alcotest.(check (list int)) "all results" [0; 1; 2; 3; 4; 5] results;
-      Lwt.return (Alcotest.(check bool) "max 3" true (!max_running <= 3)));
-
-    lwt_tc "rate_limit empty" (fun () ->
-      let open Lwt.Syntax in
-      let* results = My_solutions.rate_limit 5 [] in
-      Lwt.return (Alcotest.(check (list int)) "empty" [] results));
+    test_case "factor_game generates round" `Quick (fun () ->
+      Random.self_init ();
+      let r = My_solutions.factor_game.generate_round () in
+      let n = int_of_string r.question in
+      let factors = String.split_on_char ' ' r.correct_answer
+        |> List.map int_of_string in
+      let product = List.fold_left ( * ) 1 factors in
+      check int "product equals n" n product;
+      check bool "all prime" true
+        (List.for_all is_prime factors));
+    test_case "factor_game various" `Quick (fun () ->
+      Random.self_init ();
+      for _ = 1 to 20 do
+        let r = My_solutions.factor_game.generate_round () in
+        let n = int_of_string r.question in
+        let factors = String.split_on_char ' ' r.correct_answer
+          |> List.map int_of_string in
+        let product = List.fold_left ( * ) 1 factors in
+        check int "product" n product
+      done);
   ]
 
 let () =
-  Alcotest.run "Chapter 17"
+  Alcotest.run "Chapter 15"
     [
-      ("basic --- базовые операции Lwt", basic_tests);
-      ("sequential_map --- последовательный map", sequential_map_tests);
-      ("concurrent_map --- параллельный map", concurrent_map_tests);
-      ("timeout --- таймаут", timeout_tests);
-      ("rate_limit --- ограничение параллелизма", rate_limit_tests);
+      ("helpers --- вспомогательные функции", helper_tests);
+      ("games --- структура игр", game_structure_tests);
+      ("balance --- угадай оператор", balance_game_tests);
+      ("run_game_result --- чистая логика", run_game_result_tests);
+      ("make_game --- конструктор игры", make_game_tests);
+      ("factor --- разложение на множители", factor_game_tests);
     ]

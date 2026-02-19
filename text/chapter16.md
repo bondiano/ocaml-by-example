@@ -1,571 +1,478 @@
-# ppx и метапрограммирование
+# Парсер-комбинаторы и GADT
 
 ## Цели главы
 
-В этой главе мы изучим **метапрограммирование** в OCaml --- написание программ, которые генерируют другие программы на этапе компиляции:
+В этой главе мы изучим два мощных инструмента OCaml:
 
-- **Метапрограммирование** --- что это, зачем, три подхода (Lisp, Rust, OCaml).
-- **Конвейер компиляции** --- где работает ppx, extension points и derivers.
-- **ppx_deriving** --- автоматическая генерация `show`, `eq`, `ord`.
-- **Написание своего ppx** --- знакомство с ppxlib.
-- **Сравнение с Haskell** --- Template Haskell, GHC Generics.
+- **Парсер-комбинаторы** --- подход к построению парсеров из маленьких, композируемых частей с помощью библиотеки **Angstrom**.
+- **GADT (Generalized Algebraic Data Types)** --- обобщённые алгебраические типы данных, позволяющие создавать типобезопасные DSL.
+
+Мы соединим эти два инструмента: напишем парсер, который строит типобезопасное AST, а затем вычислим результат.
 
 ## Подготовка проекта
 
-Код этой главы находится в `exercises/chapter16`. Для этой главы потребуются библиотеки ppxlib и ppx_deriving:
+Код этой главы находится в `exercises/chapter16`. Для этой главы потребуется библиотека Angstrom:
 
 ```text
-$ opam install ppxlib ppx_deriving
+$ opam install angstrom
 $ cd exercises/chapter16
 $ dune build
 ```
 
-Убедитесь, что в файле `dune` вашей библиотеки указан препроцессор:
+## Что такое парсер-комбинаторы?
+
+**Парсер** --- функция, которая принимает входную строку и возвращает структурированный результат (или ошибку). **Комбинатор** --- функция, которая объединяет парсеры в более сложные парсеры.
+
+Вместо того чтобы писать парсер целиком (как в yacc/bison), мы **собираем** его из маленьких кирпичиков:
+
+```
+парсер_числа + парсер_оператора + парсер_числа = парсер_выражения
+```
+
+Преимущества:
+
+- **Композируемость** --- маленькие парсеры легко объединять.
+- **Типобезопасность** --- каждый парсер возвращает конкретный тип.
+- **Тестируемость** --- каждый парсер можно тестировать отдельно.
+- **Читаемость** --- код парсера похож на грамматику.
+
+## Библиотека Angstrom
+
+[Angstrom](https://github.com/inhabitedtype/angstrom) --- быстрая библиотека парсер-комбинаторов для OCaml, оптимизированная для работы с потоками данных. Она аналогична `attoparsec` в Haskell.
+
+Основной тип: `'a Angstrom.t` --- парсер, возвращающий значение типа `'a`.
+
+### Базовые парсеры
+
+```ocaml
+open Angstrom
+
+(* Парсер одного символа *)
+let _ = char 'a'         (* char Angstrom.t --- ожидает ровно 'a' *)
+
+(* Парсер строки *)
+let _ = string "hello"   (* string Angstrom.t --- ожидает "hello" *)
+
+(* Парсер символов по предикату *)
+let _ = take_while (fun c -> c >= '0' && c <= '9')   (* string t --- 0+ символов *)
+let _ = take_while1 (fun c -> c >= '0' && c <= '9')  (* string t --- 1+ символов *)
+
+(* Пропустить символы по предикату *)
+let _ = skip_while (fun c -> c = ' ')  (* unit t --- пропускает пробелы *)
+```
+
+### Запуск парсера
+
+```ocaml
+let result = Angstrom.parse_string ~consume:All (string "hello") "hello"
+(* result : (string, string) result = Ok "hello" *)
+
+let error = Angstrom.parse_string ~consume:All (string "hello") "world"
+(* error : (string, string) result = Error ": string" *)
+```
+
+Параметр `~consume:All` требует, чтобы парсер прочитал всю строку. Если останутся непрочитанные символы --- это ошибка.
+
+## Комбинаторы
+
+### Последовательность: `*>` и `<*`
+
+```ocaml
+(* *> --- выполнить оба парсера, вернуть результат правого *)
+let p1 = string "hello" *> string " world"
+(* parse_string ~consume:All p1 "hello world" = Ok " world" *)
+
+(* <* --- выполнить оба парсера, вернуть результат левого *)
+let p2 = string "hello" <* string " world"
+(* parse_string ~consume:All p2 "hello world" = Ok "hello" *)
+```
+
+Это позволяет удобно пропускать незначимые части (пробелы, скобки, разделители).
+
+### Привязка: `>>=` (bind)
+
+```ocaml
+(* >>= --- передать результат первого парсера во второй *)
+let digit_then_letter =
+  take_while1 (fun c -> c >= '0' && c <= '9') >>= fun digits ->
+  take_while1 (fun c -> c >= 'a' && c <= 'z') >>= fun letters ->
+  return (digits, letters)
+(* parse_string ~consume:All digit_then_letter "123abc" = Ok ("123", "abc") *)
+```
+
+`return v` --- парсер, который ничего не потребляет и возвращает `v`.
+
+### Отображение: `>>|` (map)
+
+```ocaml
+(* >>| --- преобразовать результат парсера *)
+let integer =
+  take_while1 (fun c -> c >= '0' && c <= '9') >>| int_of_string
+(* int Angstrom.t *)
+```
+
+### Альтернатива: `<|>`
+
+```ocaml
+(* <|> --- попробовать первый парсер, при неудаче --- второй *)
+let bool_parser =
+  string "true" *> return true
+  <|> string "false" *> return false
+```
+
+**Важно:** `<|>` откатывается (backtrack) только если первый парсер не потребил ни одного символа. Для полного отката используйте `Angstrom.option` или планируйте грамматику без неоднозначностей.
+
+### Повторение: `many`, `many1`, `sep_by`
+
+```ocaml
+(* many --- 0 или более повторений *)
+let digits = many (satisfy (fun c -> c >= '0' && c <= '9'))
+(* char list Angstrom.t *)
+
+(* many1 --- 1 или более повторений *)
+let digits1 = many1 (satisfy (fun c -> c >= '0' && c <= '9'))
+
+(* sep_by --- элементы, разделённые разделителем *)
+let csv_ints = sep_by (char ',') integer
+(* int list Angstrom.t *)
+
+(* sep_by1 --- как sep_by, но минимум 1 элемент *)
+let csv_ints1 = sep_by1 (char ',') integer
+```
+
+### Комбинирование: `lift2`
+
+```ocaml
+(* lift2 --- применить функцию к результатам двух парсеров *)
+let pair = lift2 (fun a b -> (a, b)) integer (char ',' *> integer)
+(* (int * int) Angstrom.t *)
+(* parse_string ~consume:All pair "42,17" = Ok (42, 17) *)
+```
+
+### Рекурсивные парсеры: `fix`
+
+Для рекурсивных грамматик (вложенные скобки, деревья) нужен `fix`:
+
+```ocaml
+(* fix --- создать рекурсивный парсер *)
+let nested_parens =
+  fix (fun self ->
+    char '(' *> self <* char ')'   (* вложенные скобки *)
+    <|> string ""                   (* или пустая строка *)
+  )
+```
+
+`fix` передаёт парсеру ссылку на самого себя, позволяя определять рекурсивные грамматики без `let rec` (который не работает с типом `'a t`).
+
+## Пример: JSON-подобный парсер
+
+Соберём всё вместе и построим парсер для подмножества JSON:
+
+```ocaml
+type json_value =
+  | JNull
+  | JBool of bool
+  | JInt of int
+  | JString of string
+  | JArray of json_value list
+  | JObject of (string * json_value) list
+```
+
+### Вспомогательные парсеры
+
+```ocaml
+let ws = skip_while (fun c -> c = ' ' || c = '\t' || c = '\n' || c = '\r')
+
+let integer =
+  ws *> take_while1 (fun c -> c >= '0' && c <= '9') >>| int_of_string
+
+let quoted_string =
+  ws *> char '"' *> take_while (fun c -> c <> '"') <* char '"'
+
+let boolean =
+  ws *> (string "true" *> return true <|> string "false" *> return false)
+```
+
+### Рекурсивный парсер
+
+```ocaml
+let json_value =
+  fix (fun json_value ->
+    let jnull = ws *> string "null" *> return JNull in
+    let jbool = boolean >>| fun b -> JBool b in
+    let jint = integer >>| fun n -> JInt n in
+    let jstring = quoted_string >>| fun s -> JString s in
+    let jarray =
+      ws *> char '[' *>
+      sep_by (ws *> char ',') json_value
+      <* ws <* char ']' >>| fun items -> JArray items
+    in
+    let key_value =
+      lift2 (fun k v -> (k, v))
+        (quoted_string <* ws <* char ':')
+        json_value
+    in
+    let jobject =
+      ws *> char '{' *>
+      sep_by (ws *> char ',') key_value
+      <* ws <* char '}' >>| fun pairs -> JObject pairs
+    in
+    jnull <|> jbool <|> jint <|> jstring <|> jarray <|> jobject
+  )
+
+let parse_json str =
+  parse_string ~consume:All (ws *> json_value <* ws) str
+```
+
+Обратите внимание на использование `fix`: `json_value` ссылается на самого себя внутри `jarray` и `jobject`, что позволяет парсить вложенные структуры.
 
 ```text
-(library
- (name chapter16)
- (preprocess (pps ppx_deriving.show ppx_deriving.eq ppx_deriving.ord)))
+# parse_json "{\"name\": \"OCaml\", \"version\": 5}";;
+- : ... = Ok (JObject [("name", JString "OCaml"); ("version", JInt 5)])
+
+# parse_json "[1, 2, [3, 4]]";;
+- : ... = Ok (JArray [JInt 1; JInt 2; JArray [JInt 3; JInt 4]])
 ```
 
-## Что такое метапрограммирование?
+## GADT: обобщённые алгебраические типы данных
 
-**Метапрограммирование** --- написание кода, который генерирует другой код. Вместо того чтобы вручную писать повторяющиеся функции для каждого типа, мы просим компилятор сгенерировать их автоматически. Это сокращает шаблонный код, гарантирует согласованность и безопасность --- при изменении типа сгенерированные функции обновляются автоматически.
+### Обычные ADT: проблема
 
-Рассмотрим типичную ситуацию. У нас есть тип:
+Представим, что мы хотим описать арифметические и логические выражения одним типом:
 
 ```ocaml
-type color = Red | Green | Blue
+(* Обычный variant --- НЕ типобезопасный *)
+type expr =
+  | Int of int
+  | Bool of bool
+  | Add of expr * expr
+  | Eq of expr * expr
+  | If of expr * expr * expr
 ```
 
-Нам нужна функция `show_color : color -> string`. Можно написать её вручную:
+Проблема: ничего не мешает написать `Add (Bool true, Int 3)` --- это скомпилируется, но не имеет смысла. Функция `eval` вынуждена обрабатывать ошибки в рантайме:
 
 ```ocaml
-let show_color = function
-  | Red -> "Red"
-  | Green -> "Green"
-  | Blue -> "Blue"
+let rec eval = function
+  | Int n -> `Int n
+  | Bool b -> `Bool b
+  | Add (a, b) ->
+    (match eval a, eval b with
+     | `Int x, `Int y -> `Int (x + y)
+     | _ -> failwith "type error")  (* ошибка в рантайме! *)
+  | ...
 ```
 
-Но если типов много, или они часто меняются, ручное поддержание таких функций становится утомительным и подверженным ошибкам. Метапрограммирование решает эту проблему --- компилятор генерирует `show_color` автоматически из определения типа.
+### GADT: решение
 
-## Три подхода к метапрограммированию
-
-Разные языки предлагают разные подходы к метапрограммированию. Рассмотрим три наиболее характерных: Lisp, Rust и OCaml.
-
-### Lisp: код как данные
-
-Lisp занимает уникальное место в истории метапрограммирования. Благодаря свойству **гомоиконичности** (homoiconicity) --- код и данные имеют одинаковое представление (S-выражения) --- макросы в Lisp работают с кодом как с обычными списками.
-
-```lisp
-;; Определяем макрос when --- условие без else
-(defmacro when (condition &body body)
-  `(if ,condition (progn ,@body)))
-
-;; Использование:
-(when (> x 0)
-  (print "positive")
-  (inc counter))
-
-;; Раскрывается в:
-(if (> x 0) (progn (print "positive") (inc counter)))
-```
-
-Здесь обратная кавычка `` ` `` создаёт шаблон, запятая `,` подставляет значение, а `,@` --- сплайсит список. Макросы Lisp --- это обычные функции, которые получают код в виде списков и возвращают новый код.
-
-Преимущества Lisp-макросов --- максимальная гибкость: любая трансформация кода возможна. Недостаток --- отсутствие типизации: макрос может сгенерировать синтаксически некорректный код, и ошибка обнаружится только при раскрытии.
-
-### Rust: макросы на токенах
-
-Rust предлагает два вида макросов: **декларативные** (`macro_rules!`) и **процедурные** (proc macros).
-
-Декларативные макросы работают через сопоставление с образцом на токенах:
-
-```rust
-macro_rules! vec_of {
-    ($($x:expr),*) => { vec![$($x),*] };
-}
-// vec_of![1, 2, 3] раскрывается в vec![1, 2, 3]
-```
-
-Процедурные макросы --- полноценные Rust-программы, которые трансформируют поток токенов. Самый распространённый вид --- `#[derive(...)]`:
-
-```rust
-use serde::{Serialize, Deserialize};
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct Point {
-    x: f64,
-    y: f64,
-}
-```
-
-Под капотом `#[derive(Debug)]` вызывает процедурный макрос, который получает `TokenStream` и возвращает новый `TokenStream`. Крейты `syn` и `quote` предоставляют инструменты для парсинга и генерации. Модель Rust: **токены -> токены** --- менее гибко, чем Lisp, но безопаснее.
-
-### OCaml ppx: трансформация AST
-
-OCaml использует подход **AST -> AST**. Вместо работы с текстом или токенами ppx-расширения оперируют **абстрактным синтаксическим деревом** --- типизированным представлением программы после парсинга.
+GADT позволяют конструкторам **уточнять** тип возвращаемого значения:
 
 ```ocaml
-type point = { x : float; y : float }
-[@@deriving show, eq]
-
-(* Генерирует:
-   val pp_point : Format.formatter -> point -> unit
-   val show_point : point -> string
-   val equal_point : point -> point -> bool
-*)
+type _ expr =
+  | Int : int -> int expr
+  | Bool : bool -> bool expr
+  | Add : int expr * int expr -> int expr
+  | Mul : int expr * int expr -> int expr
+  | Eq : int expr * int expr -> bool expr
+  | If : bool expr * 'a expr * 'a expr -> 'a expr
 ```
 
-Ключевое отличие от Rust: ppx работает с **типизированным AST**, а не с потоком токенов. Каждый узел дерева имеет определённый тип (`expression`, `pattern`, `structure_item`), что гарантирует синтаксическую корректность сгенерированного кода.
+Обратите внимание на синтаксис:
 
-### Сравнительная таблица
+- `type _ expr` --- параметр типа не именован, он определяется конструкторами.
+- `Int : int -> int expr` --- конструктор `Int` принимает `int` и возвращает `int expr`.
+- `Bool : bool -> bool expr` --- конструктор `Bool` возвращает `bool expr`.
+- `Add : int expr * int expr -> int expr` --- складывать можно **только** `int expr`.
+- `Eq : int expr * int expr -> bool expr` --- сравнение возвращает `bool expr`.
+- `If : bool expr * 'a expr * 'a expr -> 'a expr` --- условие должно быть `bool`, ветки --- одного типа.
 
-| Аспект | Lisp | Rust | OCaml ppx |
-|--------|------|------|-----------|
-| Модель | Код = данные (S-expr) | Токены -> Токены | AST -> AST |
-| Типизация входа | Нет | Частичная (TokenStream) | Полная (Parsetree) |
-| Типизация выхода | Нет | Частичная | Полная |
-| Гигиена | Нет (ручная) | Частичная | Полная (через ppxlib) |
-| Гибкость | Максимальная | Высокая | Средняя |
-| Безопасность | Минимальная | Средняя | Максимальная |
-| Отладка | `macroexpand` | `cargo expand` | `dune describe pp` |
-| Экосистема | defmacro | syn/quote | ppxlib |
-
-Каждый подход --- компромисс между гибкостью и безопасностью. Lisp даёт максимальную свободу, Rust балансирует удобство и типобезопасность, OCaml выбирает максимальную структурированность.
-
-## Конвейер компиляции OCaml
-
-Чтобы понять, где работает ppx, рассмотрим конвейер компиляции OCaml:
+Теперь `Add (Bool true, Int 3)` --- **ошибка компиляции**, а не рантайма!
 
 ```text
-исходный код (.ml)
-      |
-      v
-  [Парсинг] ---> нетипизированный AST (Parsetree)
-      |
-      v
-  [ppx rewrite] ---> трансформированный AST     <-- ppx работает здесь
-      |
-      v
-  [Типизация] ---> типизированный AST (Typedtree)
-      |
-      v
-  [Lambda] ---> промежуточное представление
-      |
-      v
-  [Кодогенерация] ---> байткод (.cmo) или нативный код (.cmx)
+# Add (Bool true, Int 3);;
+Error: This expression has type bool expr but an expression of type int expr was expected
 ```
 
-Важный момент: ppx работает **после** парсинга, но **до** типизации. ppx видит структуру кода (выражения, типы, модули), но **не видит** информацию о типах. Сгенерированные определения проверяются типизатором как обычный код.
-
-## Два вида ppx
-
-В OCaml существуют два основных вида ppx-трансформаций: **extension points** и **derivers**.
-
-### Extension points (точки расширения)
-
-Extension points --- это места в коде, помеченные специальным синтаксисом `[%name ...]` или `let%name`, куда ppx вставляет сгенерированный код:
+### Типобезопасное вычисление
 
 ```ocaml
-(* Выражение: [%name payload] *)
-let greeting = [%string "Hello, %{name}!"]
-
-(* let-привязка: let%name *)
-let%lwt data = Lwt_io.read_line stdin in
-Lwt_io.printl data
-
-(* Атрибут модульного уровня: [%%name] *)
-[%%import "config.h"]
+let rec eval : type a. a expr -> a = function
+  | Int n -> n
+  | Bool b -> b
+  | Add (a, b) -> eval a + eval b
+  | Mul (a, b) -> eval a * eval b
+  | Eq (a, b) -> eval a = eval b
+  | If (cond, then_, else_) ->
+    if eval cond then eval then_ else eval else_
 ```
 
-Extension points --- это «дырки» в коде, которые ppx заполняет сгенерированным выражением. Популярные примеры: `ppx_expect` (`let%expect_test`), `ppx_lwt` (`let%lwt`), `ppx_string` (`[%string ...]`).
+Аннотация `type a. a expr -> a` --- это **локально абстрактный тип**. Она говорит компилятору, что `a` --- параметр типа, который определяется при сопоставлении:
 
-### Derivers (деривации)
+- Если `expr` --- это `Int n`, то `a = int`, и мы возвращаем `int`.
+- Если `expr` --- это `Bool b`, то `a = bool`, и мы возвращаем `bool`.
 
-Derivers генерируют **новые функции** на основе определения типа. Они активируются аннотацией `[@@deriving name]`:
+Без `type a.` компилятор не сможет вывести тип: ведь `eval` возвращает разные типы в разных ветках!
+
+### Показать выражение
 
 ```ocaml
-type color = Red | Green | Blue
-[@@deriving show, eq, ord]
-
-(* Генерирует:
-   val pp_color : Format.formatter -> color -> unit
-   val show_color : color -> string
-   val equal_color : color -> color -> bool
-   val compare_color : color -> color -> int
-*)
+let rec show_expr : type a. a expr -> string = function
+  | Int n -> string_of_int n
+  | Bool b -> string_of_bool b
+  | Add (a, b) -> Printf.sprintf "(%s + %s)" (show_expr a) (show_expr b)
+  | Mul (a, b) -> Printf.sprintf "(%s * %s)" (show_expr a) (show_expr b)
+  | Eq (a, b) -> Printf.sprintf "(%s = %s)" (show_expr a) (show_expr b)
+  | If (c, t, e) ->
+    Printf.sprintf "(if %s then %s else %s)" (show_expr c) (show_expr t) (show_expr e)
 ```
 
-Derivers --- самый распространённый вид ppx. Аннотация `[@@deriving ...]` применяется к **определению типа**. PPX-расширение получает AST типа, анализирует его структуру (variant, record, alias) и генерирует соответствующие функции.
-
-## Использование ppx_deriving
-
-Библиотека **ppx_deriving** предоставляет набор стандартных дериваций. Рассмотрим каждую подробно.
-
-### [@@deriving show]
-
-Генерирует функции для преобразования значений в строку:
-
-```ocaml
-type direction = North | South | East | West
-[@@deriving show]
-
-(* Генерирует:
-   val pp_direction : Format.formatter -> direction -> unit
-   val show_direction : direction -> string
-*)
-```
-
-Использование:
+### Пример использования
 
 ```text
-# show_direction North;;
-- : string = "Direction.North"
+# eval (Add (Int 3, Mul (Int 4, Int 5)));;
+- : int = 23
 
-# show_direction South;;
-- : string = "Direction.South"
+# eval (If (Eq (Int 1, Int 1), Int 42, Int 0));;
+- : int = 42
+
+# eval (If (Bool true, Add (Int 1, Int 2), Int 0));;
+- : int = 3
+
+# show_expr (Add (Int 3, Int 4));;
+- : string = "(3 + 4)"
 ```
 
-Для записей:
+### Сложный пример: типобезопасная формула
 
 ```ocaml
-type person = {
-  name : string;
-  age : int;
-  active : bool;
-} [@@deriving show]
+(* если (2 + 3) = 5 то 6 * 7 иначе 0 *)
+let formula = If (Eq (Add (Int 2, Int 3), Int 5), Mul (Int 6, Int 7), Int 0)
+(* formula : int expr *)
 
-(* val show_person : person -> string *)
+let _ = eval formula
+(* - : int = 42 *)
 ```
 
-```text
-# show_person { name = "Alice"; age = 30; active = true };;
-- : string = "{ name = \"Alice\"; age = 30; active = true }"
-```
+Этот GADT гарантирует на этапе компиляции:
 
-Для параметризованных типов `show_tree` принимает дополнительный аргумент --- функцию для отображения элемента типа `'a`.
+- Нельзя сложить `Bool` и `Int`.
+- Условие в `If` всегда `bool expr`.
+- Обе ветки `If` имеют одинаковый тип.
+- `eval` не может упасть с ошибкой типа.
 
-### [@@deriving eq]
+## Комбинирование: парсер + GADT
 
-Генерирует структурное равенство:
+Можно распарсить строку в `json_value`, а затем преобразовать в GADT-выражение:
 
 ```ocaml
-type color = Red | Green | Blue
-[@@deriving eq]
-
-(* val equal_color : color -> color -> bool *)
+(* Простой пример: парсим арифметическое выражение *)
+(* "2 + 3 * 4" -> Add (Int 2, Mul (Int 3, Int 4)) *)
+(* Результат вычисления: 14 *)
 ```
 
-```text
-# equal_color Red Red;;
-- : bool = true
-
-# equal_color Red Blue;;
-- : bool = false
-```
-
-Для записей сравниваются все поля. Важно: `equal` использует **структурное** равенство, а не физическое (`==`). Для `float` используется `Float.equal`, что корректно обрабатывает `nan` (в отличие от `=`).
-
-### [@@deriving ord]
-
-Генерирует функцию сравнения, совместимую с `compare`:
+Для полноценного парсера арифметики нужно учитывать приоритет операторов. Angstrom позволяет это сделать через рекурсивные парсеры с `fix`:
 
 ```ocaml
-type priority = Low | Medium | High | Critical
-[@@deriving ord]
-
-(* val compare_priority : priority -> priority -> int *)
+let arith_parser =
+  let integer = ws *> take_while1 (fun c -> c >= '0' && c <= '9') >>| int_of_string in
+  let parens p = ws *> char '(' *> p <* ws <* char ')' in
+  fix (fun expr ->
+    let atom = integer <|> parens expr in
+    let rec chain_mul acc =
+      (ws *> char '*' *> atom >>= fun r -> chain_mul (acc * r))
+      <|> return acc
+    in
+    let mul_expr = atom >>= chain_mul in
+    let rec chain_add acc =
+      (ws *> char '+' *> mul_expr >>= fun r -> chain_add (acc + r))
+      <|> return acc
+    in
+    mul_expr >>= chain_add
+  )
 ```
 
-```text
-# compare_priority Low High;;
-- : int = -1
-
-# compare_priority High Low;;
-- : int = 1
-
-# compare_priority Medium Medium;;
-- : int = 0
-```
-
-Для вариантных типов порядок определяется **порядком объявления** конструкторов. `Low` < `Medium` < `High` < `Critical`, потому что именно в таком порядке они объявлены.
-
-Для записей поля сравниваются **лексикографически** --- сначала первое поле, при равенстве --- второе и т.д.
-
-### Комбинирование дериваций
-
-Деривации можно комбинировать в одной аннотации:
-
-```ocaml
-type suit = Spades | Hearts | Diamonds | Clubs
-[@@deriving show, eq, ord]
-
-(* Генерирует все три набора функций:
-   val show_suit : suit -> string
-   val equal_suit : suit -> suit -> bool
-   val compare_suit : suit -> suit -> int
-*)
-```
-
-### Припоминание: [@@deriving yojson]
-
-В главе 10 мы уже использовали ppx для автоматической JSON-сериализации --- `[@@deriving yojson]` генерирует `t_to_yojson` и `t_of_yojson`. Это тот же механизм, только вместо `show` или `eq` генерируются функции сериализации.
-
-### Настройка dune
-
-Для каждого ppx-плагина нужно указать его в секции `preprocess` файла `dune`:
-
-```text
-(library
- (name mylib)
- (libraries yojson)
- (preprocess (pps ppx_deriving.show ppx_deriving.eq ppx_deriving.ord
-                  ppx_deriving_yojson)))
-```
-
-Каждый плагин указывается отдельно. `ppx_deriving.show`, `ppx_deriving.eq`, `ppx_deriving.ord` --- модули библиотеки ppx_deriving. `ppx_deriving_yojson` --- отдельный пакет.
-
-## Исследование AST
-
-Иногда полезно увидеть, что именно ppx сгенерировал. Команда `dune describe pp lib/mymodule.ml` выводит файл **после** всех ppx-трансформаций. Например, для кода:
-
-```ocaml
-type color = Red | Green | Blue
-[@@deriving show, eq]
-```
-
-Команда `dune describe pp` покажет примерно следующее:
-
-```ocaml
-type color = Red | Green | Blue
-
-let pp_color fmt = function
-  | Red -> Format.fprintf fmt "Red"
-  | Green -> Format.fprintf fmt "Green"
-  | Blue -> Format.fprintf fmt "Blue"
-
-let show_color x = Format.asprintf "%a" pp_color x
-
-let equal_color a b =
-  match a, b with
-  | Red, Red -> true
-  | Green, Green -> true
-  | Blue, Blue -> true
-  | _ -> false
-```
-
-Это помогает понять, какой код генерируется, и отладить проблемы с ppx.
-
-## Пишем свой ppx с ppxlib
-
-Рассмотрим, как создать свой ppx-деривер. Мы напишем `[@@deriving describe]`, который для вариантного типа генерирует функцию `describe : t -> string`, возвращающую имя конструктора в нижнем регистре.
-
-### Цель
-
-```ocaml
-type http_method = Get | Post | Put | Delete
-[@@deriving describe]
-
-(* Должно сгенерировать:
-   val describe_http_method : http_method -> string
-   describe_http_method Get = "get"
-   describe_http_method Post = "post"
-   describe_http_method Put = "put"
-   describe_http_method Delete = "delete"
-*)
-```
-
-### Структура ppx-плагина
-
-PPX-плагин --- это отдельная библиотека, которая регистрируется через `ppxlib`:
-
-```ocaml
-open Ppxlib
-
-let generate_case ~loc constructor_name =
-  let pattern = Ast_builder.Default.ppat_construct ~loc
-    (Located.mk ~loc (Lident constructor_name)) None in
-  let description = String.lowercase_ascii constructor_name in
-  let expression = Ast_builder.Default.estring ~loc description in
-  Ast_builder.Default.case ~lhs:pattern ~guard:None ~rhs:expression
-
-let impl_generator ~ctxt:_ ((_rec_flag, type_decls) : rec_flag * type_declaration list)
-  : structure =
-  List.concat_map (fun (td : type_declaration) ->
-    match td.ptype_kind with
-    | Ptype_variant constructors ->
-      let loc = td.ptype_loc in
-      let func_name = "describe_" ^ td.ptype_name.txt in
-      let cases = List.map (fun (c : constructor_declaration) ->
-        generate_case ~loc c.pcd_name.txt) constructors in
-      let body = Ast_builder.Default.pexp_function ~loc cases in
-      let binding = Ast_builder.Default.value_binding ~loc
-        ~pat:(Ast_builder.Default.ppat_var ~loc (Located.mk ~loc func_name))
-        ~expr:body in
-      [Ast_builder.Default.pstr_value ~loc Nonrecursive [binding]]
-    | _ ->
-      Location.raise_errorf ~loc:td.ptype_loc
-        "deriving describe: only variant types are supported"
-  ) type_decls
-
-let () =
-  ignore (Deriving.add "describe"
-    ~str_type_decl:(Deriving.Generator.V2.make_noarg impl_generator))
-```
-
-Ключевые элементы: `Ast_builder.Default` строит AST-узлы безопасно (каждый требует `~loc`), `ppat_construct` создаёт паттерн конструктора, `estring` --- строковый литерал, `pexp_function` --- match-выражение. `Deriving.add` регистрирует имя деривера, генератор анализирует `Ptype_variant` и возвращает новые определения.
-
-### Настройка dune для ppx
-
-PPX-библиотека требует особой настройки:
-
-```text
-(library
- (name ppx_describe)
- (kind ppx_rewriter)
- (libraries ppxlib))
-```
-
-Ключевой момент --- `(kind ppx_rewriter)`, который говорит dune, что это не обычная библиотека, а ppx-расширение.
-
-Написание своего ppx --- продвинутая тема. На практике большинство задач решается стандартными деривациями из ppx_deriving. Но понимание механизма помогает разобраться, что происходит «под капотом».
+Этот парсер правильно обрабатывает приоритет: `2 + 3 * 4` вычисляется как `2 + (3 * 4) = 14`.
 
 ## Сравнение с Haskell
 
-В Haskell метапрограммирование реализовано через несколько механизмов.
+| Аспект | OCaml | Haskell |
+|--------|-------|---------|
+| Парсер-комбинаторы | Angstrom | Parsec, Megaparsec, Attoparsec |
+| GADT синтаксис | `type _ t = C : int -> int t` | `data T a where C :: Int -> T Int` |
+| Локальные типы | `type a. a t -> a` | Неявно через `GADTs` расширение |
+| Free-монады | Не идиоматичны | Популярны для DSL |
+| Effect handlers | Встроены в OCaml 5 | Через библиотеки (polysemy, fused-effects) |
 
-### Template Haskell
+В Haskell для типобезопасных DSL часто используют **Free-монады** --- обобщённый способ построить интерпретируемое AST. В OCaml GADT + обработчики эффектов (effect handlers) решают аналогичные задачи более прямолинейно.
 
-**Template Haskell (TH)** --- макросистема Haskell, аналогичная ppx. TH работает с типизированным AST Haskell и может генерировать произвольный код:
-
-```haskell
--- Haskell: Template Haskell
-{-# LANGUAGE TemplateHaskell #-}
-
--- Генерация экземпляра Show вручную через TH
-$(deriveShow ''MyType)
-
--- Квазицитирование
-myExpr = [| 1 + 2 |]   -- -> Exp
-myType = [t| Int -> Bool |]  -- -> Type
-```
-
-### GHC Generics и deriving via
-
-**GHC Generics** --- другой подход: вместо генерации кода создаётся обобщённое представление типа. Библиотеки (aeson, binary) работают с этим представлением через `deriving Generic`. **DerivingVia** позволяет заимствовать реализации через newtype-обёртки: `deriving (Show, Eq) via String`.
-
-### Сравнительная таблица
-
-| Аспект | OCaml ppx | Haskell TH | GHC Generics | Haskell deriving |
-|--------|-----------|------------|--------------|------------------|
-| Когда работает | Компиляция (после парсинга) | Компиляция (splice) | Рантайм (обобщение) | Компиляция |
-| Модель | AST -> AST | AST -> AST | Тип -> Generic Rep | Встроен в GHC |
-| Видит типы | Нет | Да | Да | Да |
-| Произвольный код | Да | Да | Нет (ограничен Generic) | Нет |
-| Простота использования | `[@@deriving ...]` | `$(...)` или `deriving` | `deriving Generic` | `deriving (Show)` |
-| Отладка | `dune describe pp` | `-ddump-splices` | Нет (обычный код) | `-ddump-deriv` |
-| Расширяемость | Любой может написать ppx | Любой может написать TH | Любой (класс Default) | Только встроенные + TH |
-
-Главное отличие: ppx OCaml работает **до** типизации, а Template Haskell --- **после**. Это делает TH более мощным, но и более сложным. На практике оба подхода решают одни и те же задачи --- большинство разработчиков используют `deriving` для стандартных функций.
-
-## Популярные ppx-расширения
-
-Помимо ppx_deriving, экосистема предоставляет множество полезных ppx: `ppx_sexp_conv` (S-expression от Jane Street), `ppx_compare` и `ppx_hash` (сравнение и хеширование), `ppx_expect` и `ppx_inline_test` (тестирование), `ppx_let` (монадический синтаксис `let%bind`, `let%map`), `ppx_string` (интерполяция строк). Jane Street активно использует ppx в своей кодовой базе и является одним из крупнейших контрибьюторов в экосистему ppxlib.
-
-## Ограничения ppx
-
-PPX --- мощный инструмент, но у него есть ограничения:
-
-- **Нет доступа к типам** --- ppx работает до типизации и не знает, какой тип имеет выражение.
-- **Усложнение отладки** --- ошибки указывают на сгенерированный код, а не на аннотацию. Используйте `dune describe pp`.
-- **Время компиляции** --- каждое ppx-расширение добавляет проход по AST.
-- **Непрозрачность** --- без `dune describe pp` непонятно, какой код генерируется.
-- **Привязка к версии AST** --- при обновлении компилятора может измениться AST (ppxlib абстрагирует эту проблему).
-
-Рекомендация: используйте стандартные деривации (`show`, `eq`, `ord`, `yojson`), пишите собственные ppx только при реальной необходимости.
+Angstrom по API очень похож на `attoparsec` из Haskell --- те же комбинаторы (`*>`, `<*`, `<|>`, `>>=`, `>>|`), тот же подход. Если вы знакомы с Haskell-парсерами, Angstrom покажется знакомым.
 
 ## Упражнения
 
 Решения пишите в `test/my_solutions.ml`. Проверяйте: `dune runtest`.
 
-1. **(Лёгкое)** Определите тип `color` с конструкторами `Red`, `Green`, `Blue`, `Yellow` и аннотацией `[@@deriving show, eq, ord]`. Реализуйте функцию `all_colors`, которая возвращает список всех цветов, и функцию `color_to_hex`, которая возвращает hex-код цвета:
+1. **(Лёгкое)** Напишите парсер списка целых чисел в формате `[1, 2, 3]`.
 
     ```ocaml
-    type color = Red | Green | Blue | Yellow
-    [@@deriving show, eq, ord]
-
-    val all_colors : color list
-    (* [Red; Green; Blue; Yellow] *)
-
-    val color_to_hex : color -> string
-    (* Red -> "#FF0000", Green -> "#00FF00", Blue -> "#0000FF", Yellow -> "#FFFF00" *)
+    val int_list_parser : int list Angstrom.t
     ```
 
-    Используйте `show_color` (сгенерированную ppx) для проверки: `show_color Red` должна вернуть строку с именем конструктора.
+    Парсер должен обрабатывать пробелы между элементами и пустой список `[]`.
 
-2. **(Среднее)** Определите тип записи `student` с полями `name : string`, `grade : int`, `active : bool` и аннотацией `[@@deriving eq]`. Реализуйте функцию `dedup_students`, которая удаляет дубликаты из списка студентов, используя сгенерированную `equal_student`:
+    *Подсказка:* используйте `sep_by`, `char`, `take_while1` и `>>|`.
+
+2. **(Лёгкое)** Напишите парсер пар ключ-значение в формате `key=value`.
 
     ```ocaml
-    type student = { name : string; grade : int; active : bool }
-    [@@deriving eq]
-
-    val dedup_students : student list -> student list
+    val key_value_parser : (string * string) Angstrom.t
     ```
 
-    *Подсказка:* используйте `List.fold_left` и `List.exists` с `equal_student`.
+    Ключ --- последовательность символов до `=`, значение --- до конца строки (или пробела).
 
-3. **(Среднее)** Определите типы `suit` (Spades, Hearts, Diamonds, Clubs) и `rank` (Two ... Ace) с `[@@deriving show]`. Реализуйте функцию `make_card_name`, которая принимает `suit` и `rank` и возвращает строку вида `"Ace of Spades"`, используя сгенерированные `show_suit` и `show_rank`:
+    *Подсказка:* используйте `take_while1` и `lift2`.
+
+3. **(Среднее)** Расширьте GADT выражений операторами `Not` (логическое отрицание) и `Gt` (больше).
 
     ```ocaml
-    type suit = Spades | Hearts | Diamonds | Clubs
-    [@@deriving show]
+    type _ extended_expr =
+      | Int : int -> int extended_expr
+      | Bool : bool -> bool extended_expr
+      | Add : int extended_expr * int extended_expr -> int extended_expr
+      | Not : bool extended_expr -> bool extended_expr
+      | Gt : int extended_expr * int extended_expr -> bool extended_expr
 
-    type rank = Two | Three | Four | Five | Six | Seven
-              | Eight | Nine | Ten | Jack | Queen | King | Ace
-    [@@deriving show]
-
-    val make_card_name : suit -> rank -> string
-    (* make_card_name Spades Ace = "Ace of Spades" *)
+    val eval_extended : 'a extended_expr -> 'a
     ```
 
-    *Подсказка:* `show_suit` и `show_rank` могут содержать префикс модуля. Используйте функции для извлечения нужной части строки, или определите свои вспомогательные функции.
+    *Подсказка:* используйте `type a.` аннотацию для полиморфной рекурсии.
 
-4. **(Сложное)** Определите тип `suit` (Spades, Hearts, Diamonds, Clubs) с `[@@deriving eq, ord]`. Вручную (без ppx) реализуйте функции `all_suits` и `next_suit`, имитируя то, что мог бы сгенерировать ppx-деривер:
+4. **(Сложное)** Напишите парсер арифметических выражений с операторами `+` и `*` и скобками, учитывающий приоритет операторов (`*` связывает сильнее `+`).
 
     ```ocaml
-    val all_suits : suit list
-    (* [Spades; Hearts; Diamonds; Clubs] *)
-
-    val next_suit : suit -> suit option
-    (* next_suit Spades = Some Hearts,
-       next_suit Hearts = Some Diamonds,
-       next_suit Diamonds = Some Clubs,
-       next_suit Clubs = None *)
+    val arith_parser : int Angstrom.t
     ```
 
-    Реализуйте также `suit_to_symbol`:
+    Примеры:
+    - `"42"` -> `42`
+    - `"1 + 2"` -> `3`
+    - `"3 * 4"` -> `12`
+    - `"2 + 3 * 4"` -> `14` (не `20`)
+    - `"(2 + 3) * 4"` -> `20`
 
-    ```ocaml
-    val suit_to_symbol : suit -> string
-    (* Spades -> "\xe2\x99\xa0", Hearts -> "\xe2\x99\xa5",
-       Diamonds -> "\xe2\x99\xa6", Clubs -> "\xe2\x99\xa3" *)
-    ```
-
-    Используйте `equal_suit` (сгенерированную ppx) для проверки: убедитесь, что `next_suit` корректно «оборачивается» --- `next_suit Clubs = None`.
+    *Подсказка:* используйте `fix` для рекурсии, разделите на уровни: `atom` (число или скобки), `mul_expr` (умножения), `add_expr` (сложения).
 
 ## Заключение
 
 В этой главе мы:
 
-- Разобрали три подхода к метапрограммированию: макросы Lisp (код = данные), макросы Rust (токены -> токены), ppx OCaml (AST -> AST).
-- Изучили конвейер компиляции OCaml и место ppx в нём --- после парсинга, но до типизации.
-- Познакомились с двумя видами ppx: extension points (`[%name ...]`) и derivers (`[@@deriving ...]`).
-- Освоили ppx_deriving: `show` для строкового представления, `eq` для равенства, `ord` для сравнения.
-- Научились исследовать сгенерированный код через `dune describe pp`.
-- Рассмотрели архитектуру собственного ppx-деривера на основе ppxlib.
-- Сравнили ppx с Template Haskell и GHC Generics.
+- Познакомились с парсер-комбинаторами и библиотекой Angstrom.
+- Изучили базовые парсеры: `char`, `string`, `take_while`, `take_while1`.
+- Освоили комбинаторы: `*>`, `<*`, `>>=`, `>>|`, `<|>`, `many`, `sep_by`, `fix`, `lift2`.
+- Построили JSON-подобный парсер из маленьких кирпичиков.
+- Изучили GADT --- типы, где конструкторы уточняют возвращаемый тип.
+- Написали типобезопасный вычислитель выражений, где ошибки типов невозможны.
+- Сравнили подходы OCaml (GADT + Angstrom) и Haskell (Free-монады + Parsec).
 
-Метапрограммирование --- мощный инструмент для борьбы с шаблонным кодом. PPX-система OCaml предлагает безопасный подход: трансформации работают с типизированным AST, что исключает генерацию синтаксически некорректного кода. На практике `[@@deriving ...]` покрывает подавляющее большинство потребностей --- от отладочного вывода до JSON-сериализации.
+Парсер-комбинаторы и GADT --- мощные инструменты для создания надёжных DSL. Они показывают, как система типов OCaml может гарантировать корректность на этапе компиляции, избавляя от целого класса ошибок времени выполнения.
 
-В следующей главе мы продолжим изучение продвинутых возможностей OCaml.
+В следующей главе мы научимся создавать полноценные CLI-приложения с библиотекой Cmdliner и построим проект «Brain Games» --- набор математических мини-игр.

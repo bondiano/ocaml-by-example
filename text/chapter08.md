@@ -449,6 +449,79 @@ let all_records store =
   List.rev store.entries
 ```
 
+## Functional Core, Imperative Shell
+
+### Идея паттерна
+
+В OCaml побочные эффекты не отражаются в типах, поэтому разделение чистого и мутабельного кода --- ответственность программиста. Паттерн **Functional Core, Imperative Shell** (FC/IS) помогает структурировать код:
+
+- **Functional Core** --- чистые функции без побочных эффектов. Вся бизнес-логика, валидация, преобразования данных. Легко тестировать, легко рассуждать.
+- **Imperative Shell** --- тонкая оболочка, управляющая состоянием и выполняющая эффекты (IO, мутация). Делегирует логику Functional Core.
+
+### Проблема: смешение логики и мутации
+
+В нашем менеджере записей логика и мутация переплетены. `add_record` одновременно **создаёт** запись и **мутирует** хранилище:
+
+```ocaml
+let add_record store ~name ~value =
+  let record = { id = store.next_id; name; value } in
+  store.entries <- record :: store.entries;    (* мутация! *)
+  store.next_id <- store.next_id + 1;         (* мутация! *)
+  record
+```
+
+Тестировать такую функцию сложнее --- нужно создавать мутабельный `store` для каждого теста.
+
+### Рефакторинг: разделение на Pure и Shell
+
+**Pure** --- чистые функции, работающие с иммутабельными данными:
+
+```ocaml
+module Pure = struct
+  let make_record ~id ~name ~value = { id; name; value }
+
+  let find entries id =
+    List.find_opt (fun r -> r.id = id) entries
+
+  let remove entries id =
+    List.filter (fun r -> r.id <> id) entries
+
+  let all entries = List.rev entries
+end
+```
+
+**Shell** --- мутабельная оболочка, делегирующая логику Pure:
+
+```ocaml
+module Shell = struct
+  let add store ~name ~value =
+    let record = Pure.make_record ~id:store.next_id ~name ~value in
+    store.entries <- record :: store.entries;
+    store.next_id <- store.next_id + 1;
+    record
+
+  let find store id = Pure.find store.entries id
+  let remove store id = store.entries <- Pure.remove store.entries id
+  let all store = Pure.all store.entries
+end
+```
+
+### Преимущества
+
+- **Тестируемость**: функции `Pure` можно тестировать без мутабельного состояния --- передаёте иммутабельный список, получаете результат.
+- **Читаемость**: из сигнатур ясно, где происходят эффекты (функции `Shell` принимают `store`), а где чистая логика.
+- **Повторное использование**: `Pure.find` и `Pure.remove` работают с любым `record list`, не только с `store.entries`.
+
+### Когда применять
+
+FC/IS особенно полезен, когда:
+
+- Бизнес-логика сложна и нуждается в тестах.
+- Код смешивает вычисления и побочные эффекты.
+- Несколько потребителей одной и той же логики (CLI, веб-сервер, тесты).
+
+Для простых случаев (счётчик на `ref`) разделение избыточно. Применяйте по мере роста сложности.
+
 ## Сборщик мусора и управление памятью
 
 OCaml использует автоматическое управление памятью --- сборщик мусора (GC) освобождает объекты, которые больше не используются. Понимание работы GC помогает писать эффективный код и управлять ресурсами.
@@ -598,7 +671,28 @@ let get_or_compute n compute =
 
     `create n` создаёт кеш ёмкостью `n`. `put` добавляет элемент (вытесняя старейший при переполнении). `get` возвращает значение и делает элемент «недавно использованным».
 
-7. **(Сложное)** Bowling --- подсчёт очков в боулинге. Реализуйте модуль с мутабельным состоянием игры.
+7. **(Среднее)** Отрефакторьте Logger (упражнение 2) в стиле Functional Core / Imperative Shell. Создайте модуль `LoggerPure` с чистыми функциями, работающими со списком строк, и модуль `LoggerShell`, управляющий мутабельным состоянием.
+
+    ```ocaml
+    module LoggerPure : sig
+      val add : string list -> string -> string list
+      val count : string list -> int
+      val messages : string list -> string list
+    end
+
+    module LoggerShell : sig
+      type t
+      val create : unit -> t
+      val log : t -> string -> unit
+      val messages : t -> string list
+      val count : t -> int
+      val clear : t -> unit
+    end
+    ```
+
+    *Подсказка:* `LoggerPure` работает с `string list` напрямую. `LoggerShell` хранит `string list ref` и делегирует логику `LoggerPure`.
+
+8. **(Сложное)** Bowling --- подсчёт очков в боулинге. Реализуйте модуль с мутабельным состоянием игры.
 
     ```ocaml
     module Bowling : sig
@@ -628,6 +722,7 @@ let get_or_compute n compute =
 - Освоили ввод-вывод: `Printf.printf`, `Printf.sprintf`, `In_channel`, `Out_channel`.
 - Научились безопасно работать с файлами через `with_open_text`.
 - Разобрали циклы `for` и `while`.
+- Изучили паттерн Functional Core / Imperative Shell для разделения логики и эффектов.
 - Сравнили прямые эффекты OCaml с монадой `IO` Haskell.
 
-В следующей главе мы изучим конкурентное программирование с библиотекой Eio --- прямой стиль вместо промисов и колбэков.
+В следующей главе мы изучим проектирование через типы --- умные конструкторы, кодирование состояний в типах и паттерн «Parse, Don't Validate».

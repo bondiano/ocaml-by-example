@@ -1,500 +1,503 @@
-# Генеративное тестирование
+# Обработчики эффектов
 
 ## Цели главы
 
-В этой главе мы изучим **генеративное тестирование** (property-based testing) --- подход, при котором тесты проверяют не конкретные примеры, а свойства, которым должен удовлетворять код. Мы познакомимся с библиотекой QCheck --- OCaml-аналогом Haskell-овского QuickCheck.
+В этой главе мы изучим **обработчики эффектов** (effect handlers) --- экспериментальную, но мощную возможность OCaml 5. Обработчики эффектов позволяют описывать побочные эффекты как значения, а затем интерпретировать их произвольным образом:
 
-## Юнит-тесты vs генеративное тестирование
+- **Алгебраические эффекты** --- что это и зачем.
+- **Объявление эффектов** --- расширяемый тип `Effect.t`.
+- **Выполнение эффектов** --- `Effect.perform`.
+- **Глубокие обработчики** --- `Effect.Deep.try_with` и `Effect.Deep.match_with`.
+- **Продолжения** --- `Effect.Deep.continue`.
+- **Поверхностные обработчики** --- `Effect.Shallow`.
+- **Композиция обработчиков** --- вложенные `try_with`.
+- **Сравнение** с трансформерами монад из Haskell.
+- **Проект**: интерпретатор с логированием и состоянием.
 
-В предыдущих главах мы писали тесты с Alcotest в классическом стиле: задаём конкретный вход и проверяем конкретный ожидаемый выход. Такие тесты называются **юнит-тестами** (unit tests):
+## Подготовка проекта
 
-```ocaml
-(* Юнит-тест: конкретный вход -> конкретный выход *)
-let () =
-  Alcotest.(check int) "rev [1;2;3]" [3;2;1] (List.rev [1;2;3])
-```
-
-Юнит-тесты полезны, но у них есть ограничение: мы проверяем только те случаи, о которых подумали заранее. Если граничный случай не пришёл нам в голову, он останется непроверенным.
-
-**Генеративное тестирование** (property-based testing, PBT) переворачивает подход: вместо конкретных примеров мы описываем *свойства*, которые должны выполняться для *любых* входных данных. Фреймворк генерирует сотни случайных входов и проверяет свойство для каждого из них:
-
-```ocaml
-(* Свойство: rev (rev xs) = xs для любого списка xs *)
-let prop_rev_involution =
-  QCheck.Test.make ~name:"rev involution" ~count:100
-    QCheck.(list small_int)
-    (fun xs -> List.rev (List.rev xs) = xs)
-```
-
-Генеративные тесты особенно хороши для нахождения граничных случаев, о которых вы не подумали: пустые списки, отрицательные числа, строки с управляющими символами и так далее.
-
-## Библиотека QCheck
-
-[QCheck](https://github.com/c-cube/qcheck) --- основная библиотека для генеративного тестирования в OCaml. Она вдохновлена Haskell-овским QuickCheck и предоставляет:
-
-- **Генераторы** случайных данных для всех стандартных типов.
-- **Механизм shrinking** --- автоматическое уменьшение контрпримера до минимального.
-- **Интеграцию с Alcotest** через пакет `qcheck-alcotest`.
-
-Для работы нужны пакеты `qcheck-core` и `qcheck-alcotest`. В `dune`-файлах:
+Код этой главы находится в `exercises/chapter13`. Обработчики эффектов встроены в стандартную библиотеку OCaml 5, дополнительные пакеты не нужны:
 
 ```text
-; lib/dune
-(library
- (name chapter13)
- (libraries qcheck-core))
-
-; test/dune
-(test
- (name test_chapter13)
- (libraries chapter13 qcheck-core qcheck-alcotest alcotest))
+$ cd exercises/chapter13
+$ dune build
 ```
 
-## Генераторы
+## Что такое алгебраические эффекты
 
-Генератор --- это значение типа `'a QCheck.arbitrary`, которое описывает, как создавать случайные значения типа `'a`. QCheck предоставляет генераторы для всех стандартных типов.
+Представьте, что вы хотите написать функцию, которая использует состояние (чтение и запись переменной). В императивных языках вы просто используете мутабельную переменную. В чисто функциональных --- монаду State. Но что, если бы вы могли:
 
-### Встроенные генераторы
+1. **Описать** эффект --- «я хочу прочитать состояние» или «я хочу записать новое значение».
+2. **Выполнить** эффект в коде, не зная, как он будет обработан.
+3. **Интерпретировать** эффект на уровне вызывающего кода --- решить, хранить ли состояние в `ref`, в файле или в базе данных.
+
+Именно это и дают **алгебраические эффекты**. Эффект --- это операция, объявленная программистом, но не имеющая встроенной реализации. Реализацию предоставляет **обработчик** (handler), оборачивающий вычисление.
+
+Алгебраические эффекты можно рассматривать как обобщение исключений: исключение прерывает вычисление, а эффект **приостанавливает** его, позволяя обработчику передать значение обратно и **возобновить** выполнение.
+
+## Объявление эффектов
+
+В OCaml 5 эффекты объявляются через расширяемый тип `Effect.t`:
 
 ```ocaml
-(* Целые числа (малые, для удобства shrinking) *)
-QCheck.small_int          (* 'a = int, значения от 0 до ~100 *)
-
-(* Целые числа из полного диапазона *)
-QCheck.int                (* 'a = int *)
-
-(* Строки *)
-QCheck.string             (* 'a = string *)
-
-(* Строки фиксированной длины *)
-QCheck.(string_of_size (Gen.return 5))   (* строки длины 5 *)
-
-(* Списки *)
-QCheck.(list small_int)   (* 'a = int list *)
-
-(* Пары *)
-QCheck.(pair small_int string)   (* 'a = int * string *)
-
-(* Тройки *)
-QCheck.(triple small_int small_int string)
+type _ Effect.t += Get : int Effect.t
+type _ Effect.t += Set : int -> unit Effect.t
 ```
 
-Обратите внимание на различие: `QCheck.Gen.int` --- это *низкоуровневый* генератор типа `int QCheck.Gen.t`, а `QCheck.int` --- это *arbitrary* (генератор + printer + shrinker) типа `int QCheck.arbitrary`. Для `QCheck.Test.make` нужен именно `arbitrary`.
+Здесь мы объявили два эффекта:
 
-### Генераторы из модуля Gen
+- `Get` --- запрос текущего значения состояния (возвращает `int`).
+- `Set v` --- установка нового значения (возвращает `unit`).
 
-Модуль `QCheck.Gen` содержит комбинаторы для создания новых генераторов:
+Тип `'a Effect.t` параметризован типом возвращаемого значения: `Get` возвращает `int`, а `Set` возвращает `unit`.
+
+Синтаксис `+=` означает, что мы **расширяем** существующий тип --- можно добавлять новые эффекты в разных модулях.
+
+## Выполнение эффектов
+
+Для выполнения эффекта используется `Effect.perform`:
 
 ```ocaml
-(* Генератор из диапазона *)
-QCheck.Gen.int_range 1 100
-
-(* Преобразование *)
-QCheck.Gen.map (fun n -> n * 2) QCheck.Gen.small_int
-
-(* Генератор списков *)
-QCheck.Gen.list QCheck.Gen.small_int
-
-(* Генератор пар *)
-QCheck.Gen.pair QCheck.Gen.int QCheck.Gen.string
-
-(* Выбор из вариантов *)
-QCheck.Gen.oneof [
-  QCheck.Gen.return 0;
-  QCheck.Gen.int_range 1 100;
-]
-
-(* Частотный выбор *)
-QCheck.Gen.frequency [
-  (3, QCheck.Gen.return 0);      (* 0 с вероятностью 3/4 *)
-  (1, QCheck.Gen.int_range 1 10); (* 1..10 с вероятностью 1/4 *)
-]
-
-(* Связывание генераторов *)
-QCheck.Gen.bind (QCheck.Gen.int_range 1 10) (fun n ->
-  QCheck.Gen.list_size (QCheck.Gen.return n) QCheck.Gen.small_int)
+let state_example () =
+  let x = Effect.perform Get in
+  Effect.perform (Set (x + 10));
+  let y = Effect.perform Get in
+  x + y
 ```
 
-## Создание тестов
+Эта функция:
 
-Тест создаётся функцией `QCheck.Test.make`:
+1. Читает текущее состояние в `x`.
+2. Устанавливает новое значение `x + 10`.
+3. Читает обновлённое состояние в `y`.
+4. Возвращает `x + y`.
+
+Обратите внимание: в этом коде **нет** ни `ref`, ни монад, ни аргументов для передачи состояния. Код выглядит как обычные вызовы функций. Но если вызвать `state_example ()` без обработчика, мы получим исключение `Unhandled`.
+
+## Глубокие обработчики: `try_with`
+
+Простейший способ обработать эффекты --- `Effect.Deep.try_with`:
 
 ```ocaml
-QCheck.Test.make
-  ~name:"описание"     (* имя теста *)
-  ~count:100           (* сколько раз запустить, по умолчанию 100 *)
-  arbitrary            (* генератор входных данных *)
-  (fun input -> bool)  (* свойство: true = прошёл, false = провалился *)
+let run_state (init : int) (f : unit -> 'a) : 'a =
+  let state = ref init in
+  Effect.Deep.try_with f ()
+    { effc = fun (type a) (eff : a Effect.t) ->
+        match eff with
+        | Get -> Some (fun (k : (a, _) Effect.Deep.continuation) ->
+            Effect.Deep.continue k !state)
+        | Set v -> Some (fun (k : (a, _) Effect.Deep.continuation) ->
+            state := v;
+            Effect.Deep.continue k ())
+        | _ -> None }
 ```
 
-Результат имеет тип `'a QCheck.Test.t`.
+Разберём по частям:
 
-### Свойства List.rev
+- `Effect.Deep.try_with f ()` --- вызывает `f ()` и перехватывает эффекты.
+- `{ effc = ... }` --- запись-обработчик с одним полем `effc`.
+- `effc` получает эффект и возвращает `Some handler` если знает, как его обработать, или `None`, чтобы передать вверх по стеку.
+- `fun (type a) (eff : a Effect.t)` --- локально-абстрактный тип, необходимый для GADT-паттерн-матчинга.
+- `Effect.Deep.continue k value` --- возобновляет приостановленное вычисление, передавая `value` как результат `perform`.
 
-Рассмотрим классические свойства функции `List.rev`:
-
-```ocaml
-(* Инволюция: rev (rev xs) = xs *)
-let prop_rev_involution =
-  QCheck.Test.make ~name:"rev is involution" ~count:200
-    QCheck.(list small_int)
-    (fun xs -> List.rev (List.rev xs) = xs)
-
-(* Сохранение длины: length (rev xs) = length xs *)
-let prop_rev_length =
-  QCheck.Test.make ~name:"rev preserves length" ~count:200
-    QCheck.(list small_int)
-    (fun xs -> List.length (List.rev xs) = List.length xs)
-
-(* rev переворачивает порядок: первый элемент становится последним *)
-let prop_rev_head_last =
-  QCheck.Test.make ~name:"rev head = last" ~count:200
-    QCheck.(list_of_size (Gen.int_range 1 20) small_int)
-    (fun xs ->
-       let rev_xs = List.rev xs in
-       List.hd xs = List.nth rev_xs (List.length rev_xs - 1))
-```
-
-### Свойства List.sort
-
-```ocaml
-(* Идемпотентность: sort (sort xs) = sort xs *)
-let prop_sort_idempotent =
-  QCheck.Test.make ~name:"sort is idempotent" ~count:200
-    QCheck.(list small_int)
-    (fun xs ->
-       let sorted = List.sort compare xs in
-       List.sort compare sorted = sorted)
-
-(* Сохранение длины *)
-let prop_sort_length =
-  QCheck.Test.make ~name:"sort preserves length" ~count:200
-    QCheck.(list small_int)
-    (fun xs -> List.length (List.sort compare xs) = List.length xs)
-
-(* Результат отсортирован *)
-let rec is_sorted = function
-  | [] | [_] -> true
-  | x :: y :: rest -> x <= y && is_sorted (y :: rest)
-
-let prop_sort_sorted =
-  QCheck.Test.make ~name:"sort result is sorted" ~count:200
-    QCheck.(list small_int)
-    (fun xs -> is_sorted (List.sort compare xs))
-```
-
-## Интеграция с Alcotest
-
-Для запуска QCheck-тестов через Alcotest используем `QCheck_alcotest.to_alcotest`, который преобразует `QCheck.Test.t` в `Alcotest.test_case`:
+Проверим:
 
 ```ocaml
 let () =
-  Alcotest.run "My tests"
-    [
-      ("unit tests", [
-        Alcotest.test_case "basic" `Quick (fun () ->
-          Alcotest.(check int) "1+1" 2 (1 + 1));
-      ]);
-      ("properties", [
-        QCheck_alcotest.to_alcotest prop_rev_involution;
-        QCheck_alcotest.to_alcotest prop_sort_sorted;
-      ]);
-    ]
+  let result = run_state 5 state_example in
+  Printf.printf "Результат: %d\n" result
+  (* Результат: 20 *)
+  (* 5 + (5 + 10) = 20 *)
 ```
 
-При провале теста QCheck покажет контрпример --- минимальное значение, нарушающее свойство:
+### Как это работает
 
-```text
-[FAIL] properties  0  rev is involution.
+1. `state_example` вызывает `perform Get`.
+2. Вычисление приостанавливается, управление передаётся обработчику.
+3. Обработчик видит `Get`, читает `!state` (= 5) и вызывает `continue k 5`.
+4. Вычисление возобновляется: `x = 5`.
+5. `perform (Set 15)` --- обработчик записывает `state := 15` и вызывает `continue k ()`.
+6. `perform Get` --- обработчик возвращает `!state` (= 15), `y = 15`.
+7. Результат: `5 + 15 = 20`.
 
---- Failure ---
+## Глубокие обработчики: `match_with`
 
-Test rev is involution failed (0 shrink steps):
-
-[42; -7; 0]
-```
-
-## Shrinking
-
-**Shrinking** --- одна из самых полезных возможностей QCheck. Когда генератор находит контрпример, QCheck автоматически пытается его *уменьшить* (shrink), сохраняя нарушение свойства.
-
-Например, если свойство нарушается для списка `[738; -12; 0; 441; 99; -3]`, QCheck попытается убрать элементы и уменьшить числа, пока не найдёт минимальный контрпример вроде `[1; 0]`.
-
-Встроенные arbitrary (`QCheck.int`, `QCheck.list`, `QCheck.string` и другие) уже умеют делать shrinking. Для пользовательских типов нужно определять shrinker самостоятельно.
-
-### Как работает shrinking
-
-1. QCheck находит значение `x`, нарушающее свойство.
-2. Генерирует набор "уменьшённых" вариантов `x` (shrinked candidates).
-3. Для каждого варианта проверяет, нарушает ли он свойство.
-4. Если да --- повторяет процесс с уменьшённым вариантом.
-5. Продолжает, пока ни один уменьшённый вариант не нарушает свойство.
-
-Результат --- минимальный контрпример, который легко анализировать и отлаживать.
-
-## Пользовательские генераторы
-
-### Создание arbitrary с QCheck.make
-
-Для пользовательских типов нужно создать `arbitrary` с помощью `QCheck.make`:
+`Effect.Deep.match_with` --- более полная форма обработчика, позволяющая перехватывать не только эффекты, но и нормальное завершение и исключения:
 
 ```ocaml
-type color = Red | Green | Blue
-
-let color_gen : color QCheck.Gen.t =
-  QCheck.Gen.oneofl [Red; Green; Blue]
-
-let color_arb : color QCheck.arbitrary =
-  QCheck.make
-    ~print:(fun c -> match c with
-      | Red -> "Red" | Green -> "Green" | Blue -> "Blue")
-    color_gen
+let run_fail (f : unit -> 'a) : ('a, string) result =
+  Effect.Deep.match_with f ()
+    { retc = (fun x -> Ok x);
+      exnc = (fun e -> raise e);
+      effc = fun (type a) (eff : a Effect.t) ->
+        match eff with
+        | Fail msg -> Some (fun (_k : (a, _) Effect.Deep.continuation) ->
+            Error msg)
+        | _ -> None }
 ```
 
-Функция `QCheck.make` принимает:
+Три поля:
 
-- Обязательный аргумент: `'a QCheck.Gen.t` --- низкоуровневый генератор.
-- `~print` (опционально): `'a -> string` --- как напечатать значение для отладки.
-- `~shrink` (опционально): `'a QCheck.Shrink.t` --- как уменьшать значение.
+- `retc` --- вызывается при нормальном возвращении значения из `f`.
+- `exnc` --- вызывается при выбросе исключения.
+- `effc` --- вызывается при выполнении эффекта (как в `try_with`).
 
-### Генерация деревьев
+Обратите внимание: в обработчике `Fail` мы **не вызываем** `continue k`. Это означает, что вычисление прерывается --- продолжение отбрасывается. Это безопасно и корректно: если продолжение не используется, оно просто собирается сборщиком мусора.
 
-Создадим генератор для бинарного дерева:
+### Разница между `try_with` и `match_with`
+
+| | `try_with` | `match_with` |
+|---|---|---|
+| Нормальное значение | Возвращается as-is | Передаётся в `retc` |
+| Исключение | Пробрасывается | Передаётся в `exnc` |
+| Эффект | Обрабатывается `effc` | Обрабатывается `effc` |
+
+Используйте `try_with`, когда вам нужно только перехватить эффекты. Используйте `match_with`, когда нужно трансформировать результат (например, обернуть в `Result`).
+
+## Продолжения подробнее
+
+Продолжение (continuation) `k` --- это «оставшаяся часть вычисления» после точки `perform`. Это первоклассное значение, которое можно:
+
+- **Возобновить один раз** с помощью `Effect.Deep.continue k value`.
+- **Прервать** с помощью `Effect.Deep.discontinue k exn` (бросить исключение в точке `perform`).
+- **Не использовать** вовсе (как в примере с `Fail`).
+
+Важное ограничение: продолжение глубокого обработчика можно использовать **только один раз** (one-shot). Попытка вызвать `continue` дважды приведёт к исключению `Continuation_already_resumed`.
 
 ```ocaml
-type 'a tree =
-  | Leaf
-  | Node of 'a tree * 'a * 'a tree
-
-let tree_gen (elem_gen : int QCheck.Gen.t) : int tree QCheck.Gen.t =
-  QCheck.Gen.sized (fun n ->
-    QCheck.Gen.fix (fun self n ->
-      if n = 0 then QCheck.Gen.return Leaf
-      else
-        QCheck.Gen.frequency [
-          (1, QCheck.Gen.return Leaf);
-          (3, QCheck.Gen.map3
-                (fun l v r -> Node (l, v, r))
-                (self (n / 2))
-                elem_gen
-                (self (n / 2)));
-        ]
-    ) n)
+(* discontinue --- прервать вычисление с исключением *)
+| Fail msg -> Some (fun (k : (a, _) Effect.Deep.continuation) ->
+    Effect.Deep.discontinue k (Failure msg))
 ```
 
-Ключевые комбинаторы:
+## Эффект Log: накопление сообщений
 
-- `QCheck.Gen.sized` --- даёт доступ к текущему "размеру" (контролирует глубину).
-- `QCheck.Gen.fix` --- рекурсивный генератор.
-- `QCheck.Gen.frequency` --- выбор с весами (листья реже, узлы чаще).
-- `QCheck.Gen.map3` --- применяет функцию к трём сгенерированным значениям.
-
-### Генерация выражений
-
-Аналогичный подход для арифметических выражений:
+Создадим эффект для логирования:
 
 ```ocaml
-type expr =
-  | Lit of int
-  | Add of expr * expr
-  | Mul of expr * expr
+type _ Effect.t += Log : string -> unit Effect.t
 
-let expr_gen : expr QCheck.Gen.t =
-  QCheck.Gen.sized (fun n ->
-    QCheck.Gen.fix (fun self n ->
-      if n = 0 then
-        QCheck.Gen.map (fun x -> Lit x) QCheck.Gen.small_int
-      else
-        QCheck.Gen.frequency [
-          (3, QCheck.Gen.map (fun x -> Lit x) QCheck.Gen.small_int);
-          (2, QCheck.Gen.map2 (fun a b -> Add (a, b))
-                (self (n / 2)) (self (n / 2)));
-          (1, QCheck.Gen.map2 (fun a b -> Mul (a, b))
-                (self (n / 2)) (self (n / 2)));
-        ]
-    ) n)
+let run_log (f : unit -> 'a) : 'a * string list =
+  let logs = ref [] in
+  let result = Effect.Deep.try_with f ()
+    { effc = fun (type a) (eff : a Effect.t) ->
+        match eff with
+        | Log msg -> Some (fun (k : (a, _) Effect.Deep.continuation) ->
+            logs := msg :: !logs;
+            Effect.Deep.continue k ())
+        | _ -> None }
+  in
+  (result, List.rev !logs)
 ```
 
-## Roundtrip-тестирование
-
-Один из самых мощных паттернов PBT --- **roundtrip-тестирование**: если у вас есть пара encode/decode, то для любого входа `decode (encode x) = Some x`.
+Использование:
 
 ```ocaml
-let encode_pair (n, s) = Printf.sprintf "%d:%s" n s
+let log_example () =
+  Effect.perform (Log "start");
+  let result = 2 + 3 in
+  Effect.perform (Log (Printf.sprintf "result = %d" result));
+  Effect.perform (Log "done");
+  result
 
-let decode_pair str =
-  match String.split_on_char ':' str with
-  | [n_str; s] ->
-    (match int_of_string_opt n_str with
-     | Some n -> Some (n, s)
-     | None -> None)
-  | _ -> None
-
-(* Roundtrip-свойство *)
-let prop_roundtrip =
-  QCheck.Test.make ~name:"encode/decode roundtrip" ~count:200
-    QCheck.(pair small_int small_printable_string)
-    (fun (n, s) ->
-       (* Убираем ':' из строки, чтобы кодек работал корректно *)
-       let s_clean = String.map (fun c -> if c = ':' then '_' else c) s in
-       decode_pair (encode_pair (n, s_clean)) = Some (n, s_clean))
+let () =
+  let (value, logs) = run_log log_example in
+  Printf.printf "Значение: %d\n" value;
+  List.iter (Printf.printf "  Лог: %s\n") logs
+  (* Значение: 5
+     Лог: start
+     Лог: result = 5
+     Лог: done *)
 ```
 
-Roundtrip-тесты прекрасно подходят для:
+Функция `log_example` не знает, куда пишутся логи --- в список, в файл, в `/dev/null`. Это решает обработчик.
 
-- Сериализации/десериализации (JSON, binary, CSV).
-- Парсеров и pretty-printers.
-- Кодировки/декодировки (Base64, URL encoding).
-- Миграций данных.
+## Композиция обработчиков
 
-## Стратегии написания свойств
-
-Формулировать свойства --- это навык, который приходит с практикой. Вот несколько полезных паттернов:
-
-### 1. Инволюция
-
-Если `f (f x) = x` для всех `x`:
+Одно из главных преимуществ эффектов --- обработчики легко **компонуются** через вложенность:
 
 ```ocaml
-(* List.rev, битовое NOT, кодирование/декодирование *)
-fun x -> f (f x) = x
+let combined_example () =
+  Effect.perform (Log "начинаем");
+  let x = Effect.perform Get in
+  Effect.perform (Log (Printf.sprintf "текущее значение: %d" x));
+  Effect.perform (Set (x * 2));
+  let y = Effect.perform Get in
+  Effect.perform (Log (Printf.sprintf "новое значение: %d" y));
+  y
+
+let () =
+  let (result, logs) = run_log (fun () ->
+    run_state 7 combined_example
+  ) in
+  Printf.printf "Результат: %d\n" result;
+  List.iter (Printf.printf "  %s\n") logs
+  (* Результат: 14
+     начинаем
+     текущее значение: 7
+     новое значение: 14 *)
 ```
 
-### 2. Идемпотентность
+Здесь `run_state` обрабатывает `Get`/`Set`, а `run_log` обрабатывает `Log`. Порядок вложенности определяет, какой обработчик перехватывает какие эффекты: внутренний (`run_state`) видит эффекты первым, но пропускает `Log` наверх через `_ -> None`.
 
-Если `f (f x) = f x` для всех `x`:
+### Порядок вложенности
+
+Обработчики работают как стек. Когда эффект не обработан (`None`), он передаётся следующему обработчику вверх по стеку:
+
+```
+run_log        <-- обрабатывает Log, пропускает остальное
+  run_state    <-- обрабатывает Get/Set, пропускает остальное
+    f ()       <-- выполняет perform Get, Set, Log
+```
+
+Если поменять порядок, всё будет работать так же, потому что каждый обработчик реагирует только на «свои» эффекты.
+
+## Поверхностные обработчики
+
+OCaml предоставляет два вида обработчиков:
+
+- **Глубокие** (`Effect.Deep`) --- обработчик автоматически переустанавливается после каждого `continue`. Это значит, что один вызов `try_with` обработает **все** вхождения эффекта.
+- **Поверхностные** (`Effect.Shallow`) --- обработчик срабатывает **один раз**. После `continue` нужно явно указать следующий обработчик.
 
 ```ocaml
-(* List.sort, String.trim, Set.of_list *)
-fun x -> f (f x) = f x
+let run_state_shallow (init : int) (f : unit -> 'a) : 'a =
+  let state = ref init in
+  let fiber = Effect.Shallow.fiber f in
+  let handler = {
+    Effect.Shallow.retc = Fun.id;
+    exnc = raise;
+    effc = fun (type a) (eff : a Effect.t) ->
+      match eff with
+      | Get -> Some (fun (k : (a, _) Effect.Shallow.continuation) ->
+          Effect.Shallow.continue_with k !state handler)
+      | Set v -> Some (fun (k : (a, _) Effect.Shallow.continuation) ->
+          state := v;
+          Effect.Shallow.continue_with k () handler)
+      | _ -> None
+  } in
+  (* Здесь handler --- рекурсивная привязка, требуется let rec *)
+  Effect.Shallow.continue_with fiber () handler
 ```
 
-### 3. Инвариант
+На практике поверхностные обработчики нужны реже. Они полезны, когда:
 
-После операции выполняется некоторое условие:
+- Нужно менять поведение обработчика между вызовами.
+- Реализуется корутина или генератор, где каждый `yield` требует другой логики.
+
+В большинстве случаев используйте **глубокие** обработчики --- они проще и удобнее.
+
+## Сравнение с трансформерами монад (Haskell)
+
+Если вы знакомы с Haskell, сравним подходы:
+
+### Haskell: трансформеры монад
+
+```haskell
+-- Haskell
+type App a = StateT Int (WriterT [String] IO) a
+
+example :: App Int
+example = do
+  tell ["начинаем"]
+  x <- get
+  tell ["текущее значение: " ++ show x]
+  put (x * 2)
+  y <- get
+  tell ["новое значение: " ++ show y]
+  return y
+```
+
+### OCaml: обработчики эффектов
 
 ```ocaml
-(* Результат sort всегда отсортирован *)
-fun xs -> is_sorted (List.sort compare xs)
+(* OCaml *)
+let example () =
+  Effect.perform (Log "начинаем");
+  let x = Effect.perform Get in
+  Effect.perform (Log (Printf.sprintf "текущее значение: %d" x));
+  Effect.perform (Set (x * 2));
+  let y = Effect.perform Get in
+  Effect.perform (Log (Printf.sprintf "новое значение: %d" y));
+  y
 ```
 
-### 4. Эквивалентность с эталоном
+| Аспект | Трансформеры монад | Обработчики эффектов |
+|--------|-------------------|---------------------|
+| Синтаксис | `do`-нотация, `lift` | Обычный код + `perform` |
+| Композиция | Стек трансформеров, порядок важен | Вложенные обработчики |
+| Производительность | Накладные расходы от boxing | Оптимизировано в рантайме |
+| Типобезопасность | Полная (тип монады отражает эффекты) | Частичная (необработанный эффект --- рантайм-ошибка) |
+| Расширяемость | Новый эффект = новый трансформер + `lift` | Новый эффект = новый конструктор |
 
-Оптимизированная функция ведёт себя как простая эталонная:
+Главное преимущество обработчиков эффектов --- **отсутствие `lift`**. В Haskell при добавлении нового трансформера в стек нужно обновлять все вызовы. В OCaml каждый эффект независим.
+
+Главный недостаток --- **отсутствие статической проверки**: компилятор не предупредит, если вы забыли обработать эффект. Вы узнаете об этом только в рантайме.
+
+## Когда использовать обработчики эффектов
+
+Используйте эффекты, когда:
+
+- Нужно **инжектировать зависимости** --- функция выполняет `perform`, а обработчик решает, как реализовать операцию (реальная БД vs мок в тестах).
+- Нужна **интерпретация вычислений** --- один и тот же код можно запустить с разными обработчиками (логирование в файл vs в память).
+- Реализуете **конкурентность** --- Eio использует эффекты для файберов.
+
+Не используйте эффекты, когда:
+
+- Достаточно **простого аргумента** --- передать функцию-логгер проще, чем объявлять эффект.
+- Нужна **статическая гарантия** обработки --- `Result` и `Option` проверяются компилятором, эффекты --- нет.
+- Код должен быть **совместим** со старыми версиями OCaml (< 5.0).
+
+## Проект: мини-интерпретатор с эффектами
+
+Объединим все идеи в проекте --- простом интерпретаторе выражений, использующем состояние и логирование через эффекты.
+
+Модуль `lib/effects.ml` содержит:
+
+### Эффект State
 
 ```ocaml
-fun x -> fast_function x = naive_function x
+type _ Effect.t += Get : int Effect.t
+type _ Effect.t += Set : int -> unit Effect.t
+
+let run_state (init : int) (f : unit -> 'a) : 'a =
+  let state = ref init in
+  Effect.Deep.try_with f ()
+    { effc = fun (type a) (eff : a Effect.t) ->
+        match eff with
+        | Get -> Some (fun (k : (a, _) Effect.Deep.continuation) ->
+            Effect.Deep.continue k !state)
+        | Set v -> Some (fun (k : (a, _) Effect.Deep.continuation) ->
+            state := v;
+            Effect.Deep.continue k ())
+        | _ -> None }
 ```
 
-### 5. Roundtrip
-
-Кодирование и декодирование --- взаимно обратные операции:
+### Эффект Log
 
 ```ocaml
-fun x -> decode (encode x) = Some x
+type _ Effect.t += Log : string -> unit Effect.t
+
+let run_log (f : unit -> 'a) : 'a * string list =
+  let logs = ref [] in
+  let result = Effect.Deep.try_with f ()
+    { effc = fun (type a) (eff : a Effect.t) ->
+        match eff with
+        | Log msg -> Some (fun (k : (a, _) Effect.Deep.continuation) ->
+            logs := msg :: !logs;
+            Effect.Deep.continue k ())
+        | _ -> None }
+  in
+  (result, List.rev !logs)
 ```
 
-## Бинарное дерево поиска: полный пример
-
-Соберём всё вместе на примере BST (binary search tree). Определим структуру и операции:
+### Примеры использования
 
 ```ocaml
-type 'a bst =
-  | Leaf
-  | Node of 'a bst * 'a * 'a bst
+let state_example () =
+  let x = Effect.perform Get in
+  Effect.perform (Set (x + 10));
+  let y = Effect.perform Get in
+  x + y
 
-let rec bst_insert x = function
-  | Leaf -> Node (Leaf, x, Leaf)
-  | Node (left, v, right) ->
-    if x < v then Node (bst_insert x left, v, right)
-    else if x > v then Node (left, v, bst_insert x right)
-    else Node (left, v, right)
+let log_example () =
+  Effect.perform (Log "start");
+  let result = 2 + 3 in
+  Effect.perform (Log (Printf.sprintf "result = %d" result));
+  Effect.perform (Log "done");
+  result
 
-let bst_of_list lst =
-  List.fold_left (fun acc x -> bst_insert x acc) Leaf lst
-
-let rec bst_to_sorted_list = function
-  | Leaf -> []
-  | Node (left, v, right) ->
-    bst_to_sorted_list left @ [v] @ bst_to_sorted_list right
-
-let rec bst_mem x = function
-  | Leaf -> false
-  | Node (left, v, right) ->
-    if x = v then true
-    else if x < v then bst_mem x left
-    else bst_mem x right
+let combined_example () =
+  Effect.perform (Log "начинаем");
+  let x = Effect.perform Get in
+  Effect.perform (Log (Printf.sprintf "текущее значение: %d" x));
+  Effect.perform (Set (x * 2));
+  let y = Effect.perform Get in
+  Effect.perform (Log (Printf.sprintf "новое значение: %d" y));
+  y
 ```
 
-Теперь напишем свойства:
+Запуск:
 
 ```ocaml
-(* In-order обход даёт отсортированный список *)
-let prop_bst_sorted =
-  QCheck.Test.make ~name:"bst inorder sorted" ~count:200
-    QCheck.(list small_int)
-    (fun lst ->
-       let tree = bst_of_list lst in
-       is_sorted (bst_to_sorted_list tree))
+(* State: начальное значение 5 *)
+let () =
+  let result = run_state 5 state_example in
+  Printf.printf "state_example: %d\n" result
+  (* state_example: 20 *)
 
-(* Вставленный элемент можно найти *)
-let prop_bst_membership =
-  QCheck.Test.make ~name:"bst membership" ~count:200
-    QCheck.(pair small_int (list small_int))
-    (fun (x, xs) ->
-       let tree = bst_of_list (x :: xs) in
-       bst_mem x tree)
+(* Log: накопление сообщений *)
+let () =
+  let (value, logs) = run_log log_example in
+  Printf.printf "log_example: %d, logs: [%s]\n"
+    value (String.concat "; " logs)
+  (* log_example: 5, logs: [start; result = 5; done] *)
 
-(* Размер BST <= размер входного списка (дубликаты удаляются) *)
-let prop_bst_size =
-  QCheck.Test.make ~name:"bst size <= input" ~count:200
-    QCheck.(list small_int)
-    (fun lst ->
-       let tree = bst_of_list lst in
-       let sorted = bst_to_sorted_list tree in
-       List.length sorted <= List.length lst)
+(* Композиция State + Log *)
+let () =
+  let (result, logs) = run_log (fun () ->
+    run_state 7 combined_example
+  ) in
+  Printf.printf "combined: %d, logs: [%s]\n"
+    result (String.concat "; " logs)
+  (* combined: 14, logs: [начинаем; текущее значение: 7; новое значение: 14] *)
 ```
-
-## Сравнение с Haskell QuickCheck
-
-Если вы знакомы с Haskell-овским QuickCheck, вот основные соответствия:
-
-| Haskell (QuickCheck) | OCaml (QCheck) |
-|---|---|
-| `Arbitrary a` (тайпкласс) | `'a QCheck.arbitrary` (значение) |
-| `Gen a` | `'a QCheck.Gen.t` |
-| `property` | `QCheck.Test.t` |
-| `forAll gen prop` | `QCheck.Test.make gen prop` |
-| `arbitrary` | `QCheck.int`, `QCheck.string` и т.д. |
-| `shrink` | Встроен в `arbitrary` |
-| `oneof [gen1, gen2]` | `QCheck.Gen.oneof [gen1; gen2]` |
-| `frequency [(3, g1), (1, g2)]` | `QCheck.Gen.frequency [(3, g1); (1, g2)]` |
-| `sized $ \n -> ...` | `QCheck.Gen.sized (fun n -> ...)` |
-
-Главное отличие: в Haskell `Arbitrary` --- это тайпкласс, и генератор для типа определяется один раз глобально. В OCaml генераторы --- это обычные значения, которые передаются явно. Это более гибко (можно иметь несколько генераторов для одного типа), но требует чуть больше кода.
 
 ## Упражнения
 
-Решения пишите в файле `test/my_solutions.ml`. Запускайте `dune test` для проверки.
+Решения пишите в `test/my_solutions.ml`. Проверяйте: `dune runtest`.
 
-1. **(Лёгкое)** Реализуйте свойство `prop_rev_involution`: для любого списка целых чисел `List.rev (List.rev xs) = xs`.
+1. **(Среднее)** Реализуйте эффект `Emit` для испускания целых чисел. Напишите обработчик `run_emit`, который собирает все испущенные значения в список.
 
-2. **(Лёгкое)** Реализуйте свойство `prop_sort_sorted`: для любого списка целых чисел результат `List.sort compare xs` отсортирован. Используйте функцию `is_sorted` из библиотеки.
+    ```ocaml
+    type _ Effect.t += Emit : int -> unit Effect.t
 
-3. **(Среднее)** Реализуйте свойство `prop_bst_membership`: если вставить элемент `x` в BST (построенный из списка `xs`), то `bst_mem x tree` вернёт `true`. Используйте функции `bst_of_list` и `bst_mem` из библиотеки.
+    val run_emit : (unit -> 'a) -> 'a * int list
+    ```
 
-4. **(Среднее)** Реализуйте свойство `prop_codec_roundtrip`: для любой пары `(n, s)` выполняется `decode_pair (encode_pair (n, s_clean)) = Some (n, s_clean)`, где `s_clean` --- строка `s` с заменой символа `':'` на `'_'`. Используйте функции `encode_pair` и `decode_pair` из библиотеки.
+    *Подсказка:* по аналогии с `run_log`, но собирайте `int` вместо `string`.
+
+2. **(Среднее)** Реализуйте эффект `Ask` для чтения из окружения (паттерн Reader). Напишите обработчик `run_reader`, который передаёт строку-окружение при каждом `Ask`.
+
+    ```ocaml
+    type _ Effect.t += Ask : string Effect.t
+
+    val run_reader : string -> (unit -> 'a) -> 'a
+    ```
+
+    *Подсказка:* по аналогии с `Get`, но значение никогда не меняется.
+
+3. **(Сложное)** Реализуйте функцию `count_and_emit`, которая использует одновременно эффекты `State` (из библиотеки) и `Emit` (из упражнения 1). Функция должна для каждого `i` от 1 до `n` прибавить `i` к состоянию и испустить новое значение.
+
+    ```ocaml
+    val count_and_emit : int -> unit
+    ```
+
+    При начальном состоянии 0 и `n = 3`:
+    - `i=1`: состояние = 0+1 = 1, emit 1
+    - `i=2`: состояние = 1+2 = 3, emit 3
+    - `i=3`: состояние = 3+3 = 6, emit 6
+    - Результат: `[1; 3; 6]`
+
+4. **(Сложное)** Реализуйте эффект `Fail` для обработки ошибок. Напишите обработчик `run_fail`, который возвращает `Ok value` при нормальном завершении и `Error msg` при выполнении `Fail msg`.
+
+    ```ocaml
+    type _ Effect.t += Fail : string -> 'a Effect.t
+
+    val run_fail : (unit -> 'a) -> ('a, string) result
+    ```
+
+    *Подсказка:* используйте `Effect.Deep.match_with` с `retc`, `exnc` и `effc`. В обработчике `Fail` **не вызывайте** `continue` --- просто верните `Error msg`.
 
 ## Заключение
 
 В этой главе мы:
 
-- Познакомились с генеративным (property-based) тестированием и его отличиями от юнит-тестов.
-- Изучили библиотеку QCheck: генераторы, свойства, запуск тестов.
-- Написали свойства для стандартных функций (`List.rev`, `List.sort`).
-- Научились создавать пользовательские генераторы для деревьев и выражений.
-- Разобрали механизм shrinking --- автоматическое уменьшение контрпримеров.
-- Освоили паттерны: инволюция, идемпотентность, инвариант, roundtrip, эквивалентность с эталоном.
-- Применили всё это к тестированию BST.
+- Познакомились с алгебраическими эффектами --- механизмом для описания и интерпретации побочных эффектов.
+- Научились объявлять эффекты через расширяемый тип `Effect.t`.
+- Изучили глубокие обработчики (`try_with` и `match_with`) и продолжения.
+- Реализовали эффекты State и Log.
+- Научились компоновать обработчики через вложенность.
+- Сравнили обработчики эффектов с трансформерами монад из Haskell.
+- Узнали о поверхностных обработчиках и когда они полезны.
 
-Генеративное тестирование --- мощный инструмент, который дополняет юнит-тесты. Оно особенно эффективно для алгоритмов, структур данных и любого кода с чётко формулируемыми инвариантами. Попробуйте добавить QCheck-тесты к коду из предыдущих глав --- вы можете обнаружить баги, о которых даже не подозревали.
+В следующей главе мы изучим графику с raylib --- создание окна, рисование фигур и обработку ввода.

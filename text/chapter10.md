@@ -1,13 +1,17 @@
-# FFI и JSON
+# Expression Problem
 
 ## Цели главы
 
-В этой главе мы изучим два важных аспекта практической разработки на OCaml:
+В этой главе мы изучим **Expression Problem** --- классическую задачу проектирования расширяемых программ. Вы узнаете, как различные механизмы OCaml решают эту задачу, и научитесь выбирать подходящий инструмент:
 
-- **FFI (Foreign Function Interface)** --- вызов C-функций из OCaml.
-- **Работа с JSON** --- парсинг и генерация JSON с помощью библиотеки Yojson.
-- **Автоматическая сериализация** --- ppx_deriving_yojson для генерации кодеков.
-- Сравнение с подходом Haskell (aeson, FFI).
+- Формулировка Expression Problem (Wadler, 1998).
+- Два измерения расширяемости: новые случаи и новые операции.
+- Решение через алгебраические типы (варианты).
+- Решение через объекты.
+- Решение через модули и Tagless Final.
+- Решение через полиморфные варианты и открытую рекурсию.
+- Сравнение подходов.
+- Проект: расширяемый калькулятор тремя способами.
 
 ## Подготовка проекта
 
@@ -18,648 +22,641 @@ $ cd exercises/chapter10
 $ dune build
 ```
 
-Для этой главы требуются библиотеки `yojson` и `ppx_deriving_yojson`. Убедитесь, что они установлены:
+## Что такое Expression Problem
+
+Expression Problem --- термин, введённый Филиппом Вадлером (Philip Wadler) в 1998 году. Задача звучит так:
+
+> Определить тип данных, к которому можно добавлять **новые случаи** (cases) и **новые операции** (operations) **без перекомпиляции существующего кода** и **с сохранением статической типобезопасности**.
+
+Рассмотрим конкретный пример. Допустим, у нас есть язык арифметических выражений:
+
+- Выражения: `Int` (целое число) и `Add` (сложение).
+- Операции: `eval` (вычисление) и `show` (отображение).
+
+```
+            | eval      | show      |
+  ----------+-----------+-----------+
+  Int       | eval_int  | show_int  |
+  Add       | eval_add  | show_add  |
+```
+
+Таблица имеет два измерения. **Расширение** означает добавление:
+
+- Нового столбца --- новой операции (например, `pretty_print`).
+- Новой строки --- нового случая (например, `Mul`).
+
+### Два измерения расширения
+
+В большинстве языков одно измерение расширяется легко, а другое --- трудно.
+
+**Функциональные языки** (Haskell, OCaml с вариантами): легко добавить новую операцию (новая функция по существующему типу), но добавление нового случая требует изменения **всех** существующих функций.
+
+**Объектно-ориентированные языки** (Java, C#): легко добавить новый случай (новый класс, реализующий интерфейс), но добавление новой операции требует изменения **всех** существующих классов.
+
+Expression Problem --- это вызов: можно ли добиться расширяемости в обоих измерениях одновременно?
+
+## Решение 1: Варианты (алгебраические типы)
+
+Начнём с привычного подхода --- определим выражения как вариантный тип:
+
+```ocaml
+type expr =
+  | Int of int
+  | Add of expr * expr
+```
+
+### Операции
+
+Каждая операция --- отдельная функция с сопоставлением по образцу:
+
+```ocaml
+let rec eval = function
+  | Int n -> n
+  | Add (a, b) -> eval a + eval b
+
+let rec show = function
+  | Int n -> string_of_int n
+  | Add (a, b) -> "(" ^ show a ^ " + " ^ show b ^ ")"
+```
 
 ```text
-$ opam install yojson ppx_deriving_yojson
+# eval (Add (Int 1, Add (Int 2, Int 3)));;
+- : int = 6
+
+# show (Add (Int 1, Add (Int 2, Int 3)));;
+- : string = "(1 + (2 + 3))"
 ```
 
-## Часть 1: FFI --- вызов C-функций из OCaml
+### Добавить операцию --- легко
 
-### Зачем нужен FFI?
-
-OCaml --- компилируемый язык с эффективной средой выполнения, но иногда нужно:
-
-- Использовать существующие C-библиотеки (OpenSSL, SQLite, zlib).
-- Вызывать системные функции ОС.
-- Оптимизировать критичные участки кода на C.
-- Интегрироваться с экосистемой других языков через C ABI.
-
-В Haskell для FFI используется ключевое слово `foreign import`:
-
-```haskell
--- Haskell FFI
-foreign import ccall "sin" c_sin :: CDouble -> CDouble
-```
-
-В OCaml аналогичную роль играет ключевое слово `external`.
-
-### Ключевое слово `external`
-
-`external` объявляет функцию, реализованную на C:
+Хотим добавить `double` --- удвоение всех чисел в выражении:
 
 ```ocaml
-external c_sin : float -> float = "caml_sin_float" "sin"
-  [@@unboxed] [@@noalloc]
-external c_cos : float -> float = "caml_cos_float" "cos"
-  [@@unboxed] [@@noalloc]
+let rec double = function
+  | Int n -> Int (n * 2)
+  | Add (a, b) -> Add (double a, double b)
 ```
 
-Разберём синтаксис:
+Мы написали **новую функцию**, не трогая существующий код. Все старые функции (`eval`, `show`) продолжают работать.
 
-- `external c_sin` --- имя функции в OCaml.
-- `: float -> float` --- тип функции в OCaml.
-- `= "caml_sin_float" "sin"` --- два имени C-функций: первое для байткод-компилятора, второе для нативного.
-- `[@@unboxed]` --- аргументы и результат передаются без упаковки (boxing). Требует указания двух C-имён.
-- `[@@noalloc]` --- функция не выделяет память в куче OCaml.
+### Добавить вариант --- трудно
 
-### Соответствие типов OCaml и C
-
-| Тип OCaml | Тип C | Примечание |
-|-----------|-------|------------|
-| `int` | `intnat` | Машинное целое минус 1 бит (тег) |
-| `float` | `double` | 64-битное число с плавающей точкой |
-| `bool` | `intnat` | 0 = false, 1 = true |
-| `string` | `char *` | Строки OCaml --- не нуль-терминированные! |
-| `unit` | `value` | Представлен как `Val_unit` |
-| `'a array` | `value` | Массив боксированных значений |
-
-### Пример: математические функции из libm
-
-Стандартная библиотека C `libm` содержит математические функции, которые можно вызывать напрямую:
+Хотим добавить `Mul` (умножение). Нужно изменить определение типа:
 
 ```ocaml
-external c_sin : float -> float = "caml_sin_float" "sin"
-  [@@unboxed] [@@noalloc]
-external c_cos : float -> float = "caml_cos_float" "cos"
-  [@@unboxed] [@@noalloc]
-external c_sqrt : float -> float = "caml_sqrt_float" "sqrt"
-  [@@unboxed] [@@noalloc]
-external c_exp : float -> float = "caml_exp_float" "exp"
-  [@@unboxed] [@@noalloc]
-external c_log : float -> float = "caml_log_float" "log"
-  [@@unboxed] [@@noalloc]
+type expr =
+  | Int of int
+  | Add of expr * expr
+  | Mul of expr * expr   (* новый случай *)
 ```
 
-Использование:
+Теперь компилятор выдаст предупреждения во **всех** функциях (`eval`, `show`, `double`) --- каждую нужно дополнить веткой для `Mul`. Это безопасно (компилятор подскажет), но требует изменения существующего кода.
+
+```ocaml
+let rec eval = function
+  | Int n -> n
+  | Add (a, b) -> eval a + eval b
+  | Mul (a, b) -> eval a * eval b  (* новая ветка *)
+
+let rec show = function
+  | Int n -> string_of_int n
+  | Add (a, b) -> "(" ^ show a ^ " + " ^ show b ^ ")"
+  | Mul (a, b) -> "(" ^ show a ^ " * " ^ show b ^ ")"  (* новая ветка *)
+```
+
+### Резюме
+
+| Направление расширения | Сложность |
+|------------------------|-----------|
+| Новая операция         | Легко --- пишем новую функцию |
+| Новый случай           | Трудно --- изменяем тип и все функции |
+
+В Haskell ситуация аналогичная. `data Expr = Int Int | Add Expr Expr` расширяется так же --- легко добавить новую функцию, трудно добавить конструктор.
+
+## Решение 2: Объекты
+
+OCaml поддерживает объектно-ориентированное программирование. Попробуем решить Expression Problem через объекты:
+
+```ocaml
+class virtual expr = object
+  method virtual eval : int
+  method virtual show : string
+end
+```
+
+Каждый случай --- отдельный класс:
+
+```ocaml
+class int_expr (n : int) = object
+  inherit expr
+  method eval = n
+  method show = string_of_int n
+end
+
+class add_expr (a : expr) (b : expr) = object
+  inherit expr
+  method eval = a#eval + b#eval
+  method show = "(" ^ a#show ^ " + " ^ b#show ^ ")"
+end
+```
 
 ```text
-# c_sin 0.0;;
-- : float = 0.
-
-# c_sin (Float.pi /. 2.0);;
-- : float = 1.
-
-# c_cos 0.0;;
-- : float = 1.
-
-# c_sqrt 2.0;;
-- : float = 1.41421356237309515
+# let e = new add_expr (new int_expr 1) (new add_expr (new int_expr 2) (new int_expr 3));;
+# e#eval;;
+- : int = 6
+# e#show;;
+- : string = "(1 + (2 + 3))"
 ```
 
-Атрибуты `[@@unboxed]` и `[@@noalloc]` --- оптимизации для простых числовых функций. `[@@unboxed]` избегает упаковки `float` в блок кучи, а `[@@noalloc]` сообщает сборщику мусора, что вызов безопасен. При использовании `[@@unboxed]` обязательно указывать два имени C-функций --- для байткод-компилятора и для нативного.
+### Добавить вариант --- легко
 
-### Простые external без атрибутов
-
-Если не нужны оптимизации `[@@unboxed]` и `[@@noalloc]`, можно указать одно имя C-функции:
+Хотим добавить `Mul`. Пишем **новый класс**, не трогая существующие:
 
 ```ocaml
-external c_abs : int -> int = "abs"
+class mul_expr (a : expr) (b : expr) = object
+  inherit expr
+  method eval = a#eval * b#eval
+  method show = "(" ^ a#show ^ " * " ^ b#show ^ ")"
+end
 ```
 
-Это проще, но медленнее для числовых типов из-за боксинга.
+Все старые классы (`int_expr`, `add_expr`) не изменились.
 
-### Функции с несколькими аргументами
+### Добавить операцию --- трудно
 
-Для C-функций с несколькими аргументами тоже нужно указать **два** имени --- для байткод-компилятора и нативного:
+Хотим добавить метод `double`. Нужно изменить базовый класс `expr`:
 
 ```ocaml
-external c_pow : float -> float -> float
-  = "caml_pow_bytecode" "pow" [@@unboxed] [@@noalloc]
+class virtual expr = object
+  method virtual eval : int
+  method virtual show : string
+  method virtual double : expr   (* новый метод *)
+end
 ```
 
-Первое имя --- обёртка для байткода (все аргументы передаются как `value`), второе --- нативная C-функция.
+Теперь **все** существующие классы (`int_expr`, `add_expr`, `mul_expr`) должны реализовать `double`. Это зеркальная проблема по сравнению с вариантами.
 
-### Безопасность FFI
+### Резюме
 
-FFI --- **небезопасная** операция. Компилятор OCaml **не проверяет** соответствие типов с C-функцией. Если вы объявите неправильный тип, программа может упасть с segfault:
+| Направление расширения | Сложность |
+|------------------------|-----------|
+| Новая операция         | Трудно --- изменяем базовый класс и все подклассы |
+| Новый случай           | Легко --- пишем новый класс |
+
+В Java/C# ситуация аналогичная. Интерфейс `Expr` с методами `eval()` и `show()` легко расширяется новыми классами, но добавление нового метода в интерфейс ломает все реализации.
+
+## Решение 3: Модули и Tagless Final
+
+**Tagless Final** --- подход, в котором выражения описываются не как тип данных, а как **набор операций** (smart-конструкторов) в сигнатуре модуля. Каждая **интерпретация** --- отдельный модуль, реализующий сигнатуру.
+
+### Сигнатура
 
 ```ocaml
-(* ОПАСНО: неправильный тип! sin принимает double, а не int *)
-external bad_sin : int -> int = "sin"
-(* Это скомпилируется, но вызовет undefined behavior *)
+module type Expr = sig
+  type t
+  val int_ : int -> t
+  val add : t -> t -> t
+end
 ```
 
-Правила безопасности:
+Тип `t` абстрактный --- он может быть `int` (для вычисления), `string` (для отображения) или чем-то ещё. Функции `int_` и `add` --- «конструкторы» выражений.
 
-1. Убедитесь, что типы OCaml соответствуют типам C.
-2. Не используйте `[@@noalloc]` если C-функция может вызвать callback в OCaml.
-3. Будьте осторожны со строками --- строки OCaml не нуль-терминированы.
-4. Не передавайте OCaml-значения в C без правильного маршаллинга.
-
-### Библиотека ctypes
-
-Для более сложного FFI (структуры, указатели, callbacks) существует библиотека **ctypes**, которая позволяет описывать C-привязки целиком на OCaml:
+### Интерпретация: вычисление
 
 ```ocaml
-(* С ctypes (концептуально): *)
-open Ctypes
-open Foreign
-
-let c_strlen = foreign "strlen" (string @-> returning int)
-let c_puts = foreign "puts" (string @-> returning int)
+module Eval : Expr with type t = int = struct
+  type t = int
+  let int_ n = n
+  let add a b = a + b
+end
 ```
 
-`ctypes` безопаснее ручных `external`-объявлений, потому что генерирует правильный маршаллинг автоматически. Но `external` быстрее для простых случаев, так как не имеет накладных расходов.
-
-Подробное изучение ctypes выходит за рамки этой главы, но знать о его существовании полезно.
-
-## Часть 2: JSON с Yojson
-
-### Зачем JSON?
-
-JSON --- самый популярный формат обмена данными в веб-разработке и API. В OCaml основная библиотека для работы с JSON --- **Yojson**.
-
-В Haskell для JSON используется `aeson`:
-
-```haskell
--- Haskell: aeson
-import Data.Aeson
-data Person = Person { name :: Text, age :: Int }
-  deriving (Generic, FromJSON, ToJSON)
-```
-
-В OCaml аналогичную роль играет связка `yojson` + `ppx_deriving_yojson`.
-
-### Тип `Yojson.Safe.t`
-
-`Yojson.Safe.t` --- алгебраический тип, представляющий любое JSON-значение:
+### Интерпретация: отображение
 
 ```ocaml
-type t =
-  | `Null
-  | `Bool of bool
-  | `Int of int
-  | `Float of float
-  | `String of string
-  | `List of t list
-  | `Assoc of (string * t) list
+module Show : Expr with type t = string = struct
+  type t = string
+  let int_ n = string_of_int n
+  let add a b = "(" ^ a ^ " + " ^ b ^ ")"
+end
 ```
-
-Это **полиморфные варианты** (polymorphic variants). Обратите внимание на обратный апостроф перед именем конструктора.
-
-Примеры:
-
-```text
-# `Null;;
-- : [> `Null ] = `Null
-
-# `Bool true;;
-- : [> `Bool of bool ] = `Bool true
-
-# `Int 42;;
-- : [> `Int of int ] = `Int 42
-
-# `String "hello";;
-- : [> `String of string ] = `String "hello"
-
-# `List [`Int 1; `Int 2; `Int 3];;
-- : [> `List of [> `Int of int ] list ] = `List [`Int 1; `Int 2; `Int 3]
-
-# `Assoc [("name", `String "Alice"); ("age", `Int 30)];;
-- : ... = `Assoc [("name", `String "Alice"); ("age", `Int 30)]
-```
-
-### Парсинг JSON из строки
-
-`Yojson.Safe.from_string` преобразует строку в `Yojson.Safe.t`:
-
-```text
-# Yojson.Safe.from_string {|{"name": "Alice", "age": 30}|};;
-- : Yojson.Safe.t = `Assoc [("name", `String "Alice"); ("age", `Int 30)]
-
-# Yojson.Safe.from_string {|[1, 2, 3]|};;
-- : Yojson.Safe.t = `List [`Int 1; `Int 2; `Int 3]
-
-# Yojson.Safe.from_string "null";;
-- : Yojson.Safe.t = `Null
-```
-
-Обратите внимание на синтаксис **quoted strings** `{| ... |}` --- строки OCaml, в которых не нужно экранировать кавычки. Очень удобно для JSON.
-
-### Генерация JSON в строку
-
-`Yojson.Safe.to_string` преобразует `Yojson.Safe.t` обратно в строку:
-
-```text
-# let json = `Assoc [("name", `String "Bob"); ("age", `Int 25)] in
-  Yojson.Safe.to_string json;;
-- : string = "{\"name\":\"Bob\",\"age\":25}"
-
-# Yojson.Safe.pretty_to_string json;;
-- : string = "{\n  \"name\": \"Bob\",\n  \"age\": 25\n}"
-```
-
-`pretty_to_string` выводит JSON с отступами --- удобно для отладки.
-
-### Ручной парсинг: сопоставление с образцом
-
-Главная сила OCaml при работе с JSON --- **pattern matching**. Можно безопасно разобрать JSON-структуру:
-
-```ocaml
-let parse_name json =
-  match json with
-  | `Assoc fields ->
-    (match List.assoc_opt "name" fields with
-     | Some (`String name) -> Ok name
-     | Some _ -> Error "name is not a string"
-     | None -> Error "name field missing")
-  | _ -> Error "expected JSON object"
-```
-
-Для вложенных структур парсинг выглядит так:
-
-```ocaml
-type address = {
-  street : string;
-  city : string;
-  zip : string;
-}
-
-type contact = {
-  name : string;
-  age : int;
-  email : string option;
-  address : address;
-}
-
-let contact_of_json (json : Yojson.Safe.t) : (contact, string) result =
-  match json with
-  | `Assoc fields ->
-    (match
-       List.assoc_opt "name" fields,
-       List.assoc_opt "age" fields,
-       List.assoc_opt "email" fields,
-       List.assoc_opt "address" fields
-     with
-     | Some (`String name), Some (`Int age), email_json, Some (`Assoc addr) ->
-       let email = match email_json with
-         | Some (`String e) -> Some e
-         | _ -> None
-       in
-       (match
-          List.assoc_opt "street" addr,
-          List.assoc_opt "city" addr,
-          List.assoc_opt "zip" addr
-        with
-        | Some (`String street), Some (`String city), Some (`String zip) ->
-          Ok { name; age; email; address = { street; city; zip } }
-        | _ -> Error "invalid address fields")
-     | _ -> Error "missing or invalid fields")
-  | _ -> Error "expected JSON object"
-```
-
-Ручной парсинг надёжен и явен, но **многословен**. Для каждого типа нужно писать конвертер вручную.
-
-### Ручная генерация JSON
-
-Построить JSON-значение из OCaml-типа тоже просто:
-
-```ocaml
-let contact_to_json (c : contact) : Yojson.Safe.t =
-  `Assoc [
-    ("name", `String c.name);
-    ("age", `Int c.age);
-    ("email", match c.email with Some e -> `String e | None -> `Null);
-    ("address", `Assoc [
-      ("street", `String c.address.street);
-      ("city", `String c.address.city);
-      ("zip", `String c.address.zip);
-    ]);
-  ]
-```
-
-### Вспомогательные функции
-
-Полезно вынести повторяющиеся паттерны в утилиты:
-
-```ocaml
-let json_string_field key json =
-  match json with
-  | `Assoc fields ->
-    (match List.assoc_opt key fields with
-     | Some (`String s) -> Some s
-     | _ -> None)
-  | _ -> None
-
-let json_int_field key json =
-  match json with
-  | `Assoc fields ->
-    (match List.assoc_opt key fields with
-     | Some (`Int n) -> Some n
-     | _ -> None)
-  | _ -> None
-```
-
-Использование:
-
-```text
-# let json = Yojson.Safe.from_string {|{"name": "Alice", "age": 30}|} in
-  json_string_field "name" json;;
-- : string option = Some "Alice"
-
-# json_int_field "age" json;;
-- : int option = Some 30
-
-# json_string_field "missing" json;;
-- : string option = None
-```
-
-## Часть 3: ppx_deriving_yojson
-
-### Проблема ручных кодеков
-
-Ручные конвертеры JSON имеют недостатки:
-
-- Много шаблонного кода.
-- Легко допустить ошибку в имени поля.
-- При изменении типа нужно обновлять конвертеры вручную.
-
-### Автоматическая генерация с `[@@deriving yojson]`
-
-`ppx_deriving_yojson` --- PPX-расширение, которое автоматически генерирует функции сериализации и десериализации:
-
-```ocaml
-type address = {
-  street : string;
-  city : string;
-  zip : string;
-} [@@deriving yojson]
-
-type contact = {
-  name : string;
-  age : int;
-  email : string option;
-  address : address;
-} [@@deriving yojson]
-```
-
-Аннотация `[@@deriving yojson]` генерирует две функции:
-
-- `address_to_yojson : address -> Yojson.Safe.t`
-- `address_of_yojson : Yojson.Safe.t -> (address, string) result`
-
-И аналогично для `contact`:
-
-- `contact_to_yojson : contact -> Yojson.Safe.t`
-- `contact_of_yojson : Yojson.Safe.t -> (contact, string) result`
 
 ### Использование
 
-```text
-# let alice = {
-    name = "Alice"; age = 30; email = Some "alice@example.com";
-    address = { street = "Main St"; city = "Moscow"; zip = "101000" }
-  };;
+Выражение записывается **один раз** как функция, параметризованная модулем:
 
-# let json = contact_to_yojson alice;;
-# Yojson.Safe.pretty_to_string json;;
-- : string = {
-  "name": "Alice",
-  "age": 30,
-  "email": ["Some", "alice@example.com"],
-  "address": {
-    "street": "Main St",
-    "city": "Moscow",
-    "zip": "101000"
-  }
-}
+```ocaml
+let example (module E : Expr) =
+  E.add (E.int_ 1) (E.add (E.int_ 2) (E.int_ 3))
 ```
-
-Обратите внимание: `option` сериализуется как `["Some", value]` или `"None"` по умолчанию. Это отличается от ручной сериализации, где мы использовали `null`.
-
-### Десериализация
 
 ```text
-# let json_str = {|{"name":"Bob","age":25,"email":"None",
-    "address":{"street":"Elm St","city":"SPb","zip":"190000"}}|} in
-  let json = Yojson.Safe.from_string json_str in
-  contact_of_yojson json;;
-- : (contact, string) result = Ok {name = "Bob"; age = 25; email = None; ...}
+# example (module Eval);;
+- : int = 6
+
+# example (module Show);;
+- : string = "(1 + (2 + 3))"
 ```
 
-Функция `contact_of_yojson` возвращает `result` --- `Ok` при успехе или `Error` с описанием ошибки.
-
-### Настройка dune
-
-Для использования `ppx_deriving_yojson` нужно настроить `dune`:
-
-```lisp
-(library
- (name mylib)
- (libraries yojson)
- (preprocess (pps ppx_deriving_yojson)))
-```
-
-Ключевая строка --- `(preprocess (pps ppx_deriving_yojson))`, которая включает PPX-препроцессор.
-
-### Только сериализация или десериализация
-
-Можно сгенерировать только одну из двух функций:
+Или через функтор:
 
 ```ocaml
-type log_entry = {
-  timestamp : float;
-  message : string;
-} [@@deriving to_yojson]
-(* Генерирует только log_entry_to_yojson *)
+module Example (E : Expr) = struct
+  let result = E.add (E.int_ 1) (E.add (E.int_ 2) (E.int_ 3))
+end
 
-type config = {
-  host : string;
-  port : int;
-} [@@deriving of_yojson]
-(* Генерирует только config_of_yojson *)
+module R1 = Example(Eval)
+module R2 = Example(Show)
 ```
-
-## Часть 4: Проект --- парсер конфигурации
-
-Соберём всё вместе --- напишем парсер конфигурационного файла в формате JSON.
-
-### Тип конфигурации
-
-```ocaml
-type database_config = {
-  host : string;
-  port : int;
-  name : string;
-} [@@deriving yojson]
-
-type app_config = {
-  debug : bool;
-  log_level : string;
-  database : database_config;
-} [@@deriving yojson]
-```
-
-### Чтение конфигурации
-
-```ocaml
-let load_config path =
-  let content = In_channel.with_open_text path In_channel.input_all in
-  let json = Yojson.Safe.from_string content in
-  app_config_of_yojson json
-
-let save_config path config =
-  let json = app_config_to_yojson config in
-  let content = Yojson.Safe.pretty_to_string json in
-  Out_channel.with_open_text path (fun oc ->
-    Out_channel.output_string oc content)
-```
-
-### Пример конфигурации
-
-```json
-{
-  "debug": true,
-  "log_level": "info",
-  "database": {
-    "host": "localhost",
-    "port": 5432,
-    "name": "mydb"
-  }
-}
-```
-
-Этот паттерн --- типичный для OCaml-приложений: определить тип с `[@@deriving yojson]`, затем использовать `from_string` / `to_string` для ввода-вывода.
-
-## Сравнение с Haskell
-
-| Аспект | OCaml (yojson + ppx) | Haskell (aeson) |
-|--------|---------------------|-----------------|
-| Тип JSON | `Yojson.Safe.t` (полиморфные варианты) | `Value` (ADT) |
-| Автодеривация | `[@@deriving yojson]` | `deriving (FromJSON, ToJSON)` |
-| Генерируемые функции | `t_to_yojson`, `t_of_yojson` | `toJSON`, `parseJSON` |
-| Возврат десериализации | `(t, string) result` | `Parser t` (монада) |
-| Ручной парсинг | Pattern matching | `.:`, `.:?`, `withObject` |
-| FFI | `external` + C stubs | `foreign import ccall` |
-| Типобезопасность FFI | Нет (доверие программисту) | Нет (доверие программисту) |
-| Высокоуровневый FFI | ctypes | inline-c, c2hs |
-
-Общая идея одинакова: определить тип данных, автоматически получить сериализаторы, использовать их для ввода-вывода JSON.
-
-## Ctypes --- высокоуровневый FFI
-
-В разделе про FFI мы кратко упомянули библиотеку **ctypes**. Рассмотрим её подробнее --- ctypes позволяет описывать C-типы и вызывать C-функции **целиком на OCaml**, без написания C-кода и стабов вручную.
-
-### Установка
 
 ```text
-$ opam install ctypes ctypes-foreign
+# R1.result;;
+- : int = 6
+
+# R2.result;;
+- : string = "(1 + (2 + 3))"
 ```
 
-### Основы: вызов C-функций
+### Добавить операцию --- новый модуль
 
-Модуль `Foreign` предоставляет функцию `foreign`, которая связывает имя C-функции с описанием её типа:
+Хотим добавить операцию `pretty_print` с красивыми отступами? Пишем **новый модуль**:
 
 ```ocaml
-open Ctypes
-open Foreign
-
-let c_sqrt = foreign "sqrt" (double @-> returning double)
-let c_pow = foreign "pow" (double @-> double @-> returning double)
+module PrettyPrint : Expr with type t = int -> string = struct
+  type t = int -> string
+  let int_ n _indent = string_of_int n
+  let add a b indent =
+    let pad = String.make indent ' ' in
+    pad ^ "Add\n"
+    ^ pad ^ "  " ^ a (indent + 2) ^ "\n"
+    ^ pad ^ "  " ^ b (indent + 2)
+end
 ```
 
-Оператор `@->` описывает аргументы, а `returning t` --- тип возвращаемого значения. Типы (`double`, `int`, `string` и т.д.) --- это значения модуля `Ctypes`, а не типы OCaml.
+Существующие модули не изменились.
 
-После объявления `c_sqrt` и `c_pow` --- обычные OCaml-функции:
+### Добавить вариант --- расширить сигнатуру
+
+Хотим добавить `Mul`? Расширяем сигнатуру:
+
+```ocaml
+module type ExprMul = sig
+  include Expr
+  val mul : t -> t -> t
+end
+```
+
+И реализуем расширенные модули:
+
+```ocaml
+module EvalMul : ExprMul with type t = int = struct
+  include Eval
+  let mul a b = a * b
+end
+
+module ShowMul : ExprMul with type t = string = struct
+  include Show
+  let mul a b = "(" ^ a ^ " * " ^ b ^ ")"
+end
+```
+
+Обратите внимание: мы использовали `include Eval` и `include Show` --- **повторного кода нет**. Старые модули `Eval` и `Show` не изменились.
 
 ```text
-# c_sqrt 2.0;;
-- : float = 1.41421356237309515
+# let example2 (module E : ExprMul) =
+    E.mul (E.int_ 2) (E.add (E.int_ 3) (E.int_ 4));;
 
-# c_pow 2.0 10.0;;
-- : float = 1024.
+# example2 (module EvalMul);;
+- : int = 14
+
+# example2 (module ShowMul);;
+- : string = "(2 * (3 + 4))"
 ```
 
-### Определение C-структур
+### Почему это работает
 
-Ctypes позволяет описывать C-структуры:
+Tagless Final решает Expression Problem благодаря двум механизмам:
+
+1. **Абстрактный тип `t`** --- позволяет каждому модулю выбирать своё представление.
+2. **`include`** --- позволяет расширять модули без копирования кода.
+
+В Haskell аналогичный подход --- классы типов (type classes). Сигнатура `module type Expr` --- это аналог класса типов:
+
+```haskell
+-- Haskell: класс типов
+class Expr repr where
+  int_ :: Int -> repr
+  add  :: repr -> repr -> repr
+
+-- OCaml: сигнатура модуля
+module type Expr = sig
+  type t
+  val int_ : int -> t
+  val add : t -> t -> t
+end
+```
+
+Добавление новой операции --- новый экземпляр (instance) в Haskell, новый модуль в OCaml. Добавление нового конструктора --- расширение класса в Haskell, `include` в OCaml.
+
+### Резюме
+
+| Направление расширения | Сложность |
+|------------------------|-----------|
+| Новая операция         | Легко --- новый модуль, реализующий `Expr` |
+| Новый случай           | Легко --- расширяем сигнатуру через `include` |
+
+## Решение 4: Полиморфные варианты (открытая рекурсия)
+
+Полиморфные варианты (polymorphic variants) --- ещё один способ решения Expression Problem в OCaml. В отличие от обычных вариантов, полиморфные варианты **не привязаны** к конкретному определению типа.
+
+### Базовые выражения
 
 ```ocaml
-type point
-let point : point structure typ = structure "point"
-let x = field point "x" double
-let y = field point "y" double
-let () = seal point
-
-(* Создание и использование *)
-let p = make point in
-setf p x 3.0;
-setf p y 4.0;
-let dist = sqrt (getf p x ** 2.0 +. getf p y ** 2.0)
+type 'a expr_base = [> `Int of int | `Add of 'a * 'a ] as 'a
 ```
 
-Порядок действий:
+Здесь `[> ...]` означает «открытый тип» --- он может содержать **как минимум** указанные конструкторы, но допускает и другие.
 
-1. `structure "point"` --- объявить структуру с именем `point`.
-2. `field point "x" double` --- добавить поле `x` типа `double`.
-3. `seal point` --- завершить определение (вычислить размер и выравнивание).
-4. `make point` --- создать экземпляр структуры.
-5. `setf` / `getf` --- записать / прочитать поле.
+Операции определяются для конкретных конструкторов:
 
-**Частая ошибка:** если забыть вызвать `seal t`, при попытке использовать структуру вы получите исключение `Ctypes_static.IncompleteType`.
+```ocaml
+let rec eval : 'a expr_base -> int = function
+  | `Int n -> n
+  | `Add (a, b) -> eval a + eval b
+  | _ -> failwith "unknown expression"
 
-### Два подхода к связыванию
+let rec show : 'a expr_base -> string = function
+  | `Int n -> string_of_int n
+  | `Add (a, b) -> "(" ^ show a ^ " + " ^ show b ^ ")"
+  | _ -> failwith "unknown expression"
+```
 
-Ctypes поддерживает два режима работы:
+```text
+# eval (`Add (`Int 1, `Add (`Int 2, `Int 3)));;
+- : int = 6
 
-1. **Dynamic linking** (через `libffi`) --- быстрый старт, не требует компиляции C-кода. Библиотека загружается в рантайме (`.so` на Linux, `.dylib` на macOS). Удобно для прототипирования.
+# show (`Add (`Int 1, `Add (`Int 2, `Int 3)));;
+- : string = "(1 + (2 + 3))"
+```
 
-2. **Stub generation** --- production-подход. Ctypes генерирует C-стабы на этапе сборки. Результат эффективнее (нет overhead от libffi), но сборка сложнее.
+### Добавить вариант --- расширить тип
 
-Для большинства задач dynamic linking достаточно. Stub generation имеет смысл, когда FFI-вызовы находятся на горячем пути.
+Хотим добавить `Mul`? Определяем расширенный тип и функции:
 
-### Ограничения
+```ocaml
+type 'a expr_mul = [> `Int of int | `Add of 'a * 'a | `Mul of 'a * 'a ] as 'a
 
-- Generated stubs не поддерживают атрибуты `[@noalloc]` и `[@unboxed]`, которые доступны при ручном `external`.
-- Dynamic linking требует наличия `.so`/`.dylib` в системе в рантайме.
-- Ctypes медленнее ручных `external` для простых числовых функций из-за дополнительного уровня абстракции.
+let rec eval_mul : 'a expr_mul -> int = function
+  | `Int n -> n
+  | `Add (a, b) -> eval_mul a + eval_mul b
+  | `Mul (a, b) -> eval_mul a * eval_mul b
+  | _ -> failwith "unknown expression"
 
-Для простых числовых функций `external` с `[@@unboxed] [@@noalloc]` остаётся лучшим выбором. Ctypes раскрывает свою мощь при работе со структурами, указателями, массивами и сложными C API.
+let rec show_mul : 'a expr_mul -> string = function
+  | `Int n -> string_of_int n
+  | `Add (a, b) -> "(" ^ show_mul a ^ " + " ^ show_mul b ^ ")"
+  | `Mul (a, b) -> "(" ^ show_mul a ^ " * " ^ show_mul b ^ ")"
+  | _ -> failwith "unknown expression"
+```
+
+```text
+# eval_mul (`Mul (`Int 2, `Add (`Int 3, `Int 4)));;
+- : int = 14
+
+# show_mul (`Mul (`Int 2, `Add (`Int 3, `Int 4)));;
+- : string = "(2 * (3 + 4))"
+```
+
+### Избавление от дублирования через открытую рекурсию
+
+В примере выше мы продублировали ветки `Int` и `Add` в `eval_mul`. Можно этого избежать с помощью **открытой рекурсии** --- рекурсивный вызов передаётся как параметр:
+
+```ocaml
+let eval_base self = function
+  | `Int n -> n
+  | `Add (a, b) -> self a + self b
+
+let eval_mul_ext self = function
+  | `Mul (a, b) -> self a * self b
+  | other -> eval_base self other
+
+let rec eval_mul_v2 x = eval_mul_ext eval_mul_v2 x
+```
+
+```text
+# eval_mul_v2 (`Mul (`Int 2, `Add (`Int 3, `Int 4)));;
+- : int = 14
+```
+
+Здесь `eval_base` и `eval_mul_ext` не рекурсивны сами по себе --- рекурсия замыкается через параметр `self`. Это позволяет **комбинировать** обработчики разных расширений.
+
+### Достоинства и ограничения
+
+Полиморфные варианты --- мощный инструмент, но у него есть ограничения:
+
+- **Сообщения об ошибках** --- типы полиморфных вариантов бывают длинными и трудночитаемыми.
+- **Производительность** --- полиморфные варианты немного медленнее обычных.
+- **Вайлдкард `_`** --- необходимость catch-all ветки ослабляет проверку полноты.
+
+### Резюме
+
+| Направление расширения | Сложность |
+|------------------------|-----------|
+| Новая операция         | Средне --- новая функция, но без полноты проверки |
+| Новый случай           | Средне --- расширяем тип, комбинируем через открытую рекурсию |
+
+## Сравнение подходов
+
+| Подход | Новая операция | Новый случай | Типобезопасность | Сложность |
+|--------|---------------|-------------|-----------------|-----------|
+| Варианты (ADT) | Легко | Трудно (изменить тип + все функции) | Полная (exhaustiveness) | Низкая |
+| Объекты | Трудно (изменить базовый класс) | Легко | Полная (виртуальные методы) | Средняя |
+| Tagless Final | Легко (новый модуль) | Легко (`include` + новая функция) | Полная | Средняя |
+| Полиморфные варианты | Средне | Средне (открытая рекурсия) | Частичная (нужен `_`) | Высокая |
+
+**Рекомендации:**
+
+- **Варианты** --- лучший выбор по умолчанию. Если набор случаев фиксирован и стабилен (например, AST конкретного языка), а операции добавляются часто --- используйте обычные варианты.
+- **Tagless Final** --- когда нужна расширяемость в обоих измерениях. Особенно хорош для DSL (domain-specific languages), где и операции, и типы выражений могут расти.
+- **Объекты** --- редко используются в идиоматическом OCaml. Полезны при взаимодействии с ОО-библиотеками или когда подтипирование действительно нужно.
+- **Полиморфные варианты** --- для случаев, когда нужна гибкость без тяжёлой модульной системы. Хороши для протоколов и расширяемых обработчиков.
+
+## Проект: расширяемый калькулятор
+
+Модуль `lib/expr.ml` реализует расширяемый калькулятор тремя способами: через варианты, Tagless Final и полиморфные варианты.
+
+### Способ 1: Варианты
+
+```ocaml
+module Variant = struct
+  type expr =
+    | Int of int
+    | Add of expr * expr
+
+  let rec eval = function
+    | Int n -> n
+    | Add (a, b) -> eval a + eval b
+
+  let rec show = function
+    | Int n -> string_of_int n
+    | Add (a, b) -> "(" ^ show a ^ " + " ^ show b ^ ")"
+end
+```
+
+### Способ 2: Tagless Final
+
+```ocaml
+module type EXPR = sig
+  type t
+  val int_ : int -> t
+  val add : t -> t -> t
+end
+
+module TF_Eval : EXPR with type t = int = struct
+  type t = int
+  let int_ n = n
+  let add a b = a + b
+end
+
+module TF_Show : EXPR with type t = string = struct
+  type t = string
+  let int_ n = string_of_int n
+  let add a b = "(" ^ a ^ " + " ^ b ^ ")"
+end
+```
+
+### Способ 3: Полиморфные варианты
+
+```ocaml
+module PolyVar = struct
+  type 'a t = [> `Int of int | `Add of 'a * 'a ] as 'a
+
+  let rec eval : 'a t -> int = function
+    | `Int n -> n
+    | `Add (a, b) -> eval a + eval b
+    | _ -> failwith "unknown"
+
+  let rec show : 'a t -> string = function
+    | `Int n -> string_of_int n
+    | `Add (a, b) -> "(" ^ show a ^ " + " ^ show b ^ ")"
+    | _ -> failwith "unknown"
+end
+```
+
+### Пример использования всех трёх подходов
+
+```text
+# (* Вариантный подход *)
+  Variant.(eval (Add (Int 1, Add (Int 2, Int 3))));;
+- : int = 6
+
+# (* Tagless Final *)
+  let module E = TF_Eval in E.add (E.int_ 1) (E.add (E.int_ 2) (E.int_ 3));;
+- : int = 6
+
+# (* Полиморфные варианты *)
+  PolyVar.eval (`Add (`Int 1, `Add (`Int 2, `Int 3)));;
+- : int = 6
+```
+
+Все три подхода дают одинаковый результат, но отличаются возможностями расширения.
 
 ## Упражнения
 
 Решения пишите в `test/my_solutions.ml`. Проверяйте: `dune runtest`.
 
-1. **(Среднее)** Реализуйте ручную конвертацию `product_to_json` для типа:
+1. **(Среднее)** Добавьте конструктор `Mul of expr * expr` к вариантному типу `expr` и расширьте функции `eval` и `show`.
 
     ```ocaml
-    type product = {
-      title : string;
-      price : float;
-      in_stock : bool;
-    }
+    module VariantMul : sig
+      type expr =
+        | Int of int
+        | Add of expr * expr
+        | Mul of expr * expr
+
+      val eval : expr -> int
+      val show : expr -> string
+    end
     ```
 
-    Функция должна возвращать `Yojson.Safe.t` --- JSON-объект с полями `"title"`, `"price"`, `"in_stock"`.
+    Например:
+    - `eval (Mul (Int 2, Add (Int 3, Int 4)))` = `14`
+    - `show (Mul (Int 2, Add (Int 3, Int 4)))` = `"(2 * (3 + 4))"`
 
-2. **(Среднее)** Реализуйте обратную конвертацию `product_of_json`:
+2. **(Среднее)** Добавьте интерпретацию `pretty_print` для Tagless Final --- модуль, генерирующий строку с правильной расстановкой скобок и инфиксной записью, но **без лишних скобок** у литералов.
 
     ```ocaml
-    val product_of_json : Yojson.Safe.t -> (product, string) result
+    module TF_Pretty : EXPR with type t = string
     ```
 
-    При невалидном JSON верните `Error` с описанием ошибки.
+    Например:
+    - `TF_Pretty.int_ 42` = `"42"`
+    - `TF_Pretty.add (TF_Pretty.int_ 1) (TF_Pretty.int_ 2)` = `"(1 + 2)"`
+    - Вложенные: `TF_Pretty.add (TF_Pretty.int_ 1) (TF_Pretty.add (TF_Pretty.int_ 2) (TF_Pretty.int_ 3))` = `"(1 + (2 + 3))"`
 
-3. **(Среднее)** Реализуйте функцию `extract_names`, которая из JSON-массива объектов извлекает значения поля `"name"`:
+3. **(Среднее)** Добавьте `` `Neg `` (унарное отрицание) к полиморфным вариантам. Реализуйте `eval_neg` и `show_neg`.
 
     ```ocaml
-    val extract_names : Yojson.Safe.t -> string list
+    type 'a expr_neg = [> `Int of int | `Add of 'a * 'a | `Neg of 'a ] as 'a
+
+    val eval_neg : 'a expr_neg -> int
+    val show_neg : 'a expr_neg -> string
     ```
 
-    Например, для `[{"name": "Alice"}, {"name": "Bob"}, {"age": 25}]` результат: `["Alice"; "Bob"]`. Объекты без поля `"name"` пропускаются.
+    Например:
+    - `` eval_neg (`Neg (`Int 5)) `` = `-5`
+    - `` show_neg (`Neg (`Add (`Int 1, `Int 2))) `` = `"(-(1 + 2))"`
 
-4. **(Лёгкое)** Определите тип `config` с полями `host : string`, `port : int`, `debug : bool` и аннотацией `[@@deriving yojson]`. Убедитесь, что автоматическая сериализация и десериализация работают (тесты проверят roundtrip).
+4. **(Сложное)** Реализуйте Tagless Final DSL для **булевых** выражений. Определите сигнатуру `BOOL_EXPR` и два модуля-интерпретатора.
+
+    ```ocaml
+    module type BOOL_EXPR = sig
+      type t
+      val bool_ : bool -> t
+      val and_ : t -> t -> t
+      val or_ : t -> t -> t
+      val not_ : t -> t
+    end
+
+    module Bool_Eval : BOOL_EXPR with type t = bool
+    module Bool_Show : BOOL_EXPR with type t = string
+    ```
+
+    Например:
+    - `Bool_Eval.(and_ (bool_ true) (or_ (bool_ false) (bool_ true)))` = `true`
+    - `Bool_Show.(and_ (bool_ true) (or_ (bool_ false) (bool_ true)))` = `"(true && (false || true))"`
+
+5. **(Сложное)** Объедините арифметический и булев DSL. Создайте сигнатуру `COMBINED_EXPR`, включающую операции из обоих DSL, а также операцию сравнения `eq : t -> t -> t`. Реализуйте `Combined_Show`.
+
+    ```ocaml
+    module type COMBINED_EXPR = sig
+      type t
+      val int_ : int -> t
+      val add : t -> t -> t
+      val bool_ : bool -> t
+      val and_ : t -> t -> t
+      val or_ : t -> t -> t
+      val not_ : t -> t
+      val eq : t -> t -> t
+    end
+
+    module Combined_Show : COMBINED_EXPR with type t = string
+    ```
+
+    Например:
+    - `Combined_Show.(eq (add (int_ 1) (int_ 2)) (int_ 3))` = `"((1 + 2) == 3)"`
+    - `Combined_Show.(and_ (bool_ true) (eq (int_ 1) (int_ 1)))` = `"(true && (1 == 1))"`
 
 ## Заключение
 
 В этой главе мы:
 
-- Изучили FFI: ключевое слово `external` для вызова C-функций.
-- Разобрали соответствие типов OCaml и C.
-- Познакомились с библиотекой Yojson и типом `Yojson.Safe.t`.
-- Научились вручную парсить и генерировать JSON через pattern matching.
-- Освоили `ppx_deriving_yojson` для автоматической сериализации.
-- Написали парсер конфигурации --- типичный паттерн для OCaml-приложений.
+- Познакомились с Expression Problem --- классической задачей расширяемости программ.
+- Изучили четыре подхода к её решению в OCaml.
+- Увидели, что **варианты** оптимальны, когда набор случаев фиксирован.
+- Изучили **Tagless Final** --- элегантное решение, расширяемое в обоих измерениях через модульную систему OCaml.
+- Познакомились с **полиморфными вариантами** и открытой рекурсией.
+- Сравнили Tagless Final с классами типов Haskell.
+- Реализовали расширяемый калькулятор тремя способами.
 
-В следующей главе мы изучим **обработчики эффектов (Effect Handlers)** --- одну из ключевых новинок OCaml 5, которая открывает новые подходы к структурированию побочных эффектов.
+В следующей главе мы изучим обработчики эффектов --- мощный механизм OCaml 5 для управления вычислительными эффектами.
