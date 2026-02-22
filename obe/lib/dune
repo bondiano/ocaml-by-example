@@ -1,0 +1,3 @@
+(library
+ (name obe_lib)
+ (libraries str yojson toml))

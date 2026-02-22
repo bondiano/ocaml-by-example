@@ -52,3 +52,36 @@ let auth_middleware (expected_token : string) : Dream.middleware =
         Dream.json ~status:`Unauthorized {|{"error":"invalid auth format"}|}
     | None ->
       Dream.json ~status:`Unauthorized {|{"error":"missing authorization"}|}
+
+(** Упражнение 5: CORS middleware. *)
+let cors_middleware : Dream.middleware =
+  fun handler req ->
+    let open Lwt.Syntax in
+    let* response = handler req in
+    Dream.add_header response "Access-Control-Allow-Origin" "*";
+    Dream.add_header response "Access-Control-Allow-Methods" "GET, POST, PUT, DELETE";
+    Dream.add_header response "Access-Control-Allow-Headers" "Content-Type";
+    Lwt.return response
+
+(** Упражнение 6: JSON error helper. *)
+let json_error (status : Dream.status) (msg : string) : Dream.response Lwt.t =
+  let body = Printf.sprintf {|{"error":"%s"}|} msg in
+  Dream.json ~status body
+
+(** Упражнение 7: POST handler для создания задачи. *)
+let create_todo_handler (req : Dream.request) : Dream.response Lwt.t =
+  let open Lwt.Syntax in
+  let* body = Dream.body req in
+  match create_todo_of_yojson (Yojson.Safe.from_string body) with
+  | Ok { title } ->
+    let todo = create_todo ~title in
+    Dream.json ~status:`Created (Yojson.Safe.to_string (todo_to_yojson todo))
+  | Error msg ->
+    json_error `Bad_Request msg
+
+(** Упражнение 8: Фильтрация по completed. *)
+let filter_todos (filter : bool option) (lst : todo list) : todo list =
+  match filter with
+  | None -> lst
+  | Some expected ->
+    List.filter (fun (t : todo) -> t.completed = expected) lst

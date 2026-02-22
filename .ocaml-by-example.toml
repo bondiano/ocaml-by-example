@@ -1,0 +1,144 @@
+# OCaml by Example — Project Configuration
+# Используется утилитой obe-check для отслеживания прогресса
+
+[project]
+name = "OCaml by Example"
+root = "."
+
+[exercises]
+# Порядок прохождения глав (важно!)
+order = [
+  "chapter02",
+  "chapter04",
+  "chapter05",
+  "chapter06",
+  "chapter07",
+  "chapter08",
+  "chapter09",
+  "chapter10a",
+  "chapter10b",
+  "chapter11",
+  "chapter12",
+  "chapter13",
+  "chapter14",
+  "chapter15",
+  "chapter16",
+  "chapter18",
+  "chapter19",
+  "chapter20",
+  "appendix_a",
+  "appendix_b",
+  "appendix_c",
+]
+
+[exercises.chapter02]
+name = "Окружение и инструменты"
+difficulty = "easy"
+total_exercises = 9
+
+[exercises.chapter04]
+name = "Функции и записи"
+difficulty = "easy"
+total_exercises = 8
+
+[exercises.chapter05]
+name = "Алгебраические типы данных"
+difficulty = "easy"
+total_exercises = 10
+
+[exercises.chapter06]
+name = "Рекурсия, map и свёртки"
+difficulty = "medium"
+total_exercises = 16
+
+[exercises.chapter07]
+name = "Модули и функторы"
+difficulty = "medium"
+total_exercises = 18
+
+[exercises.chapter08]
+name = "Обработка ошибок и валидация"
+difficulty = "medium"
+total_exercises = 8
+
+[exercises.chapter09]
+name = "Мутабельное состояние и эффекты"
+difficulty = "medium"
+total_exercises = 12
+
+[exercises.chapter10a]
+name = "Type-Driven Design Pt.1"
+difficulty = "medium"
+total_exercises = 14
+
+[exercises.chapter10b]
+name = "Type-Driven Design Pt.2"
+difficulty = "hard"
+total_exercises = 13
+
+[exercises.chapter11]
+name = "Expression Problem"
+difficulty = "medium"
+total_exercises = 21
+
+[exercises.chapter12]
+name = "Конкурентность с Eio"
+difficulty = "hard"
+total_exercises = 8
+
+[exercises.chapter13]
+name = "Обработчики эффектов"
+difficulty = "hard"
+total_exercises = 6
+
+[exercises.chapter14]
+name = "FFI и JSON"
+difficulty = "medium"
+total_exercises = 8
+
+[exercises.chapter15]
+name = "CLI-приложения"
+difficulty = "medium"
+total_exercises = 8
+
+[exercises.chapter16]
+name = "Property-Based Testing"
+difficulty = "medium"
+total_exercises = 27
+
+[exercises.chapter18]
+name = "Веб-разработка с Dream"
+difficulty = "hard"
+total_exercises = 8
+
+[exercises.chapter19]
+name = "ppx и метапрограммирование"
+difficulty = "hard"
+total_exercises = 6
+
+[exercises.chapter20]
+name = "Оптимизации и профилирование"
+difficulty = "hard"
+total_exercises = 5
+
+[exercises.appendix_a]
+name = "Графика с Raylib"
+difficulty = "medium"
+total_exercises = 5
+
+[exercises.appendix_b]
+name = "Lwt и совместимость"
+difficulty = "medium"
+total_exercises = 6
+
+[exercises.appendix_c]
+name = "Рекурсивные схемы"
+difficulty = "hard"
+total_exercises = 4
+
+[progress]
+file = ".obe-progress.json"
+
+[goals]
+daily_streak_target = 7
+total_exercises_target = 100

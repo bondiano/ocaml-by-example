@@ -152,6 +152,23 @@ let factor_game_tests =
       done);
   ]
 
+let grep_tests =
+  let open Alcotest in
+  [
+    test_case "при case_insensitive=false находит точное совпадение" `Quick (fun () ->
+      let lines = ["Hello World"; "hello world"; "HELLO WORLD"] in
+      let result = My_solutions.grep ~case_insensitive:false "Hello" lines in
+      check (list string) "exact match" ["Hello World"] result);
+    test_case "при case_insensitive=true находит все варианты" `Quick (fun () ->
+      let lines = ["Hello World"; "hello world"; "HELLO WORLD"; "goodbye"] in
+      let result = My_solutions.grep ~case_insensitive:true "hello" lines in
+      check int "count" 3 (List.length result));
+    test_case "при отсутствии совпадений возвращает пустой список" `Quick (fun () ->
+      let lines = ["foo"; "bar"; "baz"] in
+      let result = My_solutions.grep ~case_insensitive:false "qux" lines in
+      check (list string) "empty" [] result);
+  ]
+
 let () =
   Alcotest.run "Chapter 15"
     [
@@ -161,4 +178,5 @@ let () =
       ("run_game_result --- чистая логика", run_game_result_tests);
       ("make_game --- конструктор игры", make_game_tests);
       ("factor --- разложение на множители", factor_game_tests);
+      ("grep --- поиск строк", grep_tests);
     ]

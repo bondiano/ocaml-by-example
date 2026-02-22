@@ -1,0 +1,3 @@
+(library
+ (name rss_reader)
+ (libraries uri str))

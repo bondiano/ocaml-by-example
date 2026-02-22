@@ -129,3 +129,89 @@ tasks:
       - task: lint
       - task: test
       - task: build:book
+
+  # ── OBE CLI ─────────────────────────────────────────────────────────────────
+
+  obe:build:
+    desc: Собрать obe CLI-утилиту
+    dir: obe
+    cmds:
+      - dune build
+      - echo "==> obe собран успешно"
+
+  obe:test:
+    desc: Запустить тесты obe
+    dir: obe
+    cmds:
+      - dune runtest
+
+  obe:lint:
+    desc: Проверить форматирование кода obe
+    dir: obe
+    cmds:
+      - dune build @fmt
+
+  obe:fmt:
+    desc: Отформатировать код obe
+    dir: obe
+    cmds:
+      - dune build @fmt --auto-promote
+      - echo "==> obe отформатирован"
+
+  obe:clean:
+    desc: Очистить артефакты сборки obe
+    dir: obe
+    cmds:
+      - dune clean
+      - echo "==> obe очищен"
+
+  obe:install:
+    desc: Установить obe глобально
+    dir: obe
+    cmds:
+      - dune install
+      - echo "==> obe установлен глобально"
+
+  obe:run:
+    desc: Запустить obe (task obe:run -- check)
+    cmds:
+      - (cd obe && dune exec obe -- {{.CLI_ARGS}})
+
+  obe:help:
+    desc: Показать справку по obe
+    cmds:
+      - (cd obe && dune exec obe -- --help)
+
+  obe:verify:
+    desc: Полная проверка obe (lint + тесты + сборка)
+    cmds:
+      - task: obe:lint
+      - task: obe:test
+      - task: obe:build
+
+  # Алиасы для частых команд obe
+
+  check:
+    desc: Проверить упражнение (запускать из exercises/chapterXX/ или task check -- chapterXX)
+    cmds:
+      - |
+        if [ -n "{{.CLI_ARGS}}" ]; then
+          (cd exercises/{{.CLI_ARGS}} && dune exec --root=../../obe obe -- check)
+        else
+          dune exec --root=obe obe -- check
+        fi
+
+  progress:
+    desc: Показать прогресс по упражнениям (obe progress)
+    cmds:
+      - (cd obe && dune exec obe -- progress {{.CLI_ARGS}})
+
+  show:
+    desc: Показать календарь и streak (obe show)
+    cmds:
+      - (cd obe && dune exec obe -- show)
+
+  stats:
+    desc: Показать статистику по сложности (obe stats)
+    cmds:
+      - (cd obe && dune exec obe -- stats {{.CLI_ARGS}})

@@ -148,6 +148,57 @@ let auth_tests =
       Lwt.return (Alcotest.(check int) "status" 401 (Dream.status_to_int status)));
   ]
 
+let cors_tests =
+  let lwt_tc name f =
+    Alcotest.test_case name `Quick (fun () -> Lwt_main.run (f ()))
+  in
+  let handler _req = Dream.json {|{"data":"ok"}|} in
+  let app = My_solutions.cors_middleware handler in
+  [
+    lwt_tc "при ответе добавляет CORS заголовки" (fun () ->
+      let open Lwt.Syntax in
+      let req = Dream.request ~method_:`GET ~target:"/" "" in
+      let* resp = app req in
+      let origin = Dream.header resp "Access-Control-Allow-Origin" in
+      Lwt.return (Alcotest.(check (option string)) "origin" (Some "*") origin));
+  ]
+
+let json_error_tests =
+  let lwt_tc name f =
+    Alcotest.test_case name `Quick (fun () -> Lwt_main.run (f ()))
+  in
+  [
+    lwt_tc "при ошибке возвращает JSON с полем error" (fun () ->
+      let open Lwt.Syntax in
+      let* resp = My_solutions.json_error `Bad_Request "invalid input" in
+      let* body = Dream.body resp in
+      Lwt.return (Alcotest.(check bool) "has error" true
+                    (String.length body > 0 && Str.string_match (Str.regexp ".*error.*") body 0)));
+  ]
+
+let filter_tests =
+  let open Alcotest in
+  let todos = [
+    { id = 1; title = "A"; completed = true };
+    { id = 2; title = "B"; completed = false };
+    { id = 3; title = "C"; completed = true };
+  ] in
+  [
+    test_case "при None возвращает все задачи" `Quick (fun () ->
+      check int "count" 3
+        (List.length (My_solutions.filter_todos None todos)));
+    test_case "при Some true возвращает только completed" `Quick (fun () ->
+      let result = My_solutions.filter_todos (Some true) todos in
+      check int "count" 2 (List.length result);
+      check bool "all completed" true
+        (List.for_all (fun (t : todo) -> t.completed) result));
+    test_case "при Some false возвращает только не completed" `Quick (fun () ->
+      let result = My_solutions.filter_todos (Some false) todos in
+      check int "count" 1 (List.length result);
+      check bool "none completed" true
+        (List.for_all (fun (t : todo) -> not t.completed) result));
+  ]
+
 let () =
   Alcotest.run "Chapter 18"
     [
@@ -157,4 +208,7 @@ let () =
       ("paginate --- пагинация", paginate_tests);
       ("search --- поиск задач", search_tests);
       ("auth --- аутентификация", auth_tests);
+      ("cors --- CORS middleware", cors_tests);
+      ("json_error --- JSON ошибки", json_error_tests);
+      ("filter --- фильтрация по completed", filter_tests);
     ]

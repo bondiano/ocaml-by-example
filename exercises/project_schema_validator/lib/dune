@@ -1,0 +1,3 @@
+(library
+ (name schema_validator)
+ (libraries yojson str))

@@ -114,3 +114,27 @@ let todo_router =
       | Some _ -> Dream.json ~status:`OK {|{"deleted":true}|}
       | None -> json_error `Not_Found "not found");
   ]
+
+(** === Дополнительные примеры === *)
+
+(** Простой health-check handler. *)
+let health_handler _req =
+  Dream.json {|{"status":"ok"}|}
+
+(** CORS middleware (для разрешения кросс-доменных запросов). *)
+let cors_middleware : Dream.middleware =
+  fun handler req ->
+    let open Lwt.Syntax in
+    let* response = handler req in
+    Dream.add_header response "Access-Control-Allow-Origin" "*";
+    Dream.add_header response "Access-Control-Allow-Methods" "GET, POST, PUT, DELETE";
+    Dream.add_header response "Access-Control-Allow-Headers" "Content-Type";
+    Lwt.return response
+
+(** Logging middleware (выводит метод и путь каждого запроса). *)
+let logging_middleware : Dream.middleware =
+  fun handler req ->
+    let method_str = Dream.method_to_string (Dream.method_ req) in
+    let path = Dream.target req in
+    Dream.log "Request: %s %s" method_str path;
+    handler req

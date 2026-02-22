@@ -736,35 +736,35 @@ Dream занимает аналогичную нишу в экосистеме O
 
     *Подсказка:* используйте `Dream.json`.
 
-2. **(Среднее)** Реализуйте **чистую** функцию пагинации `paginate`, которая принимает список, номер страницы и размер страницы и возвращает соответствующий срез:
+2. **(Среднее)** Реализуйте **чистую** функцию пагинации `paginate`, которая принимает offset, limit и список, возвращая соответствующий срез:
 
     ```ocaml
-    val paginate : page:int -> per_page:int -> 'a list -> 'a list
+    val paginate : offset:int -> limit:int -> 'a list -> 'a list
     ```
 
-    Нумерация страниц начинается с 1. Если страница выходит за пределы списка, верните пустой список. Если `page < 1` или `per_page < 1`, верните пустой список.
+    Offset — количество элементов, которые нужно пропустить. Limit — максимальное количество элементов в результате. Если offset выходит за пределы списка, верните пустой список.
 
     Примеры:
-    - `paginate ~page:1 ~per_page:2 [1;2;3;4;5]` -> `[1;2]`
-    - `paginate ~page:2 ~per_page:2 [1;2;3;4;5]` -> `[3;4]`
-    - `paginate ~page:3 ~per_page:2 [1;2;3;4;5]` -> `[5]`
-    - `paginate ~page:4 ~per_page:2 [1;2;3;4;5]` -> `[]`
+    - `paginate ~offset:0 ~limit:2 [1;2;3;4;5]` -> `[1;2]`
+    - `paginate ~offset:2 ~limit:2 [1;2;3;4;5]` -> `[3;4]`
+    - `paginate ~offset:4 ~limit:2 [1;2;3;4;5]` -> `[5]`
+    - `paginate ~offset:10 ~limit:2 [1;2;3]` -> `[]`
 
-    *Подсказка:* используйте комбинацию `List.filteri` или ручную рекурсию с `List.nth`.
+    *Подсказка:* используйте рекурсию для пропуска первых `offset` элементов, затем для взятия `limit` элементов.
 
-3. **(Среднее)** Реализуйте **чистую** функцию `search_todos`, которая фильтрует список задач по подстроке в заголовке (без учёта регистра):
+3. **(Среднее)** Реализуйте **чистую** функцию `search_todos`, которая фильтрует список задач по подстроке в заголовке:
 
     ```ocaml
     type todo = { id : int; title : string; completed : bool }
 
-    val search_todos : query:string -> todo list -> todo list
+    val search_todos : string -> todo list -> todo list
     ```
 
     Примеры:
-    - `search_todos ~query:"молоко" [...]` — возвращает задачи, содержащие «молоко» в заголовке.
-    - `search_todos ~query:"" [...]` — возвращает все задачи (пустой запрос не фильтрует).
+    - `search_todos "Buy" [...]` — возвращает задачи, содержащие «Buy» в заголовке.
+    - `search_todos "" [...]` — возвращает все задачи (пустой запрос не фильтрует).
 
-    *Подсказка:* используйте `String.lowercase_ascii` для регистронезависимого поиска. Для проверки вхождения подстроки можно написать вспомогательную функцию через `String.length` и `String.sub`, или воспользоваться `Str` / ручной рекурсией.
+    *Подсказка:* для проверки вхождения подстроки напишите вспомогательную функцию через `String.length` и `String.sub`, проверяя все позиции в строке.
 
 4. **(Сложное)** Реализуйте middleware `auth_middleware`, который проверяет наличие и корректность Bearer-токена в заголовке `Authorization`:
 
@@ -788,6 +788,74 @@ Dream занимает аналогичную нишу в экосистеме O
     ```
 
     *Подсказка:* используйте `Dream.header req "Authorization"` для чтения заголовка и `String.length` / `String.sub` для разбора значения.
+
+5. **(Среднее)** Реализуйте middleware `cors_middleware`, которое добавляет CORS-заголовки ко всем HTTP-ответам:
+
+    ```ocaml
+    val cors_middleware : Dream.middleware
+    ```
+
+    Middleware должно добавлять следующие заголовки к ответу:
+    - `Access-Control-Allow-Origin: *`
+    - `Access-Control-Allow-Methods: GET, POST, PUT, DELETE`
+    - `Access-Control-Allow-Headers: Content-Type`
+
+    Пример использования:
+
+    ```ocaml
+    Dream.run
+    @@ cors_middleware
+    @@ Dream.router [ Dream.get "/" handler ]
+    ```
+
+    *Подсказка:* middleware принимает handler и request, вызывает handler, получает response и добавляет заголовки через `Dream.add_header`.
+
+6. **(Лёгкое)** Реализуйте вспомогательную функцию `json_error` для создания JSON-ответа с ошибкой:
+
+    ```ocaml
+    val json_error : Dream.status -> string -> Dream.response Lwt.t
+    ```
+
+    Функция принимает HTTP-статус и сообщение об ошибке, возвращает Dream-ответ с JSON-телом в формате `{"error":"message"}`.
+
+    Примеры:
+    - `json_error `Bad_Request "invalid input"` → `{"error":"invalid input"}` со статусом 400
+    - `json_error `Not_Found "resource not found"` → `{"error":"resource not found"}` со статусом 404
+
+    *Подсказка:* используйте `Printf.sprintf` для форматирования JSON и `Dream.json ~status`.
+
+7. **(Среднее)** Реализуйте обработчик `create_todo_handler` для создания новой задачи через POST-запрос:
+
+    ```ocaml
+    val create_todo_handler : Dream.request -> Dream.response Lwt.t
+    ```
+
+    Обработчик должен:
+    1. Прочитать body запроса через `Dream.body`
+    2. Распарсить JSON с помощью `create_todo_of_yojson` (тип `create_todo` уже определён в библиотеке)
+    3. Создать задачу через `create_todo ~title`
+    4. Вернуть JSON с созданной задачей и статусом `201 Created`
+    5. При ошибке парсинга вернуть `400 Bad Request` с помощью `json_error`
+
+    *Подсказка:* используйте let-оператор `let* =` из `Lwt.Syntax` для последовательной композиции Lwt-операций. Функция `create_todo_of_yojson` возвращает `(create_todo, error) result`.
+
+8. **(Лёгкое)** Реализуйте **чистую** функцию `filter_todos` для фильтрации задач по статусу выполнения:
+
+    ```ocaml
+    val filter_todos : bool option -> todo list -> todo list
+    ```
+
+    Логика фильтрации:
+    - `None` — вернуть все задачи без фильтрации
+    - `Some true` — вернуть только выполненные задачи (`completed = true`)
+    - `Some false` — вернуть только невыполненные задачи (`completed = false`)
+
+    Примеры:
+    - `filter_todos None [...]` → все задачи
+    - `filter_todos (Some true) [...]` → только с `completed = true`
+    - `filter_todos (Some false) [...]` → только с `completed = false`
+
+    *Подсказка:* используйте `List.filter` с pattern matching на `filter`.
 
 ## Заключение
 

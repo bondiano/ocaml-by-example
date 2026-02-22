@@ -64,3 +64,28 @@ let parse_key_values s =
        | _ -> loop acc)
   in
   loop []
+
+(** === Дополнительные примеры === *)
+
+(** Producer: отправляет числа от 1 до n в stream, затем None. *)
+let producer stream n =
+  for i = 1 to n do
+    Eio.Stream.add stream (Some i)
+  done;
+  Eio.Stream.add stream None
+
+(** Consumer: читает из stream до None, возвращает список. *)
+let consumer stream =
+  let rec loop acc =
+    match Eio.Stream.take stream with
+    | None -> List.rev acc
+    | Some v -> loop (v :: acc)
+  in
+  loop []
+
+(** Таймаут: выполнить функцию f или вернуть None через timeout секунд. *)
+let with_timeout clock seconds f =
+  Eio.Fiber.any [
+    (fun () -> Some (f ()));
+    (fun () -> Eio.Time.sleep clock seconds; None);
+  ]

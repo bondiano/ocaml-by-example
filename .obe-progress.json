@@ -1,0 +1,14 @@
+{
+  "marks": [
+    {"date": "2026-02-15", "chapter": "chapter02", "exercise_num": 1, "status": "Pass"},
+    {"date": "2026-02-16", "chapter": "chapter02", "exercise_num": 2, "status": "Pass"},
+    {"date": "2026-02-17", "chapter": "chapter04", "exercise_num": 1, "status": "Pass"},
+    {"date": "2026-02-18", "chapter": "chapter04", "exercise_num": 2, "status": "Pass"},
+    {"date": "2026-02-19", "chapter": "chapter05", "exercise_num": 1, "status": "Pass"},
+    {"date": "2026-02-20", "chapter": "chapter05", "exercise_num": 2, "status": "Pass"},
+    {"date": "2026-02-21", "chapter": "chapter05", "exercise_num": 3, "status": "Pass"}
+  ],
+  "current_streak": 7,
+  "longest_streak": 7,
+  "total_exercises_done": 7
+}

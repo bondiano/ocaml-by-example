@@ -112,6 +112,34 @@ let race_tests =
         (My_solutions.race [(fun () -> 7)])));
   ]
 
+let rate_limit_tests =
+  let open Alcotest in
+  [
+    test_case "применяет функцию к каждому элементу с задержкой" `Quick (fun () ->
+      Eio_main.run @@ fun env ->
+      let clock = Eio.Stdenv.clock env in
+      let result = My_solutions.rate_limit ~clock (fun x -> x * 2) [1; 2; 3] 0.01 in
+      check (list int) "rate_limit" [2; 4; 6] result);
+  ]
+
+let worker_pool_tests =
+  let open Alcotest in
+  [
+    test_case "распределяет задачи между воркерами" `Quick (run_eio (fun () ->
+      let tasks = List.init 10 (fun i -> fun () -> i + 1) in
+      let results = My_solutions.worker_pool 3 tasks in
+      check int "sum of results" 55 (List.fold_left (+) 0 results)));
+  ]
+
+let parallel_process_tests =
+  let open Alcotest in
+  [
+    test_case "обрабатывает файлы конкурентно" `Quick (run_eio (fun () ->
+      let files = ["file1.txt"; "file2.txt"; "file3.txt"] in
+      let result = My_solutions.parallel_process String.length files in
+      check int "total length" 30 result));
+  ]
+
 let () =
   Alcotest.run "Chapter 12"
     [
@@ -123,4 +151,7 @@ let () =
       ("concurrent_map --- конкурентный map", concurrent_map_tests);
       ("produce_consume --- producer-consumer сумма", produce_consume_tests);
       ("race --- гонка задач", race_tests);
+      ("rate_limit --- ограничение скорости", rate_limit_tests);
+      ("worker_pool --- пул воркеров", worker_pool_tests);
+      ("parallel_process --- параллельная обработка", parallel_process_tests);
     ]

@@ -51,6 +51,35 @@ let exercise_property_tests =
     QCheck_alcotest.to_alcotest My_solutions.prop_codec_roundtrip;
   ]
 
+(* Advent of PBT 2024 tests *)
+let advent_day1_tests =
+  [
+    QCheck_alcotest.to_alcotest My_solutions.prop_age_ordering;
+    QCheck_alcotest.to_alcotest My_solutions.prop_alphabetical_tiebreak;
+    QCheck_alcotest.to_alcotest My_solutions.prop_no_loss;
+    QCheck_alcotest.to_alcotest My_solutions.prop_idempotent;
+  ]
+
+let advent_day2_tests =
+  [
+    QCheck_alcotest.to_alcotest My_solutions.prop_unique_ids;
+    QCheck_alcotest.to_alcotest My_solutions.prop_all_ids_present;
+  ]
+
+let advent_advanced_tests =
+  [
+    QCheck_alcotest.to_alcotest My_solutions.prop_two_primes;
+    QCheck_alcotest.to_alcotest My_solutions.prop_palindrome_symmetric;
+    QCheck_alcotest.to_alcotest My_solutions.prop_stack_model;
+    QCheck_alcotest.to_alcotest My_solutions.prop_email_valid;
+    QCheck_alcotest.to_alcotest My_solutions.prop_sort_complexity;
+  ]
+
+let advent_bonus_tests =
+  [
+    QCheck_alcotest.to_alcotest My_solutions.prop_bank_account;
+  ]
+
 let binary_search_tests =
   let open Alcotest in
   [
@@ -93,11 +122,15 @@ let bst_tests =
   ]
 
 let () =
-  Alcotest.run "Chapter 13"
+  Alcotest.run "Chapter 16"
     [
       ("bst --- бинарное дерево поиска", bst_unit_tests);
       ("lib_properties --- свойства библиотеки", lib_property_tests);
       ("exercises --- свойства упражнений", exercise_property_tests);
       ("Binary Search", binary_search_tests);
       ("BST — бинарное дерево поиска", bst_tests);
+      ("Advent of PBT: Day 1 — Letter Sorting", advent_day1_tests);
+      ("Advent of PBT: Day 2 — Deduplication", advent_day2_tests);
+      ("Advent of PBT: Advanced", advent_advanced_tests);
+      ("Advent of PBT: ★ Bonus", advent_bonus_tests);
     ]

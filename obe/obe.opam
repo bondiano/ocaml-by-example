@@ -1,0 +1,19 @@
+opam-version: "2.0"
+name: "obe"
+version: "2.0.0"
+synopsis: "OCaml by Example - Unified CLI Tool"
+maintainer: "OCaml by Example"
+authors: ["OCaml by Example"]
+license: "MIT"
+homepage: "https://github.com/bondiano/ocaml-by-example"
+bug-reports: "https://github.com/bondiano/ocaml-by-example/issues"
+depends: [
+  "ocaml" {>= "5.0"}
+  "dune" {>= "3.0"}
+  "cmdliner" {>= "1.3.0"}
+  "yojson" {>= "2.0.0"}
+  "toml" {>= "7.0.0"}
+]
+build: [
+  ["dune" "build" "-p" name "-j" jobs]
+]

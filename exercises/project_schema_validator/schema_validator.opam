@@ -1,0 +1,15 @@
+# Schema Validator project
+opam-version: "2.0"
+synopsis: "JSON Schema validator"
+description: "A learning project for OCaml by Example"
+maintainer: "student"
+authors: ["OCaml by Example"]
+depends: [
+  "ocaml" {>= "5.0"}
+  "dune" {>= "3.0"}
+  "yojson"
+  "cmdliner"
+  "alcotest" {with-test}
+  "qcheck" {with-test}
+  "qcheck-alcotest" {with-test}
+]
